@@ -1252,6 +1252,11 @@ impl Placed {
 struct LastPlacement {
     info: cordial_linker_sys::game_activity::RawTextBoxInfo,
     at: std::time::Instant,
+    /// The canvas size this rectangle was accepted under, so a later ask that
+    /// answers with the exact same numbers under a *different* canvas size can
+    /// be told apart from a genuinely unmoved box -- see
+    /// [`WaylandWindow::resolve_textbox_geometry`]'s stale-repeat check.
+    canvas: (i32, i32),
 }
 
 /// One focus generation's worth of polling state for
@@ -2496,6 +2501,7 @@ impl WaylandWindow {
         }
         let carried = state.as_ref().and_then(|p| p.usable);
         let pending = state.as_ref().and_then(|p| p.pending);
+        let canvas = super::canvas_size();
         // SAFETY: `native` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
         let fresh = match unsafe { cordial_linker_sys::game_activity::textbox_info_now(native) } {
             // **A zero height is the trap this call brings with it.** Asked on
@@ -2503,8 +2509,12 @@ impl WaylandWindow {
             // `x=596 y=10 w=42 h=0` -- caught mid-animation, expanding out of
             // the header search bar it replaces. Non-zero x, y and width make
             // it look like an answer; the zero height makes it invisible. Same
-            // test as the remembered spec gets, for the same reason.
-            Ok(Some(i)) if i.width > 0.0 && i.height > 0.0 => Some(i),
+            // test as the remembered spec gets, for the same reason. A rectangle
+            // that does not fit the current canvas at all gets the same
+            // treatment, for the reason `info_fits_canvas` documents: this same
+            // native answered a since-resized window's old geometry, unchanged,
+            // on the real GNOME session.
+            Ok(Some(i)) if i.width > 0.0 && i.height > 0.0 && Self::info_fits_canvas(&i, canvas) => Some(i),
             Ok(_) => None,
             Err(e) => {
                 if super::input::trace_text() {
@@ -2541,6 +2551,40 @@ impl WaylandWindow {
         answer
     }
 
+    /// Whether a reported rectangle could plausibly belong to the window as it
+    /// is *now*, rather than as it was the last time the engine answered.
+    ///
+    /// **Why this exists.** `nativeGetTextBoxInfo` answers from the engine's
+    /// own idea of where the box is, and that idea does not update on a mere
+    /// resize -- confirmed on the real GNOME session, 2026-09-28: focus a box
+    /// fullscreen at 3440x1440 (placed at `x=1550`, dead centre of that
+    /// width), leave fullscreen without losing focus, and the engine keeps
+    /// answering `x=1550` in the new 1280-wide window -- 270px past the right
+    /// edge. Cordial has no way to *tell* the engine a box lost focus (no
+    /// native for it), so the only lever here is whether to *believe* the
+    /// number, and a rectangle that does not fit inside the current canvas at
+    /// all cannot be this window's honest answer.
+    ///
+    /// A generous margin rather than an exact bound: the sign this exists to
+    /// catch is a rectangle that is grossly outside the canvas (planted from a
+    /// since-resized window), not a few pixels of legitimate overhang from
+    /// rounding. `(0, 0)` -- no canvas yet -- passes everything, the same
+    /// "nothing to compare against, so do not guess" rule
+    /// [`super::canvas_size`] documents for itself.
+    fn info_fits_canvas(
+        info: &cordial_linker_sys::game_activity::RawTextBoxInfo,
+        (canvas_w, canvas_h): (i32, i32),
+    ) -> bool {
+        if canvas_w <= 0 || canvas_h <= 0 {
+            return true;
+        }
+        const MARGIN: f32 = 8.0;
+        info.x >= -MARGIN
+            && info.y >= -MARGIN
+            && info.x + info.width <= canvas_w as f32 + MARGIN
+            && info.y + info.height <= canvas_h as f32 + MARGIN
+    }
+
     /// Where the focused box is, from the best source that will answer.
     ///
     /// One function because there are two painters -- `sync_text_overlay` on
@@ -2564,13 +2608,33 @@ impl WaylandWindow {
         /// on screen.
         const CARRY_OVER: std::time::Duration = std::time::Duration::from_millis(1_500);
 
+        let canvas = super::canvas_size();
         let found = match cordial_linker_sys::game_activity::focused_textbox_info() {
-            Some(info) if info.width > 0.0 && info.height > 0.0 => Some(info),
+            Some(info) if info.width > 0.0 && info.height > 0.0 && Self::info_fits_canvas(&info, canvas) => {
+                Some(info)
+            }
             _ => self.polled_textbox_info(generation),
         };
         let mut last = self.last_placement.lock().unwrap_or_else(|e| e.into_inner());
+        // **A repeat under a different canvas is not confirmation, it is the
+        // same staleness `info_fits_canvas` cannot see.** That check only
+        // catches a rectangle that no longer fits *at all* -- the fullscreen
+        // case, going back to a smaller window. Going the other way, a
+        // windowed rectangle placed well inside a since-fullscreened canvas
+        // still fits it easily, and passes, while being just as wrong: on the
+        // real GNOME session, focusing at `x=470` in a 1280-wide window and
+        // then entering fullscreen (3440 wide) kept answering `x=470`
+        // indefinitely, and the editor sat near the top-left corner instead of
+        // the re-laid-out field. The engine has no native to tell it a box
+        // lost focus, so the only signal available here is exactly this: the
+        // *identical* rectangle, bit for bit, surviving a canvas size it was
+        // never placed under.
+        let found = match (found, last.as_ref()) {
+            (Some(info), Some(p)) if info == p.info && p.canvas != canvas => None,
+            (found, _) => found,
+        };
         if let Some(info) = found {
-            *last = Some(LastPlacement { info, at: std::time::Instant::now() });
+            *last = Some(LastPlacement { info, at: std::time::Instant::now(), canvas });
             return (info, Placed::Engine);
         }
         // **Hold still rather than jump.** Clicking the home search bar opens a
