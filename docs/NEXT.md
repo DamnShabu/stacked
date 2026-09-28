@@ -21,6 +21,96 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: the double Lua-app cycle is not a Cordial-side call, and a stale comment said otherwise for a month, 2026-09-29
+
+Tasked with H1 ("does Cordial order or answer something differently from real
+Android, causing a second Lua-app cycle that real Android doesn't take"), this
+round checked the claim mechanically rather than re-guessing it, on existing
+captures where possible so no launch budget was spent proving it.
+
+**`docs/traces/waydroid-roblox-startup.log.gz` cannot answer this.** It is a
+signed-out capture (`onAppReady: Landing`, never `RootSwitchNavigator`, never
+`DID_LOG_IN`) taken on 2026-07-31. The "real Android and Sober essentially
+never take the forcing-finalize path" claim two sections down is sourced to a
+*Sober* comparison (`$S/sober-comparison.md`, a different session, 0/17), not
+to this trace, and the distinction matters: a signed-out Android capture
+saying nothing about `Forcing finalize` is not evidence either way about a
+signed-in engine's own internal retry, because the signed-out path never
+reaches the code in question at all. Whoever next wants the real-Android side
+of this comparison needs a **signed-in** waydroid capture, which does not
+exist yet.
+
+**Cordial issues `nativeAppBridgeStartLuaAppDM` exactly once per default
+launch, confirmed from `crates/cordial-runtime/src/bin/load.rs` and from a
+live log** (`$S/rootcause4/F1/stdout.log`, a healthy run,
+`CORDIAL_STARTUP_RETRY` unset): the string `Lua app DataModel started`
+appears once. The engine's own log for that same run nonetheless shows the
+`gameLoadedCallback`/`APP_READY PlatformAccountRouter/Startup/Home/
+RootSwitchNavigator` sequence **twice**, with `DID_LOG_IN` only after the
+second pass — exactly the "0-old" 2026-08-24 finding two thousand lines below,
+reconfirmed on today's binary. `looper::STARTUP_RECOVERY`, the only Cordial
+code that would re-issue the call, is gated behind `startup_retry_enabled()`
+(`CORDIAL_STARTUP_RETRY`, off by default and "must stay off" per its own
+comment) and never fires in these runs. **This settles the strongest form of
+H1: the second cycle is not caused by Cordial calling into the engine twice.**
+It leaves open the softer form — an ordering or answer difference that
+changes whether the engine's *own* internal retry succeeds — which is the
+open question the rest of this file already tracks and this round did not
+move further (see below).
+
+**`~/Projects/mocktail`'s own handling of this exact native call is
+corroborating, not decisive.** `src/legacy/legacy_runtime.cc` wraps every
+call to `nativeAppBridgeStartLuaAppDM` (three mutually-exclusive env-selected
+calling positions: before `StartApp`, inline, or after it — not three
+sequential retries) in `sigsetjmp`/`siglongjmp` recovery tied to a
+`g_stage6_empty_gl_helper_returns` counter, and a large SIGSEGV-handler-based
+patch mechanism for a "Stage6 GL" null-deref loop nearby. That mechanism is
+about GLES/EGL scratch-queue null derefs during rendering setup, a different
+subsystem from Cordial's Vulkan path and from the `UgcExperienceController`/
+finalize wait this file's other entries have localised — so it is **not** the
+same bug, and should not be cited as one. What it does show is that a second,
+independent from-scratch Android-native-loader project needed heavyweight
+crash recovery around this same native call regardless of *which* position it
+called it from, which is mild supporting evidence that the engine's own
+bootstrap machinery is fragile off real Android generally, not that a
+particular Cordial ordering is the lever. No ordering guidance was found to
+adapt from mocktail's cookie/identity restore path either — it stores cookies
+in a plain file (`auth_runtime_composition.cc`) rather than facing the
+keyring-timing questions Cordial's own cookie restore comments already
+resolved (see `crates/cordial-runtime/src/bin/load.rs`'s `CORDIAL_COOKIE_PROBE`
+comment).
+
+**A stale comment was found and fixed.** The `CORDIAL_BRIDGE_DELAY_MS` comment
+in `load.rs` (added around the 2026-08-24/25 timing investigation) stated as
+established fact that "a run that freezes reaches every startup milestone
+earlier than one that does not" and that load reduced the freeze rate. Both
+claims are retracted a few hundred lines below in this same file ("RETRACTED:
+frozen runs are not the fast ones", "Load is not it") on larger, interleaved
+samples — the apparent gap was Simpson's paradox from pooling `LOAD` arms
+that themselves shift startup speed, and the freeze rate drifts in
+minutes-long bursts independent of code. The comment had been repeating the
+retracted claim as fact for over a month, through four further investigation
+rounds, and it was handed to this round's brief as an "established" fact
+verbatim. Fixed in this round's commit; the knob itself is kept, unchanged,
+as a cheap lever for a future timing idea. **This is the failure mode
+AGENTS.md's documentation section warns about, not a one-off: a comment that
+lies costs more than no comment, and it costs more the longer it survives
+being asked about.**
+
+**H2 (the CLOSE-WAIT socket ownership question) got no signal this round.**
+Eight signed-in `CordialTest` launches, spaced >=90s apart, all confirmed
+signed in (`cachedUserId:11400949329` restored, no `DID_LOG_OUT`, presents
+growing on a `devctl info` pair taken 6s apart) and all reached
+`HOME_PAGE_INTERACTIVE` — 0/8 frozen, an all-healthy burst of the kind this
+file's "Load is not it" section already documents happening independent of
+any code change. No new evidence on which thread owns the `CLOSE-WAIT`
+sockets' epoll registration; the question stands as the 2026-09-29 entry
+below left it. A capture-ready harness for it
+(`ss -tnpe` + per-fd `/proc/<pid>/fdinfo` + per-thread
+`/proc/<pid>/task/*/syscall`, triggered on a `devctl info` pair showing
+presents flat and `sync cookies from engine` already logged) exists for next
+time but was never exercised against a frozen specimen.
+
 ## Open: programmatic `CaptureFocus` is not a Cordial-side click gate; the specimen game does not use `TextBox`, 2026-09-28
 
 A report that `TextBox:CaptureFocus()` does nothing on Cordial — a game that

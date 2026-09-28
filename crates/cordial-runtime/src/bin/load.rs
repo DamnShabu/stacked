@@ -4224,34 +4224,37 @@ fn main() -> ExitCode {
                                         // bridge back before starting the Lua
                                         // app.**
                                         //
-                                        // Measured, and it is the reason this
-                                        // exists rather than a guess. Across
-                                        // thirty launches with the engine's own
-                                        // log timestamped, **a run that freezes
-                                        // reaches every startup milestone
-                                        // earlier than one that does not** --
-                                        // `StartLuaAppDM` at a median of 0.490s
-                                        // against 0.665s, `Lua app running
-                                        // status ... true` at 0.625 against
-                                        // 0.896, `sync cookies from engine` at
-                                        // 1.237 against 1.558. Consistently
-                                        // faster, at every mark, in the same
-                                        // direction.
+                                        // This used to say a thirty-launch
+                                        // comparison showed a run that freezes
+                                        // reaching every startup milestone
+                                        // earlier than one that does not, and
+                                        // that busying the machine during
+                                        // startup made the freeze less likely.
+                                        // **Both are retracted in
+                                        // docs/NEXT.md ("RETRACTED: frozen runs
+                                        // are not the fast ones" / "Load is not
+                                        // it"), on larger, interleaved samples:
+                                        // the apparent timing gap was Simpson's
+                                        // paradox from pooling two `LOAD` arms
+                                        // that themselves shift startup speed,
+                                        // and the freeze rate drifts in minutes-
+                                        // long bursts independent of load or
+                                        // code.** A stale copy of the retracted
+                                        // claim sat here for over a month and
+                                        // was still being cited as established
+                                        // in 2026-09; don't re-derive it.
                                         //
-                                        // Two other results point the same way.
-                                        // Running the machine deliberately busy
-                                        // during startup made the freeze *less*
-                                        // likely, not more -- one in fifteen
-                                        // against five in fifteen -- and the
-                                        // person who reported the bug works
-                                        // around it by giving the client input
-                                        // while it loads, which is another way
-                                        // of slowing that window down.
-                                        //
-                                        // So the shape is a race that is lost by
-                                        // arriving too early, and the crudest
-                                        // possible test of that is to arrive
-                                        // later on purpose.
+                                        // The knob itself is harmless and is
+                                        // kept as the cheapest way to hold the
+                                        // bridge back if a future timing idea
+                                        // needs testing -- see
+                                        // docs/NEXT.md's "Where the two
+                                        // actually part company, in one clock",
+                                        // which places the real divergence
+                                        // inside the engine, between the
+                                        // resize being reported and the second
+                                        // swapchain being rebuilt, not in
+                                        // anything Cordial's own log shows.
                                         if let Ok(ms) = std::env::var("CORDIAL_BRIDGE_DELAY_MS") {
                                             if let Ok(ms) = ms.parse::<u64>() {
                                                 println!("  holding the bridge back {ms}ms before StartLuaAppDM");
