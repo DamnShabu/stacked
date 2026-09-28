@@ -67,6 +67,17 @@ build-options:
 finish-args:
   # GPU. Roblox's Android build needs GLES2 + EGL; Vulkan is dlopen'd and
   # optional (docs/findings.md §5).
+  #
+  # **No `add-extensions` entry is needed for MangoHUD's or vkBasalt's Vulkan
+  # layers, and adding one would be redundant rather than merely harmless.**
+  # `org.freedesktop.Platform.VulkanLayer` is declared by the *runtime* --
+  # `flatpak info --show-metadata org.gnome.Platform//50` prints `[Extension
+  # org.freedesktop.Platform.VulkanLayer]` with `subdirectories = true` -- so
+  # every `org.freedesktop.Platform.VulkanLayer.*` extension the user has
+  # installed is already visible to any app built on this runtime, with
+  # nothing for the app's own manifest to add. Sober's manifest (fetched from
+  # flathub, 2026-09-29) confirms this empirically: it has no `add-extensions`
+  # block at all and its users still get MangoHUD. See ADR-041.
   - --device=dri
   # **A USB FIDO2 security key is deliberately NOT reachable, and this is the
   # reasoning rather than an oversight.**
