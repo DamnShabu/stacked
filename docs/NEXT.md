@@ -21,6 +21,93 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: programmatic `CaptureFocus` is not a Cordial-side click gate; the specimen game does not use `TextBox`, 2026-09-28
+
+A report that `TextBox:CaptureFocus()` does nothing on Cordial — a game that
+focuses its own box gets no editor, so typing is silent, while clicking the
+same box works — was investigated for a click-dependent condition in
+`android_classes.cpp`, `android/input.rs`, `android/wayland.rs` and
+`cordial_shell::host_window`. **None was found.** `cordial_textbox_focused`
+(the function both `showKeyboard`'s hook and devctl's `fakefocus` call) sets
+`g_textbox_handle`/`g_textbox_generation` unconditionally; `sync_text_overlay`,
+`sync_ime_focus` and `resolve_textbox_geometry` all key off
+`textbox_generation()`/`focused_textbox()`, with no read of pointer state
+anywhere in the chain. `fakefocus` proves this directly: it calls
+`cordial_textbox_test_focus` → `cordial_textbox_focused`, the exact entry
+point `showKeyboard` uses, with no click involved, and on a live signed-in
+CordialTest run (2026-09-28) it drew a correctly-placed, typeable editor
+(`devctl textbox` reported `placed=engine`, `settext` landed and read back).
+mocktail's `RobloxTextEditor::BeginFocusSession` takes whatever
+`gameActivity_showKeyboard` hands it the same way, with no gate.
+
+Type Race (placeId 7232779505), picked as an obvious CaptureFocus specimen,
+turned out not to be one: across a full ready-up-to-round-end cycle, `devctl
+textbox` never reported a focus and no `textbox focused` line appeared in the
+`CORDIAL_TRACE_TEXT=1` log, yet `pass_key_event` traces show injected evdev
+keys reaching the engine and, after some latency, the on-screen character
+counter did advance. That is the shape of `UserInputService.InputBegan`
+reading keys directly, not a focused `TextBox` — this game answers a
+different question than the one asked. Sober #723, "glViewTextBoxFocused()
+does not focus if forced" (Word Bomb, Spelling Bee), is the on-point upstream
+report for a game that *does* use a forced-focus TextBox: engine-side
+connect/disconnect race, closed `COMPLETED` but with no confirmation the fix
+reached this APK's build. If it reproduces here, ADR-001/ADR-003 rule out a
+Cordial-side correction (the race is the engine's own), and the finding would
+be "faithfully reproduced," not a platform bug.
+
+**Not fixed, because no cause was found to fix.** Whoever picks this up next
+should find a game confirmed to call `CaptureFocus()` on a real `TextBox`
+(not `InputBegan`) and watch `showKeyboard`/`hideKeyboard` under
+`CORDIAL_TRACE_TEXT=1` — a `showKeyboard` that never arrives points at a
+platform gap here; a `showKeyboard` immediately followed by `hideKeyboard`
+for the same handle matches Sober #723 and is upstream.
+
+**Also found, not fixed (out of scope this session, `devctl.rs` was another
+agent's file):** `devctl.rs`'s `fakefocus` verb mis-parses its optional
+trailing text. The handler calls `line.splitn(6, char::is_whitespace).nth(5)`
+to find the text after `fakefocus <multiline> <x> <y> <w> <h>`, but that is
+six tokens (including the verb itself), so `splitn(6)` only skips five and
+the `h` value leaks into the start of the text
+(`fakefocus 1 200 200 600 200 Line one...` reads back as text `"200 Line
+one..."`, confirmed live). Geometry and `multiline` parse correctly; only the
+convenience trailing-text argument is affected. Should be
+`splitn(7, ...).nth(6)`.
+
+## Open: `docs/adr/ADR-019`'s nested-weston fullscreen claim did not reproduce headless, 2026-09-28
+
+Told that nested sway does not engage GTK fullscreen but nested weston does,
+a `weston -B headless --renderer=gl -S <name> --fake-seat` instance was built
+to re-run the multi-line editor's fullscreen checks away from the
+maintainer's own session (`wayland-0`, in active use). `devctl fullscreen`
+against a CordialTest client on that display reported the command accepted
+(`info`'s `accepted` counter incremented) but the canvas extent, read back
+from `devctl info`, never changed from the windowed `960x754`, and no new
+`vkCreateSwapchainKHR` line appeared in the client log — `window.fullscreen()`
+was called (`host_window::HostWindow::set_fullscreen`) but weston's
+`desktop-shell` never sent a bigger configure. Both `weston-screenshooter`
+(hangs indefinitely, no output file, protocol most likely not enabled by
+`desktop-shell`) and `grim` (`"compositor doesn't support the screen capture
+protocol"`, expected — weston is not wlroots) failed to capture the
+compositor's own composited frame either, leaving no way to see the GTK
+chrome and confirm or refute the grey-screen bug from that side; only
+`cordial_screenshot` (the engine's own swapchain) was available, which cannot
+see the GTK overlay at all. **Real-GNOME-session verification of the
+fullscreen grey bug and the windowed/fullscreen editor-sizing checks is still
+outstanding** — this session's launch budget (5, spent partly on two repeats
+of the existing startup freeze) did not stretch to diagnosing the headless
+weston setup further. What *did* verify live, via `devctl fakefocus 1 ...`
+and `settext` on a signed-in CordialTest client (not a real game's box):
+`multiline=1` in the spec draws the `gtk::TextView` overlay, and multi-line
+text (three lines, a wrapped line) is visible and correctly placed while
+"typing" via `settext` — `grim` on the *sway* nested compositor (which does
+composite the window, unlike headless weston here) confirms this
+screenshot-side. A single Esc releasing the editor could not be tested at
+all: `fakefocus`'s synthetic handle is not a box the engine itself ever
+focused, so the engine has nothing to blur on Escape, and a real evdev key
+delivered through `devctl key`/`tap` goes straight to `nativePassKeyEvent`
+(the engine path), not through GDK to the widget — a real in-game multi-line
+`TextBox`, focused by a real click, is needed to exercise this.
+
 ## Fixed: a blank screen (signed in and signed out alike) traced to the wrong settings document, 2026-09-24
 
 A live Roblox rollout put the default AGDK startup path onto a single-cycle
