@@ -68,6 +68,18 @@ pub enum Cmd {
     /// `settext <path>`: replace the focused box's whole contents (see
     /// `clipboard::set_text`).
     SetText(String),
+    /// `redraw`: send one `onSurfaceRedrawNeededNative`, live.
+    ///
+    /// Added for the startup freeze, 2026-09-28. `CORDIAL_SCRIPT=<t>:redraw`
+    /// (`looper.rs`) can only fire the same call at a fixed time chosen before
+    /// the client exists, which is useless against a race whose timing is not
+    /// known in advance -- and the freeze's own signature (a spinning thread
+    /// on the engine's own command pipe, nine events delivered and no tenth,
+    /// `docs/analysis/startup-freeze-capture.md`) is exactly the shape a
+    /// missing tenth command -- a redraw grant -- would produce. This lets the
+    /// same call be sent to a client caught already wedged, by present count,
+    /// with no guess about when.
+    Redraw,
 }
 
 static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
@@ -379,6 +391,12 @@ fn handle(line: &str) -> String {
             }
             _ => "err scroll <x> <y> <detents>".into(),
         },
+        // See `Cmd::Redraw`'s own doc for why this exists as a live verb
+        // rather than only a `CORDIAL_SCRIPT` timeline action.
+        "redraw" => {
+            push(Cmd::Redraw);
+            "ok".into()
+        }
         // The capture the compositor would not give us. See `vulkan::capture`.
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
@@ -588,6 +606,7 @@ pub fn apply_queued(handle: i64) {
             Cmd::SetText(text) => {
                 report_replace("settext", &text, crate::android::clipboard::set_text(handle, &text))
             }
+            Cmd::Redraw => crate::android::input::deliver_surface_redraw(handle),
         }
     }
 }
@@ -599,5 +618,34 @@ fn report_replace(verb: &str, text: &str, result: Result<usize, String>) {
         Ok(0) if !text.is_empty() => println!("  devctl: {verb}: no box has focus"),
         Ok(n) => println!("  devctl: {verb}: field now holds {n} characters"),
         Err(e) => println!("  devctl: {verb} failed: {e}"),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `QUEUE` is process-global, so this drains it first rather than assuming
+    // it starts empty -- this is the only test in the file that touches it,
+    // but a test that assumes a shared static's initial state is a test that
+    // breaks the day a second one is added next to it.
+    #[test]
+    fn redraw_verb_queues_exactly_one_redraw_command() {
+        drain();
+        assert_eq!(handle("redraw"), "ok");
+        let queued = drain();
+        assert_eq!(queued.len(), 1, "expected exactly one queued command, got {queued:?}");
+        assert!(matches!(queued[0], Cmd::Redraw), "expected Cmd::Redraw, got {:?}", queued[0]);
+    }
+
+    // Unknown verbs must not be silently accepted as some other command --
+    // this devctl protocol is line-oriented and a typo that queued the wrong
+    // input would be indistinguishable from the command actually asked for.
+    #[test]
+    fn unknown_verb_is_rejected_not_queued() {
+        drain();
+        let reply = handle("redrew");
+        assert!(reply.starts_with("err"), "expected an error reply, got {reply:?}");
+        assert!(drain().is_empty());
     }
 }

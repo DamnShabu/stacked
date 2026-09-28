@@ -273,3 +273,23 @@ path that day: the settings document (`GoogleAndroidApp`, 89d494a) and
 `DeviceStaticParams.osVersion` "15" to "33" (d803c47). The second can be
 compared directly, `"15"` against `"33"` on one build; the first cannot while
 the `AndroidApp` document blanks.
+
+## The descriptor and the census, reconfirmed unchanged on `8c85be7`, 2026-09-28
+
+Everything in "What a frozen client is doing" and "Three captures agree, and
+they name the descriptor" above still holds, byte for byte in shape, on
+current `main`: `polls` past a billion, `events=9`, `presents` fixed. See
+`docs/NEXT.md`'s "the missing-AGDK-command theory is refuted live" entry for
+what changed this time: a live `devctl redraw` verb was added and used to
+feed the spinning thread's command pipe up to 95 more events on an
+already-wedged client (one `onSurfaceRedrawNeededNative`, ten more, then a
+full `fullscreen`/`windowed` resize cycle) with zero effect on `presents` or
+the engine log. **The pipe accepting and counting an event is not the same as
+the stall being about that pipe** — this was the mistake the "one missing
+command" reading of the 09d315b redraw action invited, and it is now
+measured rather than argued. The actual wait is confirmed to be inside
+`UgcExperienceController`/`SingleSurfaceApp`'s own finalize retry, which
+prints no further `FLog::` line of any kind once it fails to recover, on a
+process whose every other thread (including `cordial-secrets`, checked and
+found idly parked on its own job queue, not blocked mid-request) stays
+observably healthy.

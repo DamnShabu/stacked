@@ -58,6 +58,90 @@ symptom) is affected one way or the other by fetching the engine's own
 document instead of Cordial's — not measured, only the blank/Landing split
 was.
 
+## Open: the missing-AGDK-command theory is refuted live, and the wait is confirmed to be inside the engine, 2026-09-28
+
+Reproduced on `8c85be7` + this session's own `devctl redraw` addition, `just
+build toolbox`, signed-in `CordialTest`, nested headless sway, `taskset -c 0`
+on the client process (no separate CPU hog): one clean capture of the
+documented signature, unchanged from 2026-08-26 — `loopers` on the frozen
+client read `tid=<engine> fds=1 [31:1:-] polls=1115187357 events=9`, i.e. the
+AGDK `native_app_glue` thread spinning on `ALooper_pollOnce(timeout=0)`
+against its own command pipe (`ident=1` is `LOOPER_ID_MAIN`), nine events
+delivered, `presents` fixed at 1. `gdb thread apply all bt`, twice 90s apart,
+both show the spinning thread in `looper::looper_poll_once` at 98-100% of a
+core (`crates/cordial-runtime/src/android/looper.rs:1794`), matching the
+2026-08-26 capture exactly.
+
+**The "one missing command" theory (the `redraw` script action added in
+09d315b, never run before this session) is refuted as a recovery mechanism,
+by direct live test.** A `redraw` verb was added to `devctl` (`Cmd::Redraw` in
+`crates/cordial-runtime/src/devctl.rs`, tested by
+`devctl::tests::redraw_verb_queues_exactly_one_redraw_command`) specifically
+so the same `onSurfaceRedrawNeededNative` call the script action fires blind
+at a fixed time could instead be fired at an already-wedged client, with no
+guessing about timing. Sent once: the looper census's `events` counter went
+9 -> 10 and `since_event` reset to 0, proving the command was delivered and
+consumed — and `presents` stayed at 1. Sent ten more (`events` 10 -> 20) and
+then a `fullscreen`/`windowed` cycle, which drives a real resize and pulls in
+far more command traffic than one redraw grant (`events` on both loopers
+jumped by 67-75 in one shot): still `presents=1`, no new engine-log line, no
+`~UgcExperienceController()`. **The spinning thread accepts and processes
+every command handed to it and none of that unwedges anything.** Whatever it
+is waiting for is not "one more Android lifecycle event" — this is now a
+result, not an inference, and 09d315b's redraw action can be read as
+"attempted as a recovery, refuted" rather than merely "not yet run". Whether
+firing it *before* the wedge (rather than after) changes anything is a
+narrower, separate claim — see below.
+
+**The keyring/secrets-block theory (`freeze-root.md`, flagged there as
+"unverified by this session") does not hold either, on this capture.** The
+full 69-thread backtrace shows `cordial-secrets` (`crates/cordial-shell/src/
+secrets/keyring.rs:155`) parked in `Receiver::recv` on its own `mpmc` job
+channel — a worker idly waiting for the *next* request, indistinguishable
+from a healthy idle pool, not a thread stuck mid-transaction. No thread in
+the census (workers, `HttpClient`, `HttpThreadPool`, `RBX Worker A`-`P`,
+`gmain`, `pool-spawner`, asset cache threads) shows anything but an ordinary
+blocking wait on its own condvar/fd. There is no visible lock-ordering cycle
+anywhere Cordial's own code or the OS can see.
+
+**Where the wait actually is, confirmed rather than inferred this time**: the
+engine's own player log. Healthy and frozen runs are identical through
+`Forcing finalize experience coordinator with state 1` ->
+`UgcExperienceController: finalize: Did not finalize due to state.` (same
+millisecond in both). A healthy run then logs
+`UgcExperienceController::~UgcExperienceController()` about 48ms later — with
+nothing from Cordial's own side logged in between that could have caused it —
+followed by a second `vkCreateSwapchainKHR` at a new size, `sync cookies from
+engine`, `DID_LOG_IN`. A frozen run never logs the destructor. Both reach
+`sync cookies from engine` (1.185s healthy, 1.338s frozen — comparable), and
+then the frozen run's engine log **stops outright**: no further `FLog::` line
+of any kind, from any subsystem, for as long as the process was left running
+(228s in this capture). This confirms the "next instrument has to see into
+that gap" note from the 2026-08-24 entry below, and answers it as far as
+external instruments can: the retry that either succeeds or does not is
+private to `UgcExperienceController`/`SingleSurfaceApp` inside `libroblox.so`,
+with no OS-visible primitive (no futex, no held lock, no blocked syscall
+anywhere else in the process) standing in for whatever internal condition it
+is testing. **AGENTS.md's rule against reasoning from a disassembly is why
+this is the floor of what can be said here without further engine-side
+evidence** (a future real-Android capture that logs the same coordinator's
+internal state, or a mocktail comparison of the same class, are the two
+routes that stay inside the rules).
+
+**A small, inconclusive prevention arm**: firing `redraw` continuously every
+50ms for the first 3 seconds, from process start (rather than at a wedged
+client), interleaved with plain controls, same `taskset -c 0`: control 1/4
+FROZEN, early-redraw 0/2 FROZEN. Too few runs to read as evidence either way
+at the ~30% historical base rate — 0/2 is within noise — and it is reported
+only so nobody re-spends launches re-deriving it. Given the recovery result
+above, there is no remaining mechanistic reason to expect this would help;
+it was tried anyway because it was cheap and the timing-sensitivity note in
+09d315b's commit message had not been tested.
+
+`crates/cordial-runtime/src/devctl.rs`'s `redraw` verb is kept regardless of
+this result — it is a real diagnostic capability (ADR-019), independent of
+whether this particular hypothesis panned out.
+
 ## Open: the startup freeze has a second failure on the other side of it, 2026-09-17
 
 Four things were measured on `4c9d1b5`, built with `just build toolbox`, all on
