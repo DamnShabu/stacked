@@ -3212,6 +3212,25 @@ impl WaylandWindow {
         // Every button, not only the primary one. The gate that used to stand
         // here dropped right and middle before they reached Roblox's own input
         // path, and a right-button drag is how a mouse turns the camera.
+        //
+        // **This is also why a right press outside a focused TextBox does not
+        // blur it, and that is left alone.** Measured live, signed in, on
+        // 2026-09-28: a left click outside a focused chat box blurs it
+        // (`cordial_textbox` reports `focus=none` immediately); a right
+        // press-drag-release at the same point leaves the box focused
+        // (`focus` unchanged, same generation). The line above shows there is
+        // no Cordial-side asymmetry to fix -- both buttons reach
+        // `nativePassMouseButton` the same way, at the same coordinate, and
+        // whether a click blurs a box is entirely the engine's own
+        // `hideKeyboard`/focus-loss decision (see the comment on the key path
+        // below this file's `pass_key_event` wrapper). `tools/sober-corpus`
+        // has nothing on point either way -- issues #723, #970, #1176 and
+        // #2106 are about unrelated focus and camera bugs -- so there is no
+        // evidence Roblox's own client blurs a TextBox on a secondary click,
+        // and forcing one here would be Cordial second-guessing the engine
+        // for a convention (primary button dismisses a text field, secondary
+        // does not) that holds on every desktop toolkit this side of the
+        // platform boundary. Not changed.
         super::input::pass_mouse_button(x, y, press, android_button);
 
         // Do not wait for the next pump to capture a camera drag. Pointer
