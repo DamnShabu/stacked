@@ -239,7 +239,9 @@ fn handle(line: &str) -> String {
                     // Whatever is left of the line, exactly as `text`'s own
                     // parsing takes its payload. Empty is fine -- an empty
                     // multi-line box is still worth placing and screenshotting.
-                    let rest = line.splitn(6, char::is_whitespace).nth(5).unwrap_or("").trim();
+                    // Six tokens precede it (the verb, the multi-line flag and
+                    // four numbers); skipping five leaked `h` into the text.
+                    let rest = line.splitn(7, char::is_whitespace).nth(6).unwrap_or("").trim();
                     // A handle no real engine build has ever assigned to
                     // anything Cordial has captured -- see the caveat above
                     // about not overlapping this with a real focus.
