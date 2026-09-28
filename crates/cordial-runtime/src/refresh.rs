@@ -7,13 +7,19 @@
 //! nativePassCurrentDisplayRefreshRate(F)V  the one in force now
 //! ```
 //!
-//! Cordial has never called either, so the engine has been running with whatever
-//! it assumes when the application says nothing. AGENTS.md records that with
-//! input flowing the frame rate is a hard FIFO vsync lock to the output's
-//! refresh — 60 Hz gives 60, a 50 Hz monitor gives 49.4 even in fullscreen at
-//! four times the pixels. **Whether telling it changes anything is untested.**
-//! This is the one place a client gets to speak about refresh and ours has been
-//! silent, which is worth fixing whether or not it moves the number.
+//! **Cordial had never called either, and now calls both.** For most of this
+//! module's life the engine ran with whatever it assumes when the application
+//! says nothing, and AGENTS.md's note that the frame rate is a hard FIFO vsync
+//! lock to the output's refresh — 60 Hz gives 60, a 50 Hz monitor gives 49.4
+//! even in fullscreen — was written against that silence. `bin/load.rs`'s
+//! `wire_refresh_rate` now resolves both natives and calls them: once at
+//! startup and again whenever GDK's monitor list changes (a hotplug, or the
+//! window landing on a different output), using the policy this module
+//! decides and `crate::android::wayland::current()` for which output the
+//! engine's own window is mostly on. **Whether telling it changes the frame
+//! rate is still untested** — `wire_refresh_rate`'s own doc comment says so in
+//! full and marks the two-monitor path `UNVERIFIED` pending a machine that has
+//! one.
 //!
 //! ## A window can be on two outputs at once, and Wayland means it
 //!
