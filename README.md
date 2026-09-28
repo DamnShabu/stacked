@@ -167,6 +167,12 @@ wherever `CORDIAL_FLAGS` points. Layering and syntax:
 **Mouse acceleration** is a Settings control — cursor only, or cursor and
 camera — stored in `$XDG_CONFIG_HOME/cordial/shell.json`.
 
+**Shaders**, sharpening and anti-aliasing over the game through
+[vkBasalt](https://github.com/DadSchoorse/vkBasalt)'s Vulkan layer, are a
+Settings switch offered once vkBasalt is installed: install per distro, the
+Flatpak extension, the generated config's path and its toggle key are all in
+[`docs/shaders.md`](docs/shaders.md).
+
 **Separate data roots** per instance come from `XDG_DATA_HOME`, which moves both
 the profile root and the client's data directory. `CORDIAL_PROFILE_ROOT` moves
 only the profile root and not the client.
