@@ -419,6 +419,93 @@ natives) stays idle and unimplicated. **This ends inside the engine, with no
 Cordial-visible dependency identified** — which is the answer the coordinator
 asked for in that case, not a stopping point chosen for convenience.
 
+## Open: named the waker -- an HttpClient thread's `pthread_cond_broadcast` -- and found a second, simpler freeze shape, 2026-09-29
+
+Used the exact instrument the previous entry asked for: on a live launch,
+poll the new engine log for `Forcing finalize experience coordinator`,
+extract its truncated-pthread-pointer thread-id field the instant it
+appears, map it to an `LWP` via `gdb`'s thread list, read that thread's own
+`/proc/<pid>/task/<tid>/syscall` for its exact futex address, and arm **one**
+hardware watchpoint on that word (`watch *(int *) ADDR`, cheap -- a debug
+register, not a syscall trace) via a single `gdb --args` session that starts
+paused at library-load and only engages the watchpoint reactively. Detection
+to watchpoint-armed took 5-14ms in the runs that worked, and the watchpoint
+fired within 14ms of being armed both times it was in place before the
+natural resolution -- fast enough that the intervention itself does not look
+like it is racing the event, though see the "who exited before I could
+check" paragraph below for the failure mode this exposed.
+
+**Two clean, fully replicated hits, byte-identical (gdb disables ASLR for a
+process it launches itself, which is why the addresses below repeat exactly
+and is worth knowing before anyone reads too much into two runs landing on
+the same number):**
+
+```
+run 1: Thread 23 "HttpClient" hit Hardware watchpoint: *(int *) 0x7fff4c001930
+       Old value = 0 / New value = 1
+       0x00007ffff674d855 in pthread_cond_broadcast@@GLIBC_2.3.2 () from libc.so.6
+       caller: libroblox.so+0x241a6d8
+run 2: Thread 23 "HttpClient" hit Hardware watchpoint: *(int *) 0x7fff4c001930
+       Old value = 0 / New value = 1
+       0x00007ffff674d855 in pthread_cond_broadcast@@GLIBC_2.3.2 () from libc.so.6
+       caller: libroblox.so+0x241a6d8   (identical address, identical offset)
+```
+
+**The finalize thread's futex is woken by an `HttpClient` thread calling
+`pthread_cond_broadcast`.** Both runs went on to reach `Home` normally
+afterward, confirming the watchpoint's own presence did not itself prevent
+the healthy outcome it caught.
+
+**The technique has a real failure mode, and it cost several launches to
+find rather than to guess at.** In three other runs, the same thread-id
+extracted from the log matched *no* thread gdb could see, even after 30 more
+breakpoint-driven checkpoints. The likely reading: whatever thread runs this
+specific retry is a one-shot worker that exits once its task completes, and
+a *healthy* run resolves and tears that thread down faster than this
+pipeline's own detect-then-attach latency in most cases -- meaning the
+technique reliably catches the wake only when it is slow enough to still be
+in flight, which is a real form of survivorship: what gets caught skews
+toward the (still perfectly genuine) slower half of healthy resolutions.
+Labelled **INFERRED**: no run was slowed down deliberately to confirm this is
+*why* the thread was gone rather than some other cause.
+
+**A live frozen specimen, caught by accident while chasing a match, turned
+up a second, simpler failure shape that has not been on record before.**
+This run's engine log never logged `Forcing finalize experience coordinator`
+at all -- the whole retry/finalize apparatus this task has spent three
+rounds on never engaged -- and it still froze, stopping one line after `sync
+cookies from engine`, `presents` fixed at 4. The thread that logged that
+line (`HttpClient`, a different one from the waker above) is *itself*
+blocked in `pthread_cond_wait` at `libroblox.so+0x241d9dc` -- 0x3304 bytes
+(about 13KB) from the waker's own `pthread_cond_broadcast` call site above,
+consistent with both being part of the same networking module's wait/signal
+pair rather than a coincidence. **Independent, OS-level corroboration that
+this is a real stall and not merely a slow one**: `ss -tnp` on the live
+process showed three sockets to `128.116.51.3:443` sitting in `CLOSE-WAIT`
+-- the remote end already sent its close, and the local side never finished
+processing it -- while the process's two `RBX IoEvLoop 0` threads sit in an
+otherwise perfectly ordinary `epoll_wait`. Nothing here says which thread
+owns those three sockets' epoll registration, or why their close was never
+serviced; that is the next thread to pull, not a conclusion reached.
+
+**Where this leaves the chain**: the waker is named (an `HttpClient` thread,
+`pthread_cond_broadcast`, `libroblox.so+0x241a6d8`) and replicated twice.
+Recursing *its* own wait one level further landed inside the same
+networking module, on a `pthread_cond_wait` whose completion is plausibly
+gated on real socket I/O -- and a live frozen specimen shows real,
+unprocessed `CLOSE-WAIT` sockets, which is evidence of an actual stuck
+network completion, not an artefact of the debugger. **This still ends
+inside the engine and the host's own libcurl/TCP stack** (`--host-libc`
+means these calls resolve to the host's real networking libraries, which
+Cordial does not implement or intercept) **as far as this round's launch
+budget allowed tracing it.** No fix is proposed: nothing pulled on this
+thread is Cordial's to fix yet. The concrete next step is to find which
+thread owns the three `CLOSE-WAIT` sockets' epoll registration on a fresh
+frozen capture, and to check whether Cordial's own path to the host's
+resolver/TLS stack (rather than the generic host-libc forwarding this
+project already relies on) has any observable difference between the
+socket's two endpoints and a healthy run's equivalent connection.
+
 ## Open: the startup freeze has a second failure on the other side of it, 2026-09-17
 
 Four things were measured on `4c9d1b5`, built with `just build toolbox`, all on
