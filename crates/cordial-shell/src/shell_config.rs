@@ -792,6 +792,21 @@ pub struct ShellConfig {
     #[serde(default)]
     pub carry_launch_ticket: bool,
     pub mangohud: bool,
+    /// Sharpen and anti-alias the frame with vkBasalt's Vulkan layer.
+    ///
+    /// Same shape as `mangohud` above, deliberately: both are implicit Vulkan
+    /// layers Cordial does not implement, both draw or alter the frame whether
+    /// or not the layer is actually installed, and both need the same guard —
+    /// see `launch::vkbasalt_layer`. Default off for the same reason as
+    /// `mangohud`: it changes what is on screen, so it is asked for rather than
+    /// assumed.
+    ///
+    /// Turning it on writes a per-profile `vkBasalt.conf` the first time, at
+    /// `launch::vkbasalt_config_path`, and never overwrites one that is already
+    /// there — see that function's doc for why silently replacing a config
+    /// somebody has since edited would be the wrong failure to introduce.
+    #[serde(default)]
+    pub vkbasalt: bool,
     /// Which audio device Roblox plays through. See [`AudioOutput`], which
     /// carries the whole of the reasoning, including why the stored form is a
     /// `node.name` and why the default must stay "follow the system".
@@ -885,6 +900,7 @@ impl Default for ShellConfig {
             carry_launch_ticket: false,
             audio_output: AudioOutput::default(),
             mangohud: false,
+            vkbasalt: false,
             fullscreen_accel: default_fullscreen_accel(),
             marketplace_index_dir: None,
             marketplace_public_key: None,
@@ -1003,6 +1019,7 @@ mod tests {
         // applies to them: everybody's shell.json predates them.
         assert!(config.gamemode, "an older config must still get GameMode's default");
         assert!(!config.mangohud);
+        assert!(!config.vkbasalt, "vkbasalt is newer still and every existing shell.json predates it");
     }
 
     #[test]
@@ -1045,10 +1062,15 @@ mod tests {
         // reverse and a setting that only saves the value it already had would
         // pass a one-way test.
         let p = scratch("performance.json");
-        save(&p, &ShellConfig { gamemode: false, mangohud: true, ..Default::default() }).unwrap();
+        save(
+            &p,
+            &ShellConfig { gamemode: false, mangohud: true, vkbasalt: true, ..Default::default() },
+        )
+        .unwrap();
         let back = load(&p);
         assert!(!back.gamemode);
         assert!(back.mangohud);
+        assert!(back.vkbasalt);
     }
 
     #[test]

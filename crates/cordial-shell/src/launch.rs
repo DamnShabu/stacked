@@ -536,6 +536,44 @@ pub fn spawn(
         }
     }
 
+    // vkBasalt, the same shape as MangoHUD immediately above: an implicit
+    // Vulkan layer, switched on by an environment variable the loader acts on
+    // by itself, offered only when the layer is actually there. See ADR-041
+    // for why a layer that never touches engine memory is in scope under
+    // ADR-001, and `vkbasalt_layer`'s doc for why the check is not optional.
+    if config.vkbasalt {
+        match vkbasalt_layer() {
+            Some(layer) => match vkbasalt_config_path(profile_name) {
+                Ok(config_path) => match ensure_vkbasalt_config(&config_path) {
+                    Ok(()) => {
+                        command.env("ENABLE_VKBASALT", "1");
+                        command.env("VKBASALT_CONFIG_FILE", config_path.as_os_str());
+                        println!(
+                            "  shell: vkBasalt on, via {} ({})",
+                            layer.display(),
+                            config_path.display()
+                        );
+                    }
+                    // A config Cordial cannot write is a config vkBasalt cannot
+                    // read either, so turning the layer on regardless would
+                    // hand it a `VKBASALT_CONFIG_FILE` that does not exist —
+                    // reported here rather than found by whoever reads
+                    // vkBasalt's own log next.
+                    Err(e) => println!(
+                        "  shell: vkBasalt is switched on but its config at {} could not be \
+                         written ({e}); leaving it off for this launch",
+                        config_path.display()
+                    ),
+                },
+                Err(e) => println!("  shell: vkBasalt is switched on but {e}; leaving it off for this launch"),
+            },
+            None => println!(
+                "  shell: vkBasalt is switched on but its Vulkan layer is not installed; \
+                 no shaders will run. {}", vkbasalt_install_hint()
+            ),
+        }
+    }
+
     // Piped rather than inherited, and echoed straight back out by `pump`, so
     // a shell started from a terminal still narrates the load the way it always
     // has. Both streams, not stderr alone: `cordial-run` says almost everything
@@ -641,25 +679,7 @@ pub fn mangohud_install_hint() -> &'static str {
 /// `MangoHud.x86.json` and plain `MangoHud.json` depending on version and
 /// architecture, and a fixed list would go stale silently.
 pub fn mangohud_layer() -> Option<PathBuf> {
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut dirs: Vec<PathBuf> = Vec::new();
-
-    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
-        dirs.push(PathBuf::from(x).join("vulkan/implicit_layer.d"));
-    } else if let Some(h) = &home {
-        dirs.push(h.join(".local/share/vulkan/implicit_layer.d"));
-    }
-    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
-        dirs.push(PathBuf::from(x).join("vulkan/implicit_layer.d"));
-    } else if let Some(h) = &home {
-        dirs.push(h.join(".config/vulkan/implicit_layer.d"));
-    }
-    let data_dirs = std::env::var("XDG_DATA_DIRS")
-        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-    for d in data_dirs.split(':').filter(|d| !d.is_empty()) {
-        dirs.push(PathBuf::from(d).join("vulkan/implicit_layer.d"));
-    }
-    dirs.push(PathBuf::from("/etc/vulkan/implicit_layer.d"));
+    let mut dirs = vulkan_implicit_layer_dirs();
     // The Flatpak runtime extension, which mounts here rather than anywhere
     // XDG_DATA_DIRS points at.
     dirs.push(PathBuf::from(
@@ -688,6 +708,184 @@ fn find_mangohud_layer_in(dirs: &[PathBuf]) -> Option<PathBuf> {
         }
     }
     None
+}
+
+/// What to tell somebody who wants vkBasalt and has not got it.
+///
+/// Same reasoning as [`mangohud_install_hint`], and the same trap: the Flatpak
+/// extension and the host package are not interchangeable, and which one is
+/// right is decided by how Cordial was installed, not by preference.
+pub fn vkbasalt_install_hint() -> &'static str {
+    if in_flatpak() {
+        "Install the Flatpak extension: flatpak install \
+         org.freedesktop.Platform.VulkanLayer.vkBasalt"
+    } else {
+        "Install it from your distribution (Fedora: dnf install vkBasalt, Arch: pacman -S \
+         vkbasalt)."
+    }
+}
+
+/// Where vkBasalt's implicit layer manifest is, or `None` if it is not
+/// installed.
+///
+/// The same check as [`mangohud_layer`], for the same reason: `ENABLE_VKBASALT=1`
+/// is not an error when there is no vkBasalt, so a switch that does not check
+/// first is a switch that appears to work and does nothing.
+///
+/// The search path is identical to `mangohud_layer`'s, because both are
+/// implicit layers the Vulkan loader discovers the same way, and both ship a
+/// Flatpak runtime extension mounted under `/usr/lib/extensions/vulkan`.
+/// Fedora's `vkBasalt` package installs `vkBasalt.json` at
+/// `/usr/share/vulkan/implicit_layer.d` — confirmed by installing the package
+/// and reading `rpm -ql` rather than assumed — which the prefix match below
+/// finds regardless of the exact casing or architecture suffix a distribution
+/// chooses.
+pub fn vkbasalt_layer() -> Option<PathBuf> {
+    let mut dirs = vulkan_implicit_layer_dirs();
+    // The Flatpak runtime extension, which mounts here rather than anywhere
+    // XDG_DATA_DIRS points at — see `mangohud_layer`'s identical entry.
+    dirs.push(PathBuf::from("/usr/lib/extensions/vulkan/vkBasalt/share/vulkan/implicit_layer.d"));
+    find_vkbasalt_layer_in(&dirs)
+}
+
+/// The Vulkan loader's implicit-layer search path, plus the Flatpak extension
+/// mount point — shared by [`mangohud_layer`] and [`vkbasalt_layer`] so the two
+/// detectors cannot drift apart on where they look, only on what they look for.
+fn vulkan_implicit_layer_dirs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from);
+    let mut dirs: Vec<PathBuf> = Vec::new();
+
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME") {
+        dirs.push(PathBuf::from(x).join("vulkan/implicit_layer.d"));
+    } else if let Some(h) = &home {
+        dirs.push(h.join(".local/share/vulkan/implicit_layer.d"));
+    }
+    if let Some(x) = std::env::var_os("XDG_CONFIG_HOME") {
+        dirs.push(PathBuf::from(x).join("vulkan/implicit_layer.d"));
+    } else if let Some(h) = &home {
+        dirs.push(h.join(".config/vulkan/implicit_layer.d"));
+    }
+    let data_dirs = std::env::var("XDG_DATA_DIRS")
+        .unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+    for d in data_dirs.split(':').filter(|d| !d.is_empty()) {
+        dirs.push(PathBuf::from(d).join("vulkan/implicit_layer.d"));
+    }
+    dirs.push(PathBuf::from("/etc/vulkan/implicit_layer.d"));
+    dirs
+}
+
+/// The scan, split out for the same testing reason as
+/// [`find_mangohud_layer_in`]: built against a directory made for the test
+/// rather than whatever happens to be installed on the machine running it.
+fn find_vkbasalt_layer_in(dirs: &[PathBuf]) -> Option<PathBuf> {
+    for dir in dirs {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let name = name.to_string_lossy().to_ascii_lowercase();
+            if name.starts_with("vkbasalt") && name.ends_with(".json") {
+                return Some(entry.path());
+            }
+        }
+    }
+    None
+}
+
+/// vkBasalt's toggle key, chosen rather than left at upstream's default.
+///
+/// Upstream's own example ships `toggleKey = Home`, and Home is a real Roblox
+/// chat key — it moves the cursor to the start of a line while a chat box is
+/// focused. vkBasalt does not consume the key or care which window has focus:
+/// `keyboard_input_x11.cpp` polls the X11 keyboard globally with
+/// `XQueryKeymap`, so upstream's default would toggle the shader effect on
+/// every message somebody types that starts with a jump to the beginning of the
+/// line. `Scroll_Lock` is not bound by Roblox, by GTK, or by Cordial's own
+/// `fullscreen_accel` (F11 by default), and is one of the few keys nobody
+/// reaches for while typing.
+///
+/// **This only matters when the toggle can fire at all.** Read from the same
+/// source: `isKeyPressedX11` looks at `$DISPLAY` once and returns `false`
+/// forever when it is unset, which is Cordial's own Wayland backend — the
+/// primary one, per ADR-011 — with no XWayland running. On that backend the
+/// key does nothing at all and `enableOnLaunch` is the only lever there is;
+/// the choice below still matters on the X11 backend (ADR-024) and for anybody
+/// running XWayland alongside. Documented in `docs/shaders.md` rather than left
+/// for somebody to find by testing a key that appears to do nothing.
+const VKBASALT_TOGGLE_KEY: &str = "Scroll_Lock";
+
+/// The vkBasalt config Cordial writes the first time a profile turns the
+/// switch on.
+///
+/// CAS plus SMAA, which is the pairing the settings row promises: a sharpen
+/// pass and an anti-alias pass, in that order, at upstream's own documented
+/// defaults for both (`config/vkBasalt.json.in` in the vkBasalt repository,
+/// zlib licence) rather than any third party's tuned numbers — see
+/// `docs/adr` for why VineShade's own config specifically was not read for
+/// this. `enableOnLaunch = True` matters more here than it would upstream,
+/// for the reason [`VKBASALT_TOGGLE_KEY`]'s doc explains: on Cordial's default
+/// Wayland backend the toggle key cannot fire, so an effect that started
+/// disabled would need the X11 backend just to be turned on once.
+fn vkbasalt_config_template() -> String {
+    format!(
+        "# Written once by Cordial when vkBasalt was first switched on for this\n\
+         # profile. Cordial never rewrites this file after this — edit the effects\n\
+         # list, the sharpening strength, or the toggle key below and it stays\n\
+         # exactly as you left it.\n\
+         #\n\
+         # Full key reference: https://github.com/DadSchoorse/vkBasalt/blob/master/config/vkBasalt.json.in\n\
+         #\n\
+         # The toggle key below only does anything when vkBasalt can see a real X11\n\
+         # keyboard (`$DISPLAY` set) -- it polls the keyboard directly rather than\n\
+         # through the window, so it does nothing on Cordial's default Wayland\n\
+         # backend with no XWayland running. See docs/shaders.md.\n\
+         \n\
+         effects = cas:smaa\n\
+         \n\
+         toggleKey = {VKBASALT_TOGGLE_KEY}\n\
+         enableOnLaunch = True\n\
+         \n\
+         # Contrast Adaptive Sharpening. 0.0 is barely sharpened, 1.0 is maximum.\n\
+         casSharpness = 0.4\n\
+         \n\
+         # Enhanced Subpixel Morphological Antialiasing, upstream's own defaults.\n\
+         smaaEdgeDetection = luma\n\
+         smaaThreshold = 0.05\n\
+         smaaMaxSearchSteps = 32\n\
+         smaaMaxSearchStepsDiag = 16\n\
+         smaaCornerRounding = 25\n"
+    )
+}
+
+/// Where the per-profile vkBasalt config for `profile_name` lives.
+///
+/// Inside the profile's own directory (`cordial_shell::profile::dir`), on the
+/// same footing as the engine's `appData` and the cookie store: which shaders
+/// somebody has picked is a per-account preference in the same way their
+/// pointer acceleration is not, and two profiles on one machine should not
+/// fight over one shared file.
+pub fn vkbasalt_config_path(profile_name: &str) -> Result<PathBuf, String> {
+    Ok(cordial_shell::profile::dir(profile_name)?.join("vkBasalt.conf"))
+}
+
+/// Write the generated config to `path`, but only if nothing is there yet.
+///
+/// **Never overwrites.** A config that replaced a file the user had already
+/// edited would be the settings-page equivalent of a stub that returns
+/// success: the switch would appear to respect a choice it just discarded.
+/// `create_new` is what enforces this — not a `path.exists()` check beforehand,
+/// which would leave a window between the check and the write for another
+/// launch of the same profile to land in.
+fn ensure_vkbasalt_config(path: &Path) -> std::io::Result<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    match std::fs::OpenOptions::new().write(true).create_new(true).open(path) {
+        Ok(mut file) => file.write_all(vkbasalt_config_template().as_bytes()),
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(e) => Err(e),
+    }
 }
 
 /// The command line quoted back when the client dies at once.
@@ -787,6 +985,102 @@ mod tests {
         };
         assert!(err.contains("vpn-required"), "{err}");
         assert!(err.contains("check"), "{err}");
+    }
+
+    #[test]
+    fn the_shell_actually_hands_vkbasalt_env_to_the_client() {
+        // Every other test above proves the pieces -- detection, the hint, the
+        // toggle key, the config that is never overwritten. None of them prove
+        // the thing the settings row promises: that switching it on in
+        // `shell.json` actually reaches the client's environment when a launch
+        // goes through `spawn`, which is the one path a user's toggle takes.
+        //
+        // A stub `cordial-run` on `PATH` stands in for the 115 MB engine --
+        // real for `loader_path`'s lookup, and cheap enough to run inside
+        // `cargo test --workspace` rather than behind `--ignored`, unlike
+        // `a_launch_really_starts_the_client` below.
+        let _env_guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _root_guard = crate::PROFILE_ROOT_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+        let root = std::env::temp_dir().join("cordial-vkbasalt-env-test");
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+
+        // The fake layer, so `vkbasalt_layer()` finds one and the switch is not
+        // reported as unavailable -- exactly the guard `mangohud_layer` has,
+        // exercised rather than bypassed. `vulkan_implicit_layer_dirs` joins
+        // each `XDG_DATA_DIRS` entry with `vulkan/implicit_layer.d` directly
+        // (the same shape as the real `/usr/share`), so the manifest goes
+        // straight under `root` rather than under a `share/` of its own.
+        let layer_dir = root.join("vulkan/implicit_layer.d");
+        std::fs::create_dir_all(&layer_dir).unwrap();
+        std::fs::write(layer_dir.join("vkBasalt.json"), "{}").unwrap();
+
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let capture = root.join("captured-env");
+        std::fs::write(
+            bin_dir.join(LOADER),
+            format!("#!/bin/sh\nenv > {}\n", capture.display()),
+        )
+        .unwrap();
+        std::fs::set_permissions(
+            bin_dir.join(LOADER),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+
+        let profile_root = root.join("profiles");
+        std::fs::create_dir_all(&profile_root).unwrap();
+        std::env::set_var("CORDIAL_PROFILE_ROOT", &profile_root);
+        std::env::set_var("XDG_DATA_DIRS", &root);
+        let shell_config_path = root.join("shell.json");
+        std::env::set_var("CORDIAL_SHELL_CONFIG", &shell_config_path);
+        shell_config::save(
+            &shell_config_path,
+            &crate::shell_config::ShellConfig { vkbasalt: true, ..Default::default() },
+        )
+        .unwrap();
+
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin_dir.clone()];
+        dirs.extend(std::env::split_paths(&old_path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+
+        let claim = cordial_shell::profile::acquire("vkbasalt-env-test").expect("a fresh profile is free");
+        let build = Build { apk: PathBuf::from("/nonexistent.apk"), lib_dir: PathBuf::from("/nonexistent") };
+        let result = spawn(
+            &build,
+            claim,
+            LaunchRequest { run_seconds: Some(1), join_url: None, secret_store: None },
+        );
+
+        let mut instance = result.expect("the stub loader must be found and spawned");
+        let _ = instance.child.wait();
+
+        std::env::set_var("PATH", &old_path);
+        std::env::remove_var("CORDIAL_PROFILE_ROOT");
+        std::env::remove_var("CORDIAL_SHELL_CONFIG");
+        std::env::remove_var("XDG_DATA_DIRS");
+
+        let captured = std::fs::read_to_string(&capture)
+            .unwrap_or_else(|e| panic!("the stub never ran or never wrote {}: {e}", capture.display()));
+
+        assert!(captured.contains("ENABLE_VKBASALT=1"), "{captured}");
+        let config_line = captured
+            .lines()
+            .find(|l| l.starts_with("VKBASALT_CONFIG_FILE="))
+            .unwrap_or_else(|| panic!("no VKBASALT_CONFIG_FILE in:\n{captured}"))
+            .to_string();
+        assert!(config_line.ends_with("vkBasalt.conf"), "{config_line}");
+        // And the config the client was pointed at genuinely exists -- checked
+        // before `root` is removed below, since it lives under it -- a path
+        // handed to the engine that nothing wrote would be the same failure as
+        // no variable at all, just one step further along.
+        let path_str = config_line.trim_start_matches("VKBASALT_CONFIG_FILE=");
+        assert!(Path::new(path_str).is_file(), "{path_str} was never written");
+
+        let _ = std::fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -917,6 +1211,79 @@ mod tests {
         assert!(find_mangohud_layer_in(&[missing, root.clone()]).is_some());
 
         let _ = std::fs::remove_dir_all(root.parent().expect("has a parent"));
+    }
+
+    #[test]
+    fn the_vkbasalt_hint_names_one_package_and_it_matches_how_cordial_was_installed() {
+        // Same failure mode `the_mangohud_hint_names_one_package...` guards
+        // against, for the same two packages that cannot see each other.
+        let hint = vkbasalt_install_hint();
+        if in_flatpak() {
+            assert!(hint.contains("flatpak install"), "{hint}");
+            assert!(!hint.contains("dnf install"), "{hint}");
+        } else {
+            assert!(hint.contains("dnf install"), "{hint}");
+            assert!(!hint.contains("flatpak install"), "{hint}");
+        }
+    }
+
+    #[test]
+    fn the_vkbasalt_layer_is_found_by_prefix_and_not_by_an_exact_filename() {
+        // Confirmed against the real Fedora package, which installs
+        // `vkBasalt.json` at `/usr/share/vulkan/implicit_layer.d` --
+        // `rpm -ql vkBasalt` inside the build container, not assumed -- but the
+        // prefix match is what has to hold across distributions and versions.
+        let root = std::env::temp_dir().join("cordial-vkbasalt-detect/implicit_layer.d");
+        let _ = std::fs::remove_dir_all(root.parent().expect("has a parent"));
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("VkLayer_MESA_device_select.json"), "{}").unwrap();
+
+        assert!(
+            find_vkbasalt_layer_in(&[root.clone()]).is_none(),
+            "an unrelated implicit layer must not read as vkBasalt"
+        );
+
+        std::fs::write(root.join("vkBasalt.json"), "{}").unwrap();
+        let found = find_vkbasalt_layer_in(&[root.clone()]).expect("the layer is there now");
+        assert!(found.ends_with("vkBasalt.json"), "{}", found.display());
+
+        let missing = root.join("nowhere");
+        assert!(find_vkbasalt_layer_in(&[missing, root.clone()]).is_some());
+
+        let _ = std::fs::remove_dir_all(root.parent().expect("has a parent"));
+    }
+
+    #[test]
+    fn vkbasalt_toggle_key_is_not_a_key_roblox_chat_uses() {
+        // The whole reason upstream's own `Home` default was not kept: it is a
+        // real Roblox chat key (cursor to start of line), and vkBasalt polls
+        // the keyboard globally rather than through the focused window, so
+        // typing in chat would have toggled the effect. Pinned so nobody
+        // reintroduces Home while simplifying the config template.
+        assert_ne!(VKBASALT_TOGGLE_KEY, "Home");
+        assert_eq!(VKBASALT_TOGGLE_KEY, "Scroll_Lock");
+    }
+
+    #[test]
+    fn the_generated_vkbasalt_config_is_never_overwritten() {
+        // The whole point of `ensure_vkbasalt_config`: a user who has edited
+        // their config must not have it silently replaced the next time the
+        // switch happens to be read at launch.
+        let dir = std::env::temp_dir().join("cordial-vkbasalt-config-test");
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("vkBasalt.conf");
+
+        ensure_vkbasalt_config(&path).expect("first write succeeds");
+        let generated = std::fs::read_to_string(&path).unwrap();
+        assert!(generated.contains("effects = cas:smaa"));
+        assert!(generated.contains(VKBASALT_TOGGLE_KEY));
+
+        std::fs::write(&path, "# a user's own config\neffects = fxaa\n").unwrap();
+        ensure_vkbasalt_config(&path).expect("second call must not fail");
+        let after = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(after, "# a user's own config\neffects = fxaa\n", "the user's edit must survive");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     /// Everything the chooser row does, minus the click.

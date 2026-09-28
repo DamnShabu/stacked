@@ -860,6 +860,60 @@ fn build_performance_group(
     }
     group.add(&mangohud);
 
+    // Same shape as the MangoHUD row immediately above, for the same reason:
+    // an implicit Vulkan layer Cordial does not implement, so the switch is
+    // only offered when the layer is actually there. See
+    // `launch::vkbasalt_layer` and ADR-041.
+    let vkbasalt_layer = crate::launch::vkbasalt_layer();
+    let vkbasalt = adw::SwitchRow::builder()
+        .title("Shaders (vkBasalt)")
+        .subtitle(match &vkbasalt_layer {
+            Some(_) => {
+                "Sharpening and anti-aliasing, drawn over the game by vkBasalt's Vulkan layer."
+                    .to_string()
+            }
+            // Same reason the MangoHUD row below states its own dead-switch
+            // wording inline rather than in a `detail` popover: a button
+            // inside an insensitive row cannot be pressed.
+            None => format!(
+                "Not available: vkBasalt's Vulkan layer is not installed.\n{}",
+                crate::launch::vkbasalt_install_hint()
+            ),
+        })
+        // A stale `true` in shell.json must not read as on once the layer has
+        // been uninstalled, because at launch it would not be.
+        .active(config.borrow().vkbasalt && vkbasalt_layer.is_some())
+        .sensitive(vkbasalt_layer.is_some())
+        .build();
+    vkbasalt.set_subtitle_lines(3);
+    if let Some(path) = &vkbasalt_layer {
+        let profile = config.borrow().profile.clone();
+        let config_note = match crate::launch::vkbasalt_config_path(&profile) {
+            Ok(p) => format!(
+                "Its own settings live at\n{}\nwritten the first time this switch is turned on, \
+                 and never overwritten once it exists.",
+                p.display()
+            ),
+            Err(e) => format!("Its config could not be located: {e}"),
+        };
+        vkbasalt.add_suffix(&detail(&format!(
+            "Drawn by vkBasalt's Vulkan layer, which this machine has at\n{}\n\n{}\n\nThe \
+             effects, sharpening strength and toggle key are vkBasalt's own configuration, \
+             not Cordial's.",
+            path.display(),
+            config_note
+        )));
+    }
+    {
+        let config = config.clone();
+        let config_path = config_path.clone();
+        vkbasalt.connect_active_notify(move |row| {
+            config.borrow_mut().vkbasalt = row.is_active();
+            persist(&config, &config_path);
+        });
+    }
+    group.add(&vkbasalt);
+
     group
 }
 
