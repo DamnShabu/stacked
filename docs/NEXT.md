@@ -331,6 +331,94 @@ whether the word's value ever changed — this would show whether *anything*
 ever calls `FUTEX_WAKE` on it, without the repeated-attach perturbation risk
 a sampling profiler would carry over that exact window.
 
+## Open: named the wait's own code, confirmed it is generic pool machinery, 2026-09-28 (later still)
+
+**Module+offset, via `/proc/<pid>/maps`, not disassembly.** On a frozen `Main`
+thread's full `gdb bt`, every frame maps cleanly:
+
+```
+#0  libc.so.6                          (syscall())
+#1  libroblox.so+0x29c9687             executable (r-xp) -- the real caller
+#3  libc.so.6                          (a wrong gdb heuristic guess, see below)
+#4  libroblox.so+0x29d3e1c             executable (r-xp) -- plausible next frame up
+#5  anon heap, file_offset 0x2396c0    rw-p -- NOT a return address
+#6  libroblox.so+0x2e434b0             executable (r-xp) -- unreliable past this point
+#7  anon heap, file_offset 0x2000f00   rw-p -- NOT a return address
+#8  libroblox.so+0x713ab00             rw-p (DATA segment, not code) -- NOT a return address
+```
+
+Only frames #1 and #4 are trustworthy: return addresses must point into
+executable code, and #5/#7 (writable anonymous heap) and #8 (libroblox.so's
+own writable data segment) are stack-scan artefacts from a stripped binary
+with no reliable unwind info -- the same limitation AGENTS.md already
+documents for this engine's frames. **The wait is issued from
+`libroblox.so+0x29c9687`, full stop** -- not a separate `libc++_shared.so`
+(there is none; `/proc/<pid>/maps` lists exactly one Roblox-side object,
+the single 108MB `libroblox.so`, confirming the engine statically links its
+own C++ runtime), and not any Cordial binary.
+
+**Confirmed against `build.rs`, as asked: cordial-linker-sys compiles none of
+bionic's futex users.** `third_party/mcpelauncher-linker/CMakeLists.txt`'s
+`linker` target source list is `bionic/linker/*.cpp` plus a handful of the
+port's own `core/base`/`core/liblog` helpers, `bionic_call_ifunc_resolver.cpp`,
+`async_safe_log.cpp`, and `bionic/libdl/libdl.cpp` -- no
+`pthread_cond.cpp`/`pthread_mutex.cpp`/`pthread_once.cpp`/`semaphore.cpp`, and
+no `__cxa_guard` anywhere in it. Cordial's own
+`crates/cordial-runtime/src/bionic/pthread.rs` has no raw `futex`/`syscall(`
+call either (checked directly, not inferred). This wait is not something
+Cordial builds, forwards, or could have a shim bug in.
+
+**`strace -f -tt -e trace=futex` was tried first, as suggested, and rejected
+on measurement, not guess.** Wrapping the launch stalled the whole client at
+`bootstrapTheApp_:` for over 60 real seconds where an untraced run reaches
+`Home` in under two -- a demonstrated 60x-plus slowdown from tracing every
+futex call across every thread of a ~65-thread process, unusable for
+observing a race this timing-sensitive.
+
+**Switched to a `gdb` breakpoint on the wait's own return address
+(`libroblox.so+0x29c9687`), which is genuinely cheap (a static code patch,
+not a syscall trace) -- run twice, both healthy, both replicate the same
+shape**: two "RBX Worker" peers (`A`/`B` both times) wake simultaneously at
+that exact PC. This is real and repeatable, but **it is not evidence about
+the specific `Forcing finalize` thread's own wake, and saying so would have
+been the wrong conclusion.** Correlating engine-log thread IDs the same way
+as the previous entry: in both captures the thread that actually logs
+`Forcing finalize experience coordinator` is a *third*, differently-named
+`LWP` (`"Main"`, distinct from either `A` or `B`) — the breakpoint, being
+unconditioned on the futex address argument, caught the *first* thread(s) to
+resolve *any* wait through this shared code path, which fires very early
+(before `Forcing finalize` is even logged) for what is evidently a generic,
+heavily-reused "pool worker: wait for the next job" primitive — the same
+`libroblox.so+0x29c9687` PC recurred in **36 of the ~65 threads** in one
+frozen census (every plain `"RBX Worker A"`-`"P"` slot, several `"HttpClient"`
+/ `HttpThreadPool`-adjacent names, and the `"Main"`-named finalize thread
+itself), all sharing one generic wait implementation with different objects
+as arguments. Two independent replications is enough to trust the mechanism
+(shared queue, `notify`-style multi-wake), not enough — and not the right
+instrument — to name who wakes *this specific* futex.
+
+**What would actually isolate it, not attempted this round (launch budget
+exhausted at 16/16 for this task)**: a breakpoint at the wait's *call* site
+(one frame further down, where `rdi`/`rsi` still hold the raw `futex(2)`
+arguments before the kernel is entered) with a `condition` on `$rdi` equal to
+the address recovered live from `/proc/<pid>/task/<tid>/syscall` the moment
+`Forcing finalize` is seen in the engine log — or the plain hardware
+watchpoint recommended in the previous entry, which needs no call-site
+address at all and reports the writing thread directly. Both are cheap
+(static breakpoint / debug-register trap, not syscall tracing) and were not
+reached only for lack of remaining launches.
+
+**Where the chain ends, with the evidence for it**: the wait is real, stable
+(unchanged over 89+ seconds, `docs/NEXT.md`'s previous entry), issued from
+inside `libroblox.so` through a generic thread-pool primitive that Cordial
+neither implements nor can be missing a call for (confirmed against
+`build.rs`/`CMakeLists.txt` and `bionic/pthread.rs` directly), and every
+other Cordial-observable subsystem checked across three separate frozen
+captures this task (secrets/keyring, HTTP, the AGDK looper, JNI-registered
+natives) stays idle and unimplicated. **This ends inside the engine, with no
+Cordial-visible dependency identified** — which is the answer the coordinator
+asked for in that case, not a stopping point chosen for convenience.
+
 ## Open: the startup freeze has a second failure on the other side of it, 2026-09-17
 
 Four things were measured on `4c9d1b5`, built with `just build toolbox`, all on
