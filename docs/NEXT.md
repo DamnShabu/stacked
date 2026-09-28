@@ -142,6 +142,108 @@ it was tried anyway because it was cheap and the timing-sensitivity note in
 this result — it is a real diagnostic capability (ADR-019), independent of
 whether this particular hypothesis panned out.
 
+## Open: the spinning AGDK thread is not the wait; found and named the thread that is, 2026-09-28 (later)
+
+No `perf` binary exists on this host or in the `cordial` toolbox
+(`perf_event_paranoid=2` either way), so this used repeated/targeted `gdb`
+attaches and direct `/proc/<pid>/task/<tid>/{wchan,syscall}` reads instead.
+
+**The spinning AGDK thread's own behaviour is fully explained by Cordial's own
+`BACKOFF_AFTER_PRESENTS` gate and is not itself informative.**
+`crates/cordial-runtime/src/android/looper.rs:1775-1784`: once
+`glcount::QUEUE_PRESENT >= 120` (a constant, `BACKOFF_AFTER_PRESENTS`) *and*
+the poll has come back empty enough times in a row, the zero-timeout poll
+takes a `nanosleep` branch instead of `epoll_wait` — this is the documented
+idle backoff, working as designed. Sampled the same thread (by its `ident=1`
+looper registration, i.e. the AGDK `native_app_glue` command-pipe owner) on a
+healthy client with `presents` past 120: 30/30 gdb samples land in the
+`nanosleep` branch at `looper.rs:1784`. On a frozen client, where `presents`
+is stuck at 1 and never reaches 120, the same thread is permanently in the
+`epoll_wait` branch at `looper.rs:1794` instead — not because anything is
+different about *that thread*, but because the gate it reads
+(`QUEUE_PRESENT >= 120`) can never pass while presents are stuck. This closes
+off "the spinning thread is waiting for something" as a lead on its own
+terms: it is a downstream reflection of the stall, reading a Cordial-side
+counter, not a cause.
+
+**Found and named the actual blocked thread, by correlating the engine's own
+log with `gdb`'s thread list.** The engine's FLog CSV format's third field is
+a truncated hex thread-pointer (the low 32 bits of the `pthread_t`/TLS
+address printed by `gdb`, leading zero dropped). The thread that logs
+`Forcing finalize experience coordinator with state 1` /
+`UgcExperienceController: finalize: Did not finalize due to state.` /
+`Lua app running status has been updated to true` matches, on two
+independent frozen captures (`ctrl2` and `ctrl7`, different ASLR layouts),
+one specific `LWP` — generically named `"Main"`, indistinguishable by name
+from a dozen other threads, but identifiable this way with no guessing:
+
+```
+ctrl2: engine log thread id a7fc6c0  -> gdb Thread 53 (LWP 1370557) "Main"
+ctrl7: engine log thread id a16d6c0  -> gdb Thread 53 (LWP 1427306) "Main"
+```
+
+**That thread is genuinely blocked on a futex, not spinning, in both
+captures, with an identical signature:**
+
+```
+ctrl2 (LWP 1370557): syscall 202 0x7f0b67142dcc 0x89 0x3 0x0 0x0 0xffffffff 0x7f0b0a7f9dc8 ...
+ctrl7 (LWP 1427306): syscall 202 0x7fb9a4b2244c 0x89 0x3 0x0 0x0 0xffffffff 0x7fb90a16adc8 ...
+```
+
+`syscall 202` is `SYS_futex`; `0x89` is `FUTEX_WAIT_BITSET_PRIVATE`; `val=3`;
+`timeout=NULL`; `val3(bitset)=0xffffffff` — the standard shape of an
+unconditional condition-variable wait, called through a bare `syscall()`
+(gdb frame #0, not glibc's `__syscall_cancel_arch` path), meaning this is the
+engine's own bundled wait primitive, not anything routed through Cordial's
+host-libc pthread shim (`crates/cordial-runtime/src/bionic/pthread.rs` has no
+raw `futex`/`syscall(` call anywhere in it — checked directly, this is not a
+shim bug). **On `ctrl7`, the identical syscall record — same address, same
+`val`, same `val3` — was read twice, 89 seconds apart, with nothing in
+between.** Not a fast retry loop that happens to look the same on two
+snapshots: the same single syscall, unresumed, for at least 89 seconds. gdb's
+own backtrace for this thread is otherwise all bare `libroblox.so` offsets
+(`??`), so no more than this can be said about what object it is without
+disassembling the engine, which AGENTS.md forbids.
+
+**A second, independent discriminator, from the real-Android trace**: every
+`SingleSurfaceApp` init cycle logs a `Register rendering frequency during
+startup.` / `Restoring rendering frequency to normal.` pair
+(`docs/traces/waydroid-roblox-startup.log.gz:1085,1304`; this pair exists on
+real Android too and is unrelated to any freeze there, since real Android and
+Sober essentially never hit `Forcing finalize` at all). **Healthy Cordial
+runs log this pair twice** (once per init cycle, matching the two-cycle
+startup); **frozen runs log it exactly once** and never again. This is
+consistent with, not independent of, the destructor-never-fires finding
+already recorded above — cycle two's own init sequence, gated behind the
+finalize retry succeeding, never gets far enough to register its own
+frequency pair — but it is a second, cheaply-checked marker for the same
+divergence that does not need a debugger.
+
+**mocktail was checked and does not model this.** Nothing under
+`~/Projects/mocktail` references `SingleSurfaceApp`'s startup finalize path;
+its one hit for these terms (`tests/network_readiness_gate_test.sh`) is a
+game-*join* validator fixture, a different stage entirely, and its own
+`UgcExperienceController: finalized` line there is the terminal, successful
+case with no retry modelled.
+
+**Where this leaves it**: the wait is confirmed real (not a busy spin dressed
+up as one), confirmed stable across 89+ seconds with zero spurious wake, and
+confirmed to be the engine's own internal wait primitive rather than
+anything in Cordial's pthread shim. What it is waiting for, and who holds the
+other end, is not observable without either disassembling `libroblox.so`
+(ruled out) or a source-level comparison this session did not have — the
+Java/C++ classes involved (`SingleSurfaceApp`, `UgcExperienceController`) are
+Roblox's own, not documented in `docs/traces/` beyond log-line order. No fix
+is proposed this round because none of the mechanisms tried are load-bearing
+on it; shipping one anyway would be a guess. **Next measurement, if someone
+continues this**: a single, minimally-perturbing `gdb` watchpoint on the
+futex word's exact address (already known from `/proc/.../syscall`, no
+search needed) set the instant a fresh launch's PID exists, left running
+un-attached until the 0.9-1.5s divergence window, then one attach to read
+whether the word's value ever changed — this would show whether *anything*
+ever calls `FUTEX_WAKE` on it, without the repeated-attach perturbation risk
+a sampling profiler would carry over that exact window.
+
 ## Open: the startup freeze has a second failure on the other side of it, 2026-09-17
 
 Four things were measured on `4c9d1b5`, built with `just build toolbox`, all on
