@@ -26,6 +26,22 @@
 //! the session notes this change shipped with: a direct trace of every guest
 //! `dlopen`/`dlsym` call recorded zero requests naming mimalloc, so linking it
 //! in is necessary but was not, on its own, observed to be sufficient.
+//!
+//! **Now known why, rather than merely observed: the engine never needed to
+//! ask.** [ADR-040](../../../../docs/adr/ADR-040-the-engine-already-runs-mimalloc.md)
+//! establishes, by reading `libroblox.so`'s own strings and by running it and
+//! reading its log, that mimalloc is statically linked *into the engine
+//! itself* — `[DFLog::Mimalloc] Mimalloc integration detected` prints
+//! unconditionally, roughly 1.15 s into every run, with no dependency on
+//! anything Cordial provides. `malloc`, `free` and the rest of that family are
+//! not even present in `libroblox.so`'s dynamic symbol table, as an import or
+//! an export: the engine's C++ calls them directly against its own compiled-in
+//! implementation, which is why nothing here was ever going to see a `dlopen`
+//! for this file. This module is not wrong to exist — it is a faithful answer
+//! to "what if the engine asks" — but the honest status is that there is
+//! nothing left to ask for, and `CORDIAL_ENGINE_ALLOCATOR`-shaped feature that
+//! would pick between "the engine's malloc" and "glibc" has no second option
+//! to pick.
 
 use std::ffi::c_void;
 
