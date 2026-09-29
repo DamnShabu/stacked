@@ -113,7 +113,20 @@ This is the single most substantial thing in mocktail that Cordial lacks.
   Do not read their file while writing ours.
 - **Prerequisite:** first establish that Cordial actually hits this. Look for
   ETC1/`VK_FORMAT_ETC2` requests or missing-format failures in a join run before
-  building anything. **Not yet established for Cordial.**
+  building anything.
+  **Partly established, 2026-09-29, on Intel (no NVIDIA hardware to hand):**
+  the engine does query `vkGetPhysicalDeviceFormatProperties` for ASTC and BC
+  directly at the signed-out landing screen (6 ASTC, 4 BC, 0 ETC2 queries in
+  one run) — so this is a real code path, not merely a compiled-in assumption
+  — and, with ASTC's answer masked to fully unsupported, TM2 selection and
+  shader-module count were unaffected. That is evidence *against* this task's
+  original framing ("shader translation for NVIDIA so TM2 works"), not for it.
+  See [docs/analysis/nvidia-texture-manager2.md](docs/analysis/nvidia-texture-manager2.md)
+  and [ADR-042](docs/adr/ADR-042-texture-format-query-observability.md). What
+  remains open: in-game (as opposed to landing-screen) behaviour, and whether
+  a real NVIDIA driver's `VK_FORMAT_ETC2_*` answers differ from what the mask
+  assumes. No transcoder has been built; T3 stays unstarted pending either of
+  those.
 
 ### T4. ANGLE fallback path
 
@@ -590,6 +603,14 @@ Vendoring detex before knowing that is the same mistake mimalloc nearly was.
 which `VK_FORMAT_*` the engine requests and whether any are refused. If ETC
 formats reach the driver, detex earns its place; if the engine transcodes to DXT
 itself, it does not.
+
+**A first pass at this measurement landed 2026-09-29** (Intel only, no NVIDIA
+to hand): the engine does reach the driver for ASTC and BC format properties at
+the landing screen, on every request seen the driver answered "supported" —
+Intel's Xe-LP hardware natively decodes both. ETC2 was never queried in that
+window. See [docs/analysis/nvidia-texture-manager2.md](docs/analysis/nvidia-texture-manager2.md).
+detex's place in this decision is unchanged: nothing has yet shown a format the
+driver refuses, on any hardware this project has access to.
 
 ## JNI surface diff — 24 classes mocktail names that Cordial does not
 
