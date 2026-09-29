@@ -3,29 +3,29 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Cordial — Open-Source Roblox for Linux | Sober Alternative</title>
-<meta name="description" content="Cordial is an open-source Roblox client for Linux, GPL-3.0 and fully auditable. Runs Roblox natively with no Wine, no emulator and no Android container. A free and open-source alternative to Sober.">
-<link rel="canonical" href="https://luohoa97.github.io/cordial/">
-<meta property="og:title" content="Cordial — Open-Source Roblox for Linux">
+<title>Stacked — Open-Source Roblox for Linux | Sober Alternative</title>
+<meta name="description" content="Stacked is an open-source Roblox client for Linux, a fork of Cordial, GPL-3.0 and fully auditable. Runs Roblox natively with no Wine, no emulator and no Android container. A free and open-source alternative to Sober.">
+<link rel="canonical" href="https://damnshabu.github.io/stacked/">
+<meta property="og:title" content="Stacked — Open-Source Roblox for Linux">
 <meta property="og:description" content="An open-source, GPL-3.0 Roblox client for Linux. Native, no Wine, no emulator, no Android container.">
 <meta property="og:type" content="website">
-<meta property="og:url" content="https://luohoa97.github.io/cordial/">
+<meta property="og:url" content="https://damnshabu.github.io/stacked/">
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="favicon.svg">
 <script type="application/ld+json">
 {
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
-  "name": "Cordial",
-  "alternateName": "Cordial Roblox Linux client",
+  "name": "Stacked",
+  "alternateName": "Stacked Roblox Linux client",
   "description": "An open-source Roblox client for Linux. Runs Roblox's official Android build natively, with no Wine, no emulator and no Android container. GPL-3.0 and fully auditable.",
-  "url": "https://luohoa97.github.io/cordial/",
+  "url": "https://damnshabu.github.io/stacked/",
   "applicationCategory": "GameApplication",
   "operatingSystem": "Linux",
   "license": "https://www.gnu.org/licenses/gpl-3.0.html",
   "isAccessibleForFree": true,
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
-  "codeRepository": "https://github.com/luohoa97/cordial",
+  "codeRepository": "https://github.com/DamnShabu/stacked",
   "programmingLanguage": ["Rust", "C++"]
 }
 </script>
@@ -92,52 +92,62 @@
 <div class="wrap">
 
   <header>
-    <img src="cordial.svg" alt="">
+    <img src="favicon.svg" alt="">
     <h1>Open-source Roblox for Linux</h1>
-    <p class="tag">Cordial runs Roblox natively. No Wine, no emulator, no Android container.</p>
+    <p class="tag">Stacked runs Roblox natively. No Wine, no emulator, no Android container.</p>
     <a class="cta" href="#install">Install</a>
     <span class="under">Flatpak · x86-64 · needs a Vulkan GPU</span>
   </header>
 
   <p>
-    Cordial runs Roblox’s official Android build natively on your machine —
+    Stacked runs Roblox’s official Android build natively on your machine —
     no Wine, no emulator, no Android container. It is
     <strong>GPL-3.0 and fully auditable</strong>: every line of what runs on
     your machine is published, which is the part most Linux Roblox clients
-    cannot say.
+    cannot say. It is a fork of
+    <a href="https://github.com/luohoa97/cordial">Cordial</a>.
   </p>
 
   <p class="n">
-    <strong>Cordial fetches the Roblox build for you.</strong> It ships no
-    Roblox code and never will, but first run has one button — <strong>Download
-    Roblox</strong> — and that is the whole of it. If Sober has already
-    downloaded the same build, Cordial uses that copy where it lies rather than
-    fetching it again; otherwise it downloads from a public APK mirror and
-    verifies that Roblox's own signing certificate signed those exact bytes
-    before installing. You can still point it at an APK yourself.
+    <strong>It is a command, not an app window.</strong> <code>stacked</code>
+    starts Roblox, and the only window it opens is the game’s own. Profiles,
+    settings, Roblox versions and plugins are subcommands —
+    <code>stacked help</code> lists them — and errors are printed to the
+    terminal rather than shown in a dialog.
   </p>
 
-  <p class="under"><a href="compare.html">How Cordial compares to Sober, mocktail and Waydroid</a> &mdash; including where they are better.</p>
+  <p class="n">
+    <strong>Stacked fetches the Roblox build for you.</strong> It ships no
+    Roblox code and never will, but <code>stacked install</code> is the whole
+    of getting one. If Sober has already
+    downloaded the same build, Stacked uses that copy where it lies rather than
+    fetching it again; otherwise it downloads from a public APK mirror and
+    verifies that Roblox's own signing certificate signed those exact bytes
+    before installing. You can still point it at an APK yourself, with
+    <code>stacked config set roblox.apk PATH</code>.
+  </p>
+
+  <p class="under"><a href="compare.html">How Stacked compares to Sober, mocktail and Waydroid</a> &mdash; including where they are better.</p>
 
 <h2>What you get</h2>
 
   <div class="card">
     <h3>Profiles</h3>
     <p>Separate sign-ins, settings and caches. Each one is locked to a single
-       running instance, so two windows can’t corrupt each other’s data.</p>
+       running instance, so two clients can’t corrupt each other’s data.</p>
   </div>
   <div class="card">
     <h3>Plugins</h3>
     <p>Discord presence, custom textures and sounds, and more. A plugin never
-       gets a socket or a file — it asks, and Cordial does it.</p>
+       gets a socket or a file — it asks, and Stacked does it.</p>
   </div>
   <div class="card">
     <h3>Settings that tell you what happened</h3>
     <p>Every Roblox flag you set, and every conflict between them, printed at
-       startup. No config file with a “don’t edit this by hand” warning at the top.</p>
+       startup. <code>stacked config</code> lists every setting and what it is set to.</p>
   </div>
 
-  <h2 id="compare">Cordial vs Sober vs Waydroid</h2>
+  <h2 id="compare">Stacked vs Sober vs Waydroid</h2>
 
   <p class="n">
     Written to be useful rather than flattering. Sober is a good client and is
@@ -147,19 +157,19 @@
 
   <table>
     <tr>
-      <td colspan="2"><strong>Cordial</strong></td>
+      <td colspan="2"><strong>Stacked</strong></td>
     </tr>
     <tr><td class="n">Source</td><td><strong>Open, GPL-3.0.</strong> Every line auditable.</td></tr>
     <tr><td class="n">How</td><td>Native. AOSP bionic linker, a bionic/glibc shim, a JNI VM in place of Android’s.</td></tr>
     <tr><td class="n">Extensible</td><td>Yes — a plugin API with brokered capabilities. No plugin gets a socket or a file descriptor.</td></tr>
-    <tr><td class="n">Gets the build</td><td>You supply it, or it reads Sober’s copy.</td></tr>
-    <tr><td class="n">Maturity</td><td>Younger, and rougher. See the status page before installing.</td></tr>
+    <tr><td class="n">Gets the build</td><td><code>stacked install</code> downloads it and checks Roblox’s signature, or reads Sober’s copy.</td></tr>
+    <tr><td class="n">Maturity</td><td>Younger, and rougher, and a fork. See the status page before installing.</td></tr>
 
     <tr><td colspan="2" style="padding-top:1.2rem"><strong>Sober</strong></td></tr>
     <tr><td class="n">Source</td><td><strong>Not available.</strong> <code>vinegarhq/sober</code> is an issue tracker; the client itself is not published.</td></tr>
     <tr><td class="n">How</td><td>Native, by its own account. Architecture not described in detail.</td></tr>
     <tr><td class="n">Extensible</td><td>FastFlags, no plugin API.</td></tr>
-    <tr><td class="n">Gets the build</td><td>Downloads it for you. This is the thing it does that Cordial does not.</td></tr>
+    <tr><td class="n">Gets the build</td><td>Downloads it for you.</td></tr>
     <tr><td class="n">Maturity</td><td>Mature and widely used.</td></tr>
 
     <tr><td colspan="2" style="padding-top:1.2rem"><strong>Waydroid</strong></td></tr>
@@ -173,32 +183,39 @@
   <p class="n">
     The short version: <strong>Waydroid</strong> runs Android and Roblox happens
     to be in it. <strong>Sober</strong> runs Roblox and does not show you how.
-    <strong>Cordial</strong> runs Roblox and shows you all of it.
+    <strong>Stacked</strong> runs Roblox and shows you all of it.
   </p>
 
   <h2 id="install">Install</h2>
 
-  <pre><code>flatpak remote-add --if-not-exists --no-gpg-verify \
-    cordial https://luohoa97.github.io/cordial/repo
+  <p class="n">
+    <strong>Not published yet.</strong> This is the command once the Flatpak
+    remote is up; until then it fails, and building from source is the way in.
+  </p>
 
-flatpak install cordial io.github.luohoa97.Cordial</code></pre>
+  <pre><code>flatpak remote-add --if-not-exists --no-gpg-verify \
+    stacked https://damnshabu.github.io/stacked/repo
+
+flatpak install stacked io.github.damnshabu.Stacked
+flatpak run io.github.damnshabu.Stacked install
+flatpak run io.github.damnshabu.Stacked</code></pre>
 
   <p class="n">
-    Then launch it, sign in, and press play. Nothing from Roblox is bundled or
-    redistributed — Cordial downloads the official build to your machine and
-    never re-serves it.
+    The third line fetches Roblox, the fourth starts it, and then you sign in
+    and play. Nothing from Roblox is bundled or redistributed — Stacked
+    downloads the official build to your machine and never re-serves it.
   </p>
 
   <p class="n">
     One thing to know first: if your account uses a <strong>passkey</strong> for
     two-factor, you cannot sign in yet. That is a missing piece in WebKitGTK
-    rather than something Cordial can work around.
-    <a href="https://github.com/luohoa97/cordial#status">Full status on GitHub</a>.
+    rather than something Stacked can work around.
+    <a href="https://github.com/DamnShabu/stacked#readme">Full status on GitHub</a>.
   </p>
 
   <footer>
     <p>
-      <a href="https://github.com/luohoa97/cordial">Source, issues and documentation on GitHub</a>
+      <a href="https://github.com/DamnShabu/stacked">Source, issues and documentation on GitHub</a>
     </p>
     <p>
       GPL-3.0. Not affiliated with, endorsed by, or connected to Roblox Corporation.
@@ -207,46 +224,5 @@ flatpak install cordial io.github.luohoa97.Cordial</code></pre>
 
 </div>
 
-<script>
-// Frostbite: the same page wearing the inverted palette, on two days a year.
-//
-// Client-side and hardcoded on purpose. The page is static and the switch is
-// a date comparison, so there is nothing to build, nothing to schedule and
-// nothing to deploy on the day -- and if scripting is off, the page is simply
-// Cordial, which is the correct fallback for a joke.
-//
-// Nothing polls. This runs once on load and never again: a timer for
-// something that changes twice a year would be a wakeup for no observable
-// benefit, and a visitor who leaves the tab open across midnight seeing the
-// old name is not a bug worth a setInterval.
-//
-// The name changes here and in the title, and the gradient inverts. What does
-// NOT change is anything anyone might quote: the install command, the app id,
-// the flatpak remote, the repository name. Renaming those would turn a joke
-// into a broken instruction.
-(function () {
-  // ?brand=frostbite previews it at any time, matching CORDIAL_BRAND on the
-  // client. Without it, looking at this means changing the machine's clock,
-  // which is a bad thing to ask of anyone for a joke.
-  var forced = /[?&]brand=frostbite\b/i.test(location.search);
-  var now = new Date();                       // local time: the visitor's calendar
-  var m = now.getMonth() + 1, d = now.getDate();
-  var frostbite = forced || (m === 4 && d === 1) || (m === 12 && d === 21);
-  if (!frostbite) return;
-
-  document.title = document.title.replace(/^Cordial/, 'Frostbite');
-  document.querySelectorAll('h1').forEach(function (h) {
-    if (h.textContent.trim() === 'Cordial') h.textContent = 'Frostbite';
-  });
-
-  // The exact per-channel inversion of the mango gradient, which is why the
-  // two read as twins rather than as a recolour:
-  //   #FF1B6B -> #00E494   #FF7A18 -> #0085E7   #B4E600 -> #4B19FF
-  var css = document.createElement('style');
-  css.textContent = ':root{--brand-a:#00E494;--brand-b:#0085E7;--brand-c:#4B19FF;}';
-  document.head.appendChild(css);
-  document.documentElement.setAttribute('data-brand', 'frostbite');
-})();
-</script>
 </body>
 </html>

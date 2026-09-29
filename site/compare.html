@@ -3,13 +3,13 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Roblox on Linux compared: Cordial, Sober, mocktail and Waydroid</title>
-<meta name="description" content="An honest comparison of the ways to run Roblox on Linux in 2026 — Cordial, Sober, mocktail and Waydroid — written by Cordial's maintainers, including where the others are better.">
-<link rel="canonical" href="https://luohoa97.github.io/cordial/compare.html">
-<meta property="og:title" content="Roblox on Linux compared: Cordial, Sober, mocktail and Waydroid">
-<meta property="og:description" content="Which Roblox client for Linux should you use? An honest comparison, including where Cordial loses.">
+<title>Roblox on Linux compared: Stacked, Sober, mocktail and Waydroid</title>
+<meta name="description" content="An honest comparison of the ways to run Roblox on Linux in 2026 — Stacked, Sober, mocktail and Waydroid — written by Cordial's maintainers and carried into Stacked, a fork of it, including where the others are better.">
+<link rel="canonical" href="https://damnshabu.github.io/stacked/compare.html">
+<meta property="og:title" content="Roblox on Linux compared: Stacked, Sober, mocktail and Waydroid">
+<meta property="og:description" content="Which Roblox client for Linux should you use? An honest comparison, including where Stacked loses.">
 <meta property="og:type" content="article">
-<meta property="og:url" content="https://luohoa97.github.io/cordial/compare.html">
+<meta property="og:url" content="https://damnshabu.github.io/stacked/compare.html">
 <meta name="twitter:card" content="summary">
 <link rel="icon" href="favicon.svg">
 <script type="application/ld+json">
@@ -20,17 +20,17 @@
     {
       "@type": "Question",
       "name": "What is the best way to run Roblox on Linux?",
-      "acceptedAnswer": { "@type": "Answer", "text": "For most people today, Sober or mocktail: both install in one command and need no manual setup. Cordial is worth choosing if you want a GPL-3.0 client you can read and extend, plugins, or two accounts side by side. Waydroid runs Roblox inside a full Android container and is the heaviest option." }
+      "acceptedAnswer": { "@type": "Answer", "text": "For most people today, Sober or mocktail: both install in one command and need no manual setup. Stacked is worth choosing if you want a GPL-3.0 client you can read and extend, plugins, or two accounts side by side. Waydroid runs Roblox inside a full Android container and is the heaviest option." }
     },
     {
       "@type": "Question",
       "name": "Is Sober open source?",
-      "acceptedAnswer": { "@type": "Answer", "text": "No. Sober is free to use and widely recommended, but it is not source-available, so it cannot be audited or forked. Cordial and mocktail are both open source." }
+      "acceptedAnswer": { "@type": "Answer", "text": "No. Sober is free to use and widely recommended, but it is not source-available, so it cannot be audited or forked. Stacked and mocktail are both open source." }
     },
     {
       "@type": "Question",
       "name": "Does Roblox on Linux need Wine or an emulator?",
-      "acceptedAnswer": { "@type": "Answer", "text": "Not any more. Cordial, Sober and mocktail all load Roblox's official Android build natively on Linux, with no Wine, no emulator and no Android container. Waydroid is the exception: it runs a full Android container." }
+      "acceptedAnswer": { "@type": "Answer", "text": "Not any more. Stacked, Sober and mocktail all load Roblox's official Android build natively on Linux, with no Wine, no emulator and no Android container. Waydroid is the exception: it runs a full Android container." }
     }
   ]
 }
@@ -97,12 +97,14 @@
 <body>
 <div class="wrap">
 
-<p><a href="./">&larr; Cordial</a></p>
+<p><a href="./">&larr; Stacked</a></p>
 
 <h1>Roblox on Linux, compared</h1>
 
-<p class="under">Written by Cordial's maintainers, in August 2026. It says where
-the alternatives are better than Cordial, because a comparison that does not is
+<p class="under">Written by the maintainers of Cordial, which Stacked is forked
+from, in August 2026, and carried over with the name changed; the claims about
+the client were measured on Cordial and have not been re-measured on Stacked.
+It says where the alternatives are better, because a comparison that does not is
 worth nothing to the person reading it and everybody can tell.</p>
 
 <h2>The short answer</h2>
@@ -111,11 +113,11 @@ worth nothing to the person reading it and everybody can tell.</p>
 <p><strong>If you just want to play today:</strong> <a href="https://sober.vinegarhq.org/">Sober</a>
 or <a href="https://github.com/komaruworld/mocktail">mocktail</a>. Both install in one
 command and neither asks you to supply anything.</p>
-<p><strong>If you want a client you can read, audit and extend:</strong> Cordial or
+<p><strong>If you want a client you can read, audit and extend:</strong> Stacked or
 mocktail. Sober is not source-available.</p>
-<p><strong>If you want plugins, or two accounts open at once:</strong> Cordial. Nothing
+<p><strong>If you want plugins, or two accounts open at once:</strong> Stacked. Nothing
 else has either.</p>
-<p><strong>If you need voice chat or a controller:</strong> mocktail. Cordial has
+<p><strong>If you need voice chat or a controller:</strong> mocktail. Stacked has
 neither yet.</p>
 </div>
 
@@ -131,45 +133,49 @@ trick in C++. It is on Flathub, in the AUR, and in DNF and APT repositories. It
 has shipped voice chat, controller input, audio device selection, and an update
 system that launches a new Roblox build twice in isolation before trusting it.</p>
 
-<p><strong>Cordial</strong> is GPL-3.0, Rust over a C++ runtime, and the same
-native approach. It is the only one with a plugin system, and the only one that
+<p><strong>Stacked</strong> is a fork of Cordial: GPL-3.0, Rust over a C++
+runtime, and the same native approach, started from the command line rather
+than a launcher window. It is the only one with a plugin system, and the only one that
 runs two accounts side by side in separate profiles.</p>
 
 <p><strong>Waydroid</strong> is not a Roblox client. It is a full Android
 container, and Roblox is one app you can run inside it. Heavier, more moving
 parts, and the general-purpose answer rather than the specific one.</p>
 
-<h2>Where Cordial is behind, specifically</h2>
+<h2>Where Stacked is behind, specifically</h2>
 
 <div class="card">
 <p><strong>Installing it is harder.</strong> Sober and mocktail are one command
-from Flathub. Cordial needs a Flatpak remote that is <em>not signed</em>, and you
-have to supply Roblox's Android build yourself — usually by installing Sober and
-letting Cordial read the APK Sober downloaded.</p>
+from Flathub. Stacked's Flatpak remote is <em>not signed</em> and not yet
+published, and fetching Roblox is a terminal command, <code>stacked install</code>,
+rather than a button.</p>
+<p><strong>No launcher window.</strong> Everything except the game is a
+subcommand, and errors are printed to the terminal it was started from.</p>
 <p><strong>No voice chat, and no controller support.</strong> mocktail has both.</p>
 <p><strong>A startup freeze on roughly a third of launches</strong>, measured
 over eighty runs rather than estimated. The client reaches the home page,
 presents a frame or two and stops; relaunching is the only remedy today. It is
 the top open bug and it is written up in full.</p>
 <p><strong>Fewer people.</strong> mocktail has had nine contributors this month
-and a public issue tracker with real users in it. Cordial is mostly one person.</p>
+and a public issue tracker with real users in it. Stacked is a fork with fewer
+still.</p>
 </div>
 
-<h2>Where Cordial is ahead, specifically</h2>
+<h2>Where Stacked is ahead, specifically</h2>
 
 <div class="card">
 <p><strong>Typing in Roblox text boxes works.</strong> The engine deliberately
 stops drawing a focused text box's contents and expects the platform to draw
-them — that is what Android's own <code>EditText</code> does. Cordial places a
+them — that is what Android's own <code>EditText</code> does. Stacked places a
 real GTK text field on the box, and covers it with a thirty-six assertion
 end-to-end test that drives real keystrokes. mocktail's equivalent is open as
 issue #68, and Sober's has been open since 2025.</p>
 <p><strong>Plugins, with capability grants per profile.</strong> A plugin is
-given effects rather than channels — it can ask Cordial to set your Discord
+given effects rather than channels — it can ask Stacked to set your Discord
 presence; it never gets the socket.</p>
 <p><strong>Two accounts at once</strong>, in separate profiles with separate
 storage, settings and plugin permissions.</p>
-<p><strong>It does not lie to the engine.</strong> When Cordial cannot answer
+<p><strong>It does not lie to the engine.</strong> When Stacked cannot answer
 something Roblox asks for, it reports failure rather than a plausible-looking
 success, and prints a per-run list of everything that went unanswered. A stub
 that returns success sends the engine off to fail somewhere unrelated.</p>
@@ -183,7 +189,7 @@ looked conclusive and did not replicate.</p>
 <p>These projects are ahead of each other on different axes.
 <strong>mocktail is ahead on everything a user touches</strong> — installing it,
 feature breadth, the number of people working on it.
-<strong>Cordial is ahead on everything a maintainer touches</strong> — the
+<strong>Stacked is ahead on everything a maintainer touches</strong> — the
 fidelity of the platform layer, the refusal to fake an answer, the
 instrumentation, and the written record of what was believed and then
 disproved.</p>
@@ -193,10 +199,10 @@ or Sober. If you are choosing something to build on, read both and pick the one
 whose code you would rather be inside.</p>
 
 <p class="under">Corrections welcome — if something here is out of date or
-unfair to another project, <a href="https://github.com/luohoa97/cordial/issues">open an
+unfair to another project, <a href="https://github.com/DamnShabu/stacked/issues">open an
 issue</a> and it will be fixed. That includes the projects being compared.</p>
 
-<p><a class="cta" href="./">Cordial &rarr;</a></p>
+<p><a class="cta" href="./">Stacked &rarr;</a></p>
 
 </div>
 </body>

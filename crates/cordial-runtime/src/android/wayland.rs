@@ -389,8 +389,11 @@ const TEXT_INPUT_COMMIT: u32 = 7;
 // right-button camera drag both are on a desktop: the cursor stops moving,
 // stops being able to leave the window, and the client is fed relative motion
 // instead. Confinement — the other half of this protocol — keeps the cursor
-// visible inside a region and is not what either wants, so `confine_pointer`
-// is declared for the method count and never sent.
+// visible inside a region and is not what either wants. It is what fullscreen
+// wants, though: a cursor that can wander onto a second monitor while the game
+// covers the first is a click on the desktop instead of on the menu, so
+// `confine_pointer` is sent while the window is fullscreen and nothing is
+// asking for the lock. See `WaylandWindow::sync_pointer_lock`.
 //
 // Every signature here is `wayland-scanner private-code`'s own output over
 // `pointer-constraints-unstable-v1.xml`, not a transcription of the XML. See
@@ -420,6 +423,35 @@ static POINTER_CONSTRAINTS_INTERFACE: WlInterface = WlInterface {
 };
 
 const POINTER_CONSTRAINTS_LOCK_POINTER: u32 = 1;
+const POINTER_CONSTRAINTS_CONFINE_POINTER: u32 = 2;
+
+// ---------------------------------------------- zwp_confined_pointer_v1
+//
+// Same shape as the locked pointer less the position hint: a confined cursor
+// is still drawn and still moves, so there is nowhere to hint it back to.
+
+static CONFINED_POINTER_METHODS: [WlMessage; 2] = [
+    WlMessage { name: c"destroy".as_ptr(), signature: c"".as_ptr(), types: NO_TYPES.0.as_ptr() },
+    WlMessage {
+        name: c"set_region".as_ptr(),
+        signature: c"?o".as_ptr(),
+        types: NO_TYPES.0.as_ptr(),
+    },
+];
+static CONFINED_POINTER_EVENTS: [WlMessage; 2] = [
+    WlMessage { name: c"confined".as_ptr(), signature: c"".as_ptr(), types: NO_TYPES.0.as_ptr() },
+    WlMessage { name: c"unconfined".as_ptr(), signature: c"".as_ptr(), types: NO_TYPES.0.as_ptr() },
+];
+static CONFINED_POINTER_INTERFACE: WlInterface = WlInterface {
+    name: c"zwp_confined_pointer_v1".as_ptr(),
+    version: 1,
+    method_count: 2,
+    methods: CONFINED_POINTER_METHODS.as_ptr(),
+    event_count: 2,
+    events: CONFINED_POINTER_EVENTS.as_ptr(),
+};
+
+const CONFINED_POINTER_DESTROY: u32 = 0;
 
 // ---------------------------------------------- zwp_locked_pointer_v1
 
@@ -1139,6 +1171,11 @@ pub struct WaylandWindow {
     /// Destroying this object *is* the release — there is no "unlock" request
     /// — so this being null and the pointer being free are the same statement.
     locked_pointer: Mutex<*mut c_void>,
+    /// The live `zwp_confined_pointer_v1` while fullscreen keeps the cursor on
+    /// the window, or null. Never non-null at the same time as
+    /// `locked_pointer`: the protocol allows one constraint per surface and
+    /// seat, and a second is a protocol error that ends the connection.
+    confined_pointer: Mutex<*mut c_void>,
     /// When the current lock was asked for, so a compositor that silently
     /// declines can be reported once instead of leaving the camera dead with no
     /// explanation. `None` while no request is outstanding.
@@ -1808,6 +1845,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         pointer_constraints,
         relative_pointer: relative_pointer.unwrap_or(std::ptr::null_mut()),
         locked_pointer: Mutex::new(std::ptr::null_mut()),
+        confined_pointer: Mutex::new(std::ptr::null_mut()),
         lock_requested_at: Mutex::new(None),
         lock_inactive_since: Mutex::new(None),
         conn_fd,
@@ -3930,6 +3968,43 @@ unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, _lp: *mut c_voi
 static LOCKED_POINTER_LISTENER: LockedPointerListener =
     LockedPointerListener { locked: locked_pointer_locked, unlocked: locked_pointer_unlocked };
 
+/// Whether the compositor has answered a confine request with `confined`.
+/// Reported, never acted on: unlike a lock, a confinement that is refused or
+/// deactivated costs nothing but the confinement -- the cursor still moves and
+/// the engine still gets absolute motion -- so there is no dead camera to
+/// rescue and no state machine to drive from it.
+static POINTER_CONFINE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+unsafe extern "C" fn confined_pointer_confined(_data: *mut c_void, _cp: *mut c_void) {
+    POINTER_CONFINE_ACTIVE.store(true, Ordering::Release);
+    if super::input::trace_mouse() {
+        eprintln!("[cordial] pointer confine: compositor sent confined");
+    }
+}
+
+unsafe extern "C" fn confined_pointer_unconfined(_data: *mut c_void, _cp: *mut c_void) {
+    POINTER_CONFINE_ACTIVE.store(false, Ordering::Release);
+    if super::input::trace_mouse() {
+        eprintln!("[cordial] pointer confine: compositor sent unconfined");
+    }
+}
+
+/// `zwp_confined_pointer_v1`'s two events have the locked pointer's two
+/// signatures exactly, so the same `#[repr(C)]` shape serves both.
+static CONFINED_POINTER_LISTENER: LockedPointerListener = LockedPointerListener {
+    locked: confined_pointer_confined,
+    unlocked: confined_pointer_unconfined,
+};
+
+/// `CORDIAL_NO_FULLSCREEN_CONFINE=1` -- let the cursor leave a fullscreen
+/// window, as it did before confinement existed. The control for the
+/// behaviour, and the way out for anybody who fullscreens the game on one
+/// monitor while working on another.
+fn no_fullscreen_confine() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_FULLSCREEN_CONFINE").is_some())
+}
+
 unsafe extern "C" fn relative_pointer_motion(
     _data: *mut c_void,
     _rp: *mut c_void,
@@ -4313,6 +4388,15 @@ impl WaylandWindow {
         // duplicating a decision the engine had already made correctly.
         let want = asked;
 
+        // Confinement comes off before any lock is asked for, and goes on only
+        // after any lock has been released below. One constraint per surface:
+        // a lock requested over a live confinement is `already_constrained`,
+        // which is a protocol error and the end of the connection.
+        let confine = !want && self.fullscreen_confine_wanted();
+        if !confine {
+            self.release_confine();
+        }
+
         let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
         if want && !held {
             self.lock_pointer();
@@ -4344,6 +4428,9 @@ impl WaylandWindow {
             );
             self.release_pointer();
             *self.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
+        }
+        if confine {
+            self.confine_pointer();
         }
 
         // A compositor may decline, and the protocol gives it no way to say so
@@ -4517,6 +4604,102 @@ fn constrain_toplevel() -> bool {
         }
     }
 
+    /// Whether fullscreen should be keeping the cursor on this window right
+    /// now, with no lock in play.
+    ///
+    /// Not while one of Cordial's own dialogs or the text editor is in front:
+    /// those live on the parent surface, and a cursor confined to the canvas
+    /// subsurface below them could not reach them -- the same reason the lock
+    /// gives way to them in `sync_pointer_lock`.
+    fn fullscreen_confine_wanted(&self) -> bool {
+        !no_fullscreen_confine()
+            && self.host.0.window().is_fullscreen()
+            && !cordial_ui_in_front(self)
+    }
+
+    /// Keep the cursor inside the window, on the same surface a lock would
+    /// use. Persistent for the reason the lock is: the compositor deactivates
+    /// it on alt-tab and reactivates it on return, and that is the user's way
+    /// out, which no client may take from them.
+    ///
+    /// `INFERRED` that it holds on every compositor the lock holds on. It uses
+    /// the lock's surface choice, including the KWin toplevel workaround, and
+    /// has been checked only against the protocol and wayland-scanner's
+    /// signatures, not against a running compositor with a second monitor.
+    fn confine_pointer(&self) {
+        let mut slot = self.confined_pointer.lock().unwrap_or_else(|e| e.into_inner());
+        if !slot.is_null() {
+            return;
+        }
+        debug_assert!(
+            self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null(),
+            "confine requested over a live lock"
+        );
+        let target = if Self::constrain_toplevel() { self.parent_surface } else { self.surface };
+        // SAFETY: `pointer_constraints` and the target surface are live
+        // proxies, and `capture_pointer` is GDK's live borrowed pointer on this
+        // connection. The argument list matches `confine_pointer`'s "noo?ou"
+        // signature, with a null region meaning the whole surface.
+        let cp = unsafe {
+            (self.wl.marshal_flags)(
+                self.pointer_constraints,
+                POINTER_CONSTRAINTS_CONFINE_POINTER,
+                &CONFINED_POINTER_INTERFACE,
+                1,
+                0,
+                std::ptr::null_mut::<c_void>(),
+                target,
+                self.capture_pointer,
+                std::ptr::null_mut::<c_void>(),
+                POINTER_CONSTRAINT_LIFETIME_PERSISTENT,
+            )
+        };
+        if cp.is_null() {
+            return;
+        }
+        // SAFETY: `cp` is the proxy just created, and the listener has one
+        // slot per event `CONFINED_POINTER_INTERFACE` declares.
+        unsafe {
+            (self.wl.add_listener)(
+                cp,
+                &CONFINED_POINTER_LISTENER as *const LockedPointerListener as *const c_void,
+                std::ptr::null_mut(),
+            );
+            (self.wl.flush)(self.display);
+        }
+        *slot = cp;
+        if super::input::trace_mouse() {
+            eprintln!("[cordial] pointer confine: requested for fullscreen");
+        }
+    }
+
+    /// Let a confined cursor go. Destroying the object is the release, as it
+    /// is for the lock.
+    fn release_confine(&self) {
+        let mut slot = self.confined_pointer.lock().unwrap_or_else(|e| e.into_inner());
+        if slot.is_null() {
+            return;
+        }
+        // SAFETY: `*slot` is the live confined-pointer proxy; `destroy` has an
+        // empty signature and is sent with the destroy flag its
+        // `type="destructor"` declaration requires.
+        unsafe {
+            (self.wl.marshal_flags)(
+                *slot,
+                CONFINED_POINTER_DESTROY,
+                std::ptr::null(),
+                1,
+                WL_MARSHAL_FLAG_DESTROY,
+            );
+            (self.wl.flush)(self.display);
+        }
+        *slot = std::ptr::null_mut();
+        POINTER_CONFINE_ACTIVE.store(false, Ordering::Release);
+        if super::input::trace_mouse() {
+            eprintln!("[cordial] pointer confine: released");
+        }
+    }
+
 }
 
 /// Every input to the pointer-lock decision, for the control socket.
@@ -4544,7 +4727,8 @@ pub(crate) fn pointer_lock_report() -> String {
     };
     format!(
         "ok requested={} confirmed={} focused={} engine={engine} \
-         awaiting_drag_unlock={} shift_in_drag={} on_canvas={} buttons={}",
+         awaiting_drag_unlock={} shift_in_drag={} on_canvas={} buttons={} \
+         confine_requested={} confined={}",
         POINTER_LOCK_REQUESTED.load(Ordering::Acquire),
         POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
         match current().and_then(|w| w.host.0.focused()) {
@@ -4556,6 +4740,10 @@ pub(crate) fn pointer_lock_report() -> String {
         SHIFT_DURING_RIGHT_DRAG.load(Ordering::Acquire),
         POINTER_ON_CANVAS.load(Ordering::Acquire),
         LAST_POINTER_BUTTONS.load(Ordering::Relaxed),
+        current().is_some_and(|w| {
+            !w.confined_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null()
+        }),
+        POINTER_CONFINE_ACTIVE.load(Ordering::Acquire),
     )
 }
 
@@ -4857,7 +5045,7 @@ static HELD_KEYS: Mutex<Vec<u32>> = Mutex::new(Vec::new());
 /// by removing a feature, which is a poor trade when the two are the same
 /// mechanism seen from different ends.
 ///
-/// Read once and cached, in the same spirit as `branding::current` -- the
+/// Read once and cached, like the other switches in this file -- the
 /// answer cannot change within a run and a per-keystroke `getenv` on the input
 /// path would be a cost paid thousands of times for a value that never moves.
 fn hold_keys_unfocused() -> bool {
@@ -6405,6 +6593,9 @@ mod tests {
         assert_eq!(sig(&POINTER_CONSTRAINTS_METHODS[2]), "noo?ou", "confine_pointer");
         assert_eq!(sig(&LOCKED_POINTER_METHODS[1]), "ff", "set_cursor_position_hint");
         assert_eq!(sig(&LOCKED_POINTER_METHODS[2]), "?o", "set_region");
+        assert_eq!(sig(&CONFINED_POINTER_METHODS[1]), "?o", "confined set_region");
+        assert_eq!(sig(&CONFINED_POINTER_EVENTS[0]), "", "confined");
+        assert_eq!(sig(&CONFINED_POINTER_EVENTS[1]), "", "unconfined");
         assert_eq!(sig(&RELATIVE_POINTER_MANAGER_METHODS[1]), "no", "get_relative_pointer");
         assert_eq!(sig(&RELATIVE_POINTER_EVENTS[0]), "uuffff", "relative_motion");
 

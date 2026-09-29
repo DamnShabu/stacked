@@ -1,6 +1,6 @@
 [package]
 name = "cordial-shell"
-description = "Core shell: window, chooser and minimal settings fallback that boots before the UI plugin takes over (ADR-002)"
+description = "The stacked command-line launcher, and the GTK host the game window lives in (ADR-043)"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -14,7 +14,7 @@ name = "cordial_shell"
 path = "src/lib.rs"
 
 [[bin]]
-name = "cordial-shell"
+name = "stacked"
 path = "src/main.rs"
 
 # The in-experience web window. Off by default because it needs

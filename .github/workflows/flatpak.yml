@@ -1,10 +1,12 @@
 # Build the Flatpak and publish it as an OSTree remote on GitHub Pages, so that
 #
-#     flatpak remote-add --if-not-exists cordial \
-#         https://luohoa97.github.io/cordial/cordial.flatpakrepo
-#     flatpak install cordial io.github.luohoa97.Cordial
+#     flatpak remote-add --if-not-exists stacked \
+#         https://damnshabu.github.io/stacked/stacked.flatpakrepo
+#     flatpak install stacked io.github.damnshabu.Stacked
 #
-# installs Cordial without anyone building anything.
+# installs Stacked without anyone building anything. Not published yet: the
+# fork has not switched Pages on, so that URL 404s until it does (see
+# PUBLISH_PAGES below).
 #
 # This header used to be marked INFERRED, on the grounds that none of it had run
 # on a GitHub runner and that nobody had compiled Cordial inside the Flatpak SDK
@@ -21,14 +23,15 @@
 # `error: Invalid gpg key`. That was only discovered once a run went green and
 # the generated file existed to be added at all.
 #
-# Verified against the deployed remote, not a stand-in: `remote-add` accepted,
-# `remote-ls` returning app/io.github.luohoa97.Cordial/x86_64/master, and
-# `install` placing both cordial-shell and cordial-run in /app/bin.
+# Verified against Cordial's deployed remote, before the fork, not a stand-in:
+# `remote-add` accepted, `remote-ls` returning the app's x86_64/master ref, and
+# `install` placing both the launcher and cordial-run in /app/bin. Not
+# repeated under Stacked's id.
 #
 # The site and the repository share one Pages deployment:
 #
 #     /                      site/ — the project's web page
-#     /cordial.flatpakrepo   the remote definition
+#     /stacked.flatpakrepo   the remote definition
 #     /repo/                 the OSTree repository
 #
 # A browser hitting the root has to get a web page, which is why the repository
@@ -45,7 +48,7 @@
 #     master   every push to main, exactly as before -- the edge channel
 #     stable   only the commit that carries a v* release tag -- the release channel
 #
-# and a plain `flatpak install cordial io.github.luohoa97.Cordial`, with no
+# and a plain `flatpak install stacked io.github.damnshabu.Stacked`, with no
 # branch named, now lands on stable rather than master, because "Update the
 # repository summary" below sets xa.default-branch once stable exists. This
 # is why the bug report that started this ("an installed release keeps
@@ -53,7 +56,7 @@
 # default there was ever going to be. Existing master-tracking installs are
 # untouched by any of this -- a remote's default branch only matters to an
 # install naming none -- and are told how to move onto stable in the README
-# and in packaging/cordial.flatpakrepo's own comment.
+# and in packaging/stacked.flatpakrepo's own comment.
 #
 # The one part of this worth writing down at length: **GitHub Pages has no
 # incremental publish.** `deploy` below replaces the whole site on every run
@@ -182,19 +185,20 @@ permissions:
 # INFERRED until somebody watches it produce a Pages tree that both an x86_64
 # and an aarch64 `flatpak install` succeed against.
 #
-# The published URL lives in packaging/cordial.flatpakrepo and is deliberately
+# The published URL lives in packaging/stacked.flatpakrepo and is deliberately
 # not derived from github.repository here: the Url a user's flatpak remembers
 # must not change under them because the repository was renamed or forked.
+# Stacked is that fork, and moved it on purpose, with the app id.
 env:
-  APP_ID: io.github.luohoa97.Cordial
-  MANIFEST: packaging/io.github.luohoa97.Cordial.yml
-  # Must name the same tree as Url in packaging/cordial.flatpakrepo -- see
+  APP_ID: io.github.damnshabu.Stacked
+  MANIFEST: packaging/io.github.damnshabu.Stacked.yml
+  # Must name the same tree as Url in packaging/stacked.flatpakrepo -- see
   # that file's own comment for why it is not derived from github.repository.
   # "Carry the stable channel forward" below reads this exact repository back
   # in mid-build, so a rename here with no matching rename there would make
   # that step silently pull from the wrong tree, or from nothing, rather than
   # fail loudly.
-  PAGES_REPO_URL: https://luohoa97.github.io/cordial/repo/
+  PAGES_REPO_URL: https://damnshabu.github.io/stacked/repo/
 
 jobs:
   build:
@@ -403,7 +407,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: .flatpak-builder/downloads
-          key: flatpak-downloads-${{ hashFiles('Cargo.lock', 'packaging/io.github.luohoa97.Cordial.yml', 'packaging/cargo-sources.json') }}
+          key: flatpak-downloads-${{ hashFiles('Cargo.lock', 'packaging/io.github.damnshabu.Stacked.yml', 'packaging/cargo-sources.json') }}
           restore-keys: flatpak-downloads-
 
       # Absent secret means an unsigned repository, and the README says so in
@@ -443,8 +447,8 @@ jobs:
 
       # `[profile.release] debug = true`, deliberately — the runtime is useless
       # to debug without symbols. Measured on a local build: cordial-run is
-      # 178 MB unstripped against 9.5 MB stripped, cordial-shell 161 MB against
-      # 5.2 MB. flatpak-builder splits that into a .Debug extension, and
+      # 178 MB unstripped against 9.5 MB stripped, and the GTK launcher that
+      # `stacked` replaced 161 MB against 5.2 MB. flatpak-builder splits that into a .Debug extension, and
       # publishing it would put roughly 325 MB of symbols into a Pages site with
       # a 1 GB limit and a 100 MB per-file limit, to be downloaded by every user
       # who never asked for them. The symbols stay in the build artefacts and in
@@ -556,7 +560,7 @@ jobs:
       # spends four paragraphs warning people about. A single-file bundle is the
       # install with no trust decision in it:
       #
-      #     flatpak install --user ./Cordial-<tag>.flatpak
+      #     flatpak install --user ./Stacked-<tag>.flatpak
       #
       # Built from the same `repo` the remote is published from, after the debug
       # extension has been dropped, so it is byte-for-byte the thing a remote
@@ -568,10 +572,10 @@ jobs:
           # Pull-request refs such as 49/merge must not become directories.
           ref="${ref//\//-}"
           # Arch-suffixed since this leg is one of two now: without it the
-          # x86_64 and aarch64 legs would both write "Cordial-${ref}.flatpak"
+          # x86_64 and aarch64 legs would both write "Stacked-${ref}.flatpak"
           # and the second upload-artifact call below would collide with the
           # first.
-          out="Cordial-${ref}-${ARCH}.flatpak"
+          out="Stacked-${ref}-${ARCH}.flatpak"
           # --arch named explicitly rather than left to build-bundle's own
           # default (the host's `uname -m`, which happens to already be
           # right here) -- this step runs on the same architecture it is
@@ -644,9 +648,8 @@ jobs:
           sparse-checkout: |
             site
             packaging/icons
-            packaging/banner.svg
-            packaging/cordial.repo
-            packaging/cordial.flatpakrepo
+            packaging/stacked.repo
+            packaging/stacked.flatpakrepo
           sparse-checkout-cone-mode: false
 
       - name: Install ostree and flatpak
@@ -899,28 +902,15 @@ jobs:
           else
             echo "site/ is absent or empty; publishing the remote without a landing page"
           fi
-          # The page's icons, copied from the ones the package and the README
-          # already use rather than duplicated into site/. There is one drawing
-          # of each and this is what keeps it that way: a second copy under
-          # site/ would be the one that goes stale, and nobody diffs an SVG.
+          # The page's icon, copied from the one the package uses rather than
+          # duplicated into site/: a second copy under site/ would be the one
+          # that goes stale, and nobody diffs an SVG. Named by role rather than
+          # by app id, so a rename of the app does not reach into the HTML.
           #
-          # Two files because they are two different pictures. The square one
-          # is the application icon, which is what a browser tab wants; the
-          # 680x480 one is the banner at the top of the README, which is what
-          # the page shows at size. Naming them by role here rather than by
-          # app-id means the rename that happened today does not reach into the
-          # HTML as well.
+          # This used to copy packaging/banner.svg as well, for the page header.
+          # That banner is Cordial's artwork, so the page shows the application
+          # icon in both places now.
           cp "packaging/icons/hicolor/scalable/apps/$APP_ID.svg" pages/favicon.svg
-          #
-          # **The source path is the banner's real name, and getting that wrong
-          # broke every Flatpak run for a day.** The commit that renamed these
-          # renamed the *destinations* here by role, exactly so a future rename
-          # would not reach the HTML -- and then left the source pointing at
-          # `packaging/icons/$APP_ID.svg`, which is the file it had just moved to
-          # `packaging/banner.svg`. The step failed with `cp: cannot stat` and
-          # took the whole Pages deploy with it. Nothing else references the
-          # banner but the README, so nothing else caught it.
-          cp packaging/banner.svg pages/cordial.svg
           mv merged pages/repo
 
           # The apt repository, downloaded above from apt.yml's latest green
@@ -938,9 +928,9 @@ jobs:
           # run. Absent until a maintainer adds RPM_GPG_PRIVATE_KEY /
           # RPM_GPG_KEY_ID -- see docs/design/rpm-repository.md -- at which
           # point yum.yml starts producing one and this step starts finding
-          # it, with no change needed here. packaging/cordial.repo is a
+          # it, with no change needed here. packaging/stacked.repo is a
           # complete, static file rather than one this step appends a key
-          # line to the way it does for cordial.flatpakrepo below: its
+          # line to the way it does for stacked.flatpakrepo below: its
           # gpgkey= is a URL, not an embedded key blob, so the file is
           # correct whether or not anything is at that URL yet -- it just
           # 404s honestly until yum.yml has actually signed something.
@@ -949,7 +939,7 @@ jobs:
           else
             echo "no dnf repository artifact available; publishing without /rpm/"
           fi
-          cp packaging/cordial.repo pages/cordial.repo
+          cp packaging/stacked.repo pages/stacked.repo
 
           # The pacman repository, downloaded above from pacman.yml's latest
           # green run. Same absent-until-secret shape as /rpm/ above -- see
@@ -975,12 +965,12 @@ jobs:
           # OSTree repository is not worth betting on that staying true.
           touch pages/.nojekyll
 
-          cp packaging/cordial.flatpakrepo pages/cordial.flatpakrepo
+          cp packaging/stacked.flatpakrepo pages/stacked.flatpakrepo
           if [ "${{ steps.gpg.outputs.signing }}" = "true" ]; then
             gpg --homedir "${{ steps.gpg.outputs.gpghome }}" \
-                --export "${{ secrets.FLATPAK_GPG_KEY_ID }}" > pages/cordial.gpg
-            printf 'GPGKey=%s\n' "$(base64 -w0 < pages/cordial.gpg)" \
-                >> pages/cordial.flatpakrepo
+                --export "${{ secrets.FLATPAK_GPG_KEY_ID }}" > pages/stacked.gpg
+            printf 'GPGKey=%s\n' "$(base64 -w0 < pages/stacked.gpg)" \
+                >> pages/stacked.flatpakrepo
           else
             # Nothing is appended, and that is not an oversight.
             #
@@ -995,7 +985,8 @@ jobs:
             #   GPGKey=      -> error: Invalid gpg key      (remote-add fails)
             #   omitted      -> accepted; gpg-verify=false,
             #                   gpg-verify-summary=false, and
-            #                   app/io.github.luohoa97.Cordial/x86_64/master lists
+            #                   the app's x86_64/master ref lists
+            #                   (on Cordial's remote, before the fork)
             #
             # So an unsigned remote is expressed by the absence of the line, and
             # the README is where "this remote is unsigned" gets said to a human

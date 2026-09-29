@@ -5,14 +5,11 @@
 blank_issues_enabled: false
 contact_links:
   - name: Where to start
-    url: https://github.com/luohoa97/cordial/blob/main/docs/NEXT.md
+    url: https://github.com/DamnShabu/stacked/blob/main/docs/NEXT.md
     about: What works, what is blocking, and what has already been ruled out. Read this first.
-  - name: Get help, or just talk to us
-    url: https://discord.gg/qJzU3Xfr9b
-    about: Getting it running, quick questions, what's being worked on. Bugs and feature requests still belong in an issue, not chat, so they don't get lost.
   - name: Security issue
-    url: https://github.com/luohoa97/cordial/security/advisories/new
+    url: https://github.com/DamnShabu/stacked/security/advisories/new
     about: Report privately rather than in a public issue.
   - name: Licence questions
-    url: https://github.com/luohoa97/cordial/blob/main/CONTRIBUTING.md#the-licence-is-settled
-    about: Cordial is GPL-3.0-or-later and that is settled — relicensing requests are closed with a link to this, not argued. A third-party notice that is wrong or missing IS a bug and does belong in an issue.
+    url: https://github.com/DamnShabu/stacked/blob/main/CONTRIBUTING.md#the-licence-is-settled
+    about: Stacked is GPL-3.0-or-later and that is settled — relicensing requests are closed with a link to this, not argued. A third-party notice that is wrong or missing IS a bug and does belong in an issue.

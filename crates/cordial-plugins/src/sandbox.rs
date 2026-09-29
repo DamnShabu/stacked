@@ -181,7 +181,7 @@ pub const MANAGED_DENO_VERSION: &str = "2.9.6";
 /// overwriting a binary that a running plugin has open.
 ///
 /// Under Flatpak this resolves inside the sandbox to
-/// `~/.var/app/io.github.luohoa97.Cordial/data/...`, which is where it has to
+/// `~/.var/app/io.github.damnshabu.Stacked/data/...`, which is where it has to
 /// be: the Flatpak deliberately takes no route to the host (see the module
 /// note on `flatpak-spawn`), so an interpreter on the host's `PATH` is
 /// invisible to it and this is the only place one can come from. Measured

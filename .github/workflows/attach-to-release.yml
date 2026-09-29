@@ -71,7 +71,7 @@ on:
           space-separated find(1) -name patterns, e.g. '*.AppImage *.deb'.
           Matched after debug packages are already excluded, which this
           workflow does unconditionally -- rpmbuild's -debuginfo and
-          -debugsource and makepkg's cordial-debug are never what a release
+          -debugsource and makepkg's stacked-debug are never what a release
           page should offer as one of a handful of downloads, and no caller
           has ever wanted them included.
         required: true
@@ -146,7 +146,7 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
               if [ -f "$notes" ]; then
                   gh release create "$GITHUB_REF_NAME" --verify-tag \
-                      --title "Cordial ${GITHUB_REF_NAME#v}" --notes-file "$notes"
+                      --title "Stacked ${GITHUB_REF_NAME#v}" --notes-file "$notes"
                   # **Announcing has to be asked for here, because publishing
                   # the release does not ask for it.** discord-release.yml
                   # listens for `release: published`, and GitHub does not

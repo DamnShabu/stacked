@@ -19,13 +19,12 @@
 //!   rather than playing silence. That is the one that looks like a crash.
 //! - No Feral GameMode, no accessibility bus.
 //!
-//! The dialog says what will happen and lets the user go ahead, because
-//! sometimes root is the only option available and Cordial's job is to be
-//! honest rather than obstructive.
-
-use libadwaita as adw;
-use libadwaita::gtk;
-use libadwaita::prelude::*;
+//! The launcher says what will happen, on stderr, and carries on, because
+//! sometimes root is the only option available and the job is to be honest
+//! rather than obstructive. `stacked` prints it on every launch as root;
+//! nothing is remembered between launches, because a warning about losing your
+//! account to a readable file is not one to make dismissible forever on a
+//! machine where it stays true.
 
 /// Whether this process is running as root.
 pub fn running_as_root() -> bool {
@@ -33,34 +32,12 @@ pub fn running_as_root() -> bool {
     unsafe { libc::geteuid() == 0 }
 }
 
-/// Ask before launching as root. `proceed` runs only if the user chooses to.
-///
-/// Nothing is remembered between launches on purpose. A warning about losing
-/// your account to a readable file is not one to make dismissible forever on a
-/// machine where it stays true.
-pub fn confirm(window: &gtk::Window, proceed: impl Fn() + 'static) {
-    let dialog = adw::AlertDialog::builder()
-        .heading("Running as root")
-        .body(
-            "Roblox will have no sound, and the engine stops when an experience \
-             starts if it cannot open an audio device.\n\n\
-             Your sign-in is also saved to a plain file instead of the keyring, \
-             so anything that can read your files can take the account.\n\n\
-             This happens because root usually has no desktop session for \
-             PipeWire and the keyring to live in. If you can run Cordial as \
-             an ordinary user, do that instead.",
-        )
-        .build();
-    dialog.add_response("cancel", "Cancel");
-    dialog.add_response("proceed", "Launch Anyway");
-    dialog.set_response_appearance("proceed", adw::ResponseAppearance::Destructive);
-    dialog.set_default_response(Some("cancel"));
-    dialog.set_close_response("cancel");
-    dialog.connect_response(None, move |d, response| {
-        d.close();
-        if response == "proceed" {
-            proceed();
-        }
-    });
-    dialog.present(Some(window));
-}
+/// What running as root will cost, for the launcher to print before it
+/// starts the client.
+pub const WARNING: &str = "\
+Running as root. Roblox will have no sound, and the engine stops when an
+experience starts if it cannot open an audio device. Your sign-in is also saved
+to a plain file instead of the keyring, so anything that can read your files
+can take the account. This happens because root usually has no desktop session
+for PipeWire and the keyring to live in; run Stacked as an ordinary user if you
+can.";

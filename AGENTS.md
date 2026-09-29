@@ -404,10 +404,12 @@ minutes later.
 
 ## Say which build you are talking about
 
-The window title is `Cordial <version> (<commit>)` -- the version from
+The window title is `Stacked <version> (<commit>)` -- the version from
 `Cargo.toml` and the commit from `git rev-parse --short=9`, stamped at compile
-time by `crates/cordial-shell/build.rs`. A release reads `Cordial 0.11.0
-(0fdbb4425)`; a build from a source drop with no git reads `Cordial 0.11.0`.
+time by `crates/cordial-shell/build.rs`. A release reads `Stacked 0.11.0
+(0fdbb4425)`; a build from a source drop with no git reads `Stacked 0.11.0`.
+`stacked --version` prints the same string. It said `Cordial` before this fork
+was renamed.
 
 **This used to be `git describe --tags --always --dirty`, and that was wrong.**
 The version and the commit are two facts, not two spellings of one: a tree whose
@@ -423,7 +425,7 @@ with the manifest.
 **`-dirty` on the commit means the binary was built from a tree with
 uncommitted changes.** It rides on the commit now rather than the version, which
 is where it belonged. Quote the full string in any report -- or better, the
-whole block from `cordial --diagnostics`, which carries it along with the
+whole block from `stacked diagnostics`, which carries it along with the
 distribution and how Cordial was installed. A build made from a working tree several
 agents were editing is otherwise indistinguishable from a committed one, which
 cost an afternoon of chasing an input regression nobody could attribute to a

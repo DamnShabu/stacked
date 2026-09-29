@@ -7,7 +7,7 @@
 //! inside the sandbox without any `--talk-name` entry, because the portal is
 //! the door Flatpak already leaves open, whereas the notification daemon's
 //! own bus name is not. That keeps this capability's cost in
-//! `io.github.luohoa97.Cordial.yml` at zero rather than one more narrow-but-present
+//! `io.github.damnshabu.Stacked.yml` at zero rather than one more narrow-but-present
 //! permission — see ADR-007 on keeping the manifest's entries few and
 //! specific.
 

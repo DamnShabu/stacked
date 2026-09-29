@@ -1,6 +1,7 @@
-# Contributing to Cordial
+# Contributing to Stacked
 
-Cordial is a runtime for a 116 MB stripped binary nobody here has the source to.
+Stacked is a fork of [Cordial](https://github.com/luohoa97/cordial), a runtime
+for a 116 MB stripped binary nobody here has the source to.
 That shapes everything about how work gets done on it, and this document is
 mostly about that method rather than about code style.
 
@@ -116,7 +117,7 @@ obfuscation-as-security.
 
 ## The licence is settled
 
-Cordial is GPL-3.0-or-later and stays that way. Requests to relicense — to MIT,
+Stacked is GPL-3.0-or-later, as Cordial is, and stays that way. Requests to relicense — to MIT,
 to Apache-2.0, to dual-licence, to carve out an exception for one downstream —
 are declined, and the issue is closed with a link to this section rather than
 argued out.
@@ -138,7 +139,7 @@ they are different questions rather than the same one wearing a hat:
 
 ## No Roblox code, ever
 
-Cordial ships no Roblox code, APK, asset or decompiled material, and never will.
+Stacked ships no Roblox code, APK, asset or decompiled material, and never will.
 Do not commit any, do not vendor any, and do not paste decompiler output into an
 issue or a comment.
 
@@ -152,41 +153,42 @@ not the tool, it is what you take away.
 Use a throwaway account, and put it on a different IP from the one your real
 account uses — a VPN is the easy way.
 
-This is not because Cordial does anything bannable. It runs the official build,
+This is not because Stacked does anything bannable. It runs the official build,
 does not touch the engine's process, and asset overlays are the same thing
 Bloxstrap and Sober already do in the open. The risk is collateral, not causal:
 enforcement at this scale is automated, it runs in waves, and accounts that share
 an address get associated with each other. If a test account is ever caught in a
-wave — for any reason, including one that has nothing to do with Cordial — you do
+wave — for any reason, including one that has nothing to do with Stacked — you do
 not want the account you actually care about sitting next to it.
 
-Cordial cannot make that decision for you and does not try to hide anything from
+Stacked cannot make that decision for you and does not try to hide anything from
 anyone. Testing pre-release software that loads a game client is simply not
 something to do on an account you would be upset to lose.
 
 The same goes for reporting: if you hit an account problem while testing, say so
-in the issue. A ban that turns out to be Cordial's fault is the single most
+in the issue. A ban that turns out to be Stacked's fault is the single most
 important bug this project could have, and it is only findable if people mention
 it.
 
 ## Practical
 
-Besides Clang, `crates/cordial-shell` (the core shell — window, chooser,
-minimal settings; see [ADR-002](docs/adr/ADR-002-core-shell-and-ui-handoff.md)
-and [ADR-011](docs/adr/ADR-011-wayland-and-libadwaita.md)) needs GTK4 ≥ 4.10
-and libadwaita ≥ 1.4 development headers on `PKG_CONFIG_PATH`, because
+Besides Clang and CMake, `crates/cordial-shell` (the `stacked` launcher and the
+game window `cordial-run` opens; see
+[ADR-043](docs/adr/ADR-043-the-launcher-is-a-command-line.md) and
+[ADR-011](docs/adr/ADR-011-wayland-and-libadwaita.md)) needs GTK4 ≥ 4.12
+and libadwaita ≥ 1.5 development headers on `PKG_CONFIG_PATH`, because
 `gtk4-sys`/`libadwaita-sys` link against the system libraries rather than
-vendoring them:
+vendoring them. Those floors are the feature pins in its `Cargo.toml`:
 
 ```bash
-sudo dnf install gtk4-devel libadwaita-devel      # Fedora
-sudo apt install libgtk-4-dev libadwaita-1-dev    # Debian/Ubuntu
-sudo pacman -S gtk4 libadwaita                    # Arch
+sudo dnf install clang cmake gtk4-devel libadwaita-devel        # Fedora
+sudo apt install clang cmake libgtk-4-dev libadwaita-1-dev      # Debian/Ubuntu
+sudo pacman -S clang cmake gtk4 libadwaita                      # Arch
 ```
 
 ```bash
-git clone --recursive https://github.com/luohoa97/cordial
-cd cordial
+git clone --recursive https://github.com/DamnShabu/stacked
+cd stacked
 cargo build --release      # Clang required; AOSP bionic does not build with GCC
 cargo test --release
 ```
@@ -228,7 +230,7 @@ it did before audio existed here. `webkitgtk6.0-devel` is the same shape for the
 web views.
 
 **That optionality is a trap worth naming.** Those two probes mean the tree
-compiles either way and quietly produces a different Cordial, so two people on
+compiles either way and quietly produces a different binary, so two people on
 the same commit can measure different binaries and neither can tell. In a
 project whose method is "verify by running", that costs more than a missing
 feature.
@@ -242,11 +244,11 @@ just check
 
 `flake.nix` pins Clang, Rust, GTK4, libadwaita **and** both optional
 dependencies, so everyone builds the same thing. It prints the version of each
-on entry. It builds Cordial and nothing else: you still run the client on your
+on entry. It builds Stacked and nothing else: you still run the client on your
 own host with `just dev`, because the engine's behaviour depends on the real
 graphics stack, compositor and glibc — `--host-libc` makes that dependence
 explicit — and a hermetic runtime would be measuring something nobody ships.
-Users install the Flatpak; this is a contributor's shell.
+It is a contributor's shell, not an install route.
 
 The per-distro lists above stay first-class. Most contributors do not have Nix
 and should not need it.
@@ -272,14 +274,14 @@ weighing before going down this road.
 
 If you are the first to build the flake successfully, say so and replace this.
 
-`webkitgtk6.0-devel` (`libwebkitgtk-6.0-dev` on Debian/Ubuntu) will be needed by
-whoever picks up the web view — Marketplace, Profile, Communities and most
-link-opening are web content, and none of it works today. Nothing in the tree
-requires it yet, so its absence breaks nothing; note that the *runtime* library
-often ships already while the development package does not, which makes
-`pkg-config --modversion webkitgtk-6.0` the check that matters rather than
-`ldconfig -p`. `docs/analysis/webview-surface.md` maps what would sit on top of
-it.
+`webkitgtk6.0-devel` (`libwebkitgtk-6.0-dev` on Debian/Ubuntu) is needed only
+for the web views — Marketplace, Profile, Communities and most link-opening —
+and only when you build with `--features
+cordial-shell/webview,cordial-runtime/webview`, which `just build toolbox`
+does. A plain `cargo build` leaves them out, so its absence breaks nothing
+else; note that the *runtime* library often ships already while the
+development package does not, which makes `pkg-config --modversion
+webkitgtk-6.0` the check that matters rather than `ldconfig -p`.
 
 Before opening a pull request:
 
@@ -297,7 +299,7 @@ with the build.
 ## A note on how this was built
 
 Most of this repository was written by Claude (Anthropic) working with a human
-directing the architecture. That is disclosed in the README and it is relevant
-to you as a contributor: the code is real and the findings were verified by
+directing the architecture, and so is most of what Stacked adds. That is
+relevant to you as a contributor: the code is real and the findings were verified by
 running things, but **no human has reviewed every line**. Review accordingly, and
 if you find something wrong, the project would rather hear it than not.

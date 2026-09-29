@@ -200,13 +200,8 @@ fn log(outputs: &[Output]) {
 /// });
 /// ```
 ///
-/// (That example calls this as `cordial_shell::refresh_watch::watch`, which
-/// is where it would need to live for `cordial-runtime` to reach it; today
-/// this module is registered only in the `cordial-shell` *binary*, via
-/// `main.rs`, and is not part of the library half `cordial-runtime` already
-/// depends on. Moving it there is a one-file change and is called out in this
-/// task's report rather than done here, since `lib.rs` is not among the files
-/// this task was scoped to edit.)
+/// `cordial_shell::refresh_watch::watch` is in the library half, so
+/// `cordial-runtime` can reach it; see `lib.rs`.
 pub fn watch(window: &impl IsA<gtk::Window>, on_change: impl Fn(&[Output]) + 'static) {
     let window = window.as_ref().clone();
     let state = Rc::new(State {

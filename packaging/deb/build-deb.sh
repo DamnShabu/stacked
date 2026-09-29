@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Build a .deb for Cordial by hand.
+# Build a .deb for Stacked by hand.
 #
 # Not dpkg-buildpackage or cargo-deb. This is a virtual Cargo workspace with
 # no top-level [package] section, which is the same problem that already
-# ruled out %cargo_install in packaging/rpm/cordial.spec -- both cargo-deb and
+# ruled out %cargo_install in packaging/rpm/stacked.spec -- both cargo-deb and
 # debhelper's dh_auto_install assume one crate is the package, and this one is
 # a workspace of five. So, like the RPM spec, this compiles the two binaries
 # directly and stages a package root by hand, then calls dpkg-deb itself
@@ -46,10 +46,10 @@ else
 fi
 debversion="${pkgversion}-1"
 
-echo "==> building cordial ${CORDIAL_DESCRIBE} (deb version ${debversion})"
+echo "==> building stacked ${CORDIAL_DESCRIBE} (deb version ${debversion})"
 
 export CC=clang CXX=clang++
-# See the %describe comment in packaging/rpm/cordial.spec: without this the
+# See the %describe comment in packaging/rpm/stacked.spec: without this the
 # packaged binary's window title falls back to the bare Cargo version and
 # disagrees with the package that shipped it.
 # `CORDIAL_GIT_SHA`, not a version. `Cargo.toml` is the version now and a
@@ -77,18 +77,12 @@ root=$(mktemp -d)
 trap 'rm -rf "$root"' EXIT
 
 # Both binaries, side by side. launch.rs looks for the loader as the sibling
-# of current_exe and nowhere else, so a shell installed without cordial-run
-# beside it is a launcher whose Launch button cannot find anything to launch.
-install -Dm755 target/release/cordial-shell "$root/usr/bin/cordial-shell"
-# **`cordial` is the command; `cordial-shell` is the file.** Asked for on
-# 2026-08-28: nobody wants to type the second word, and every other launcher on
-# a desktop answers to its own name. A symlink rather than a rename so that
-# anything already invoking `cordial-shell` -- a .desktop file somebody edited,
-# a script, a bug report -- keeps working, and so the two binaries stay
-# obviously related in `ls /usr/bin`. `cordial-run` deliberately gets no alias:
-# it is the loader the shell launches and is not what anyone should run by hand.
-ln -sf cordial-shell "$root/usr/bin/cordial"
-install -Dm755 target/release/cordial-run   "$root/usr/bin/cordial-run"
+# of current_exe and nowhere else, so `stacked` installed without cordial-run
+# beside it is a launcher with nothing to launch. `stacked` is the command and
+# needs no alias; `cordial-run` is the loader it starts and is not what anyone
+# should run by hand.
+install -Dm755 target/release/stacked     "$root/usr/bin/stacked"
+install -Dm755 target/release/cordial-run "$root/usr/bin/cordial-run"
 
 # **Strip our own two binaries, which are almost entirely debug info.**
 # `[profile.release]` in Cargo.toml sets `debug = true`, deliberately -- AGENTS.md
@@ -96,7 +90,8 @@ install -Dm755 target/release/cordial-run   "$root/usr/bin/cordial-run"
 # runtime you cannot get a backtrace out of is not worth the disk it saves. But
 # that is an argument about the build on a developer's machine, not about what a
 # user downloads: `cordial-run` is 207.4 MB unstripped and 15.7 MB with
-# `--strip-debug`, measured here, and `cordial-shell` is another 175.7 MB.
+# `--strip-debug`, measured here, and the GTK launcher `stacked` replaced was
+# another 175.7 MB; `stacked` itself has not been measured.
 #
 # Stripping at packaging time keeps both: full DWARF where somebody is debugging,
 # and a package that is not thirteen times larger than it needs to be. rpmbuild
@@ -106,40 +101,38 @@ install -Dm755 target/release/cordial-run   "$root/usr/bin/cordial-run"
 # This package is built with plain `dpkg-deb` rather than debhelper -- see the
 # note above the control file for why -- so `dh_strip`, which every ordinary
 # Debian package gets for free, never runs here. Nothing else was going to.
-strip --strip-debug "$root/usr/bin/cordial-shell" "$root/usr/bin/cordial-run"
+strip --strip-debug "$root/usr/bin/stacked" "$root/usr/bin/cordial-run"
 
-# The square icons under packaging/icons/hicolor/, not the 680x480 README
-# banner. Both of them: Frostbite is the twice-a-year name in
-# crates/cordial-shell/src/branding.rs, and a missing one is a blank icon in
-# the task switcher on the one day nobody is watching for it.
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    "$root/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-    "$root/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
+# The square icon under packaging/icons/hicolor/, not the 680x480 README
+# banner.
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
+    "$root/usr/share/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg"
 
-# Exec=cordial-shell %u, and the %u is not decorative: the entry registers
-# x-scheme-handler/roblox-player, which is how a Play button on the website
-# reaches a client at all.
 # First-party plugins, read-only beside the binary -- see the same block in
-# packaging/rpm/cordial.spec for why this is per-package rather than a path
-# compiled in.
+# packaging/rpm/stacked.spec for why this is per-package rather than a path
+# compiled in. usr/share/cordial keeps Cordial's name because the code that
+# reads it does.
 for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
     install -Dm644 "$plugin/plugin.json" "$root/usr/share/cordial/plugins/$id/plugin.json"
     install -Dm644 "$plugin/main.ts"     "$root/usr/share/cordial/plugins/$id/main.ts"
 done
-install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-    "$root/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-    "$root/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+# Exec=stacked %u, and the %u is not decorative: the entry registers
+# x-scheme-handler/roblox-player, which is how a Play button on the website
+# reaches a client at all.
+install -Dm644 packaging/io.github.damnshabu.Stacked.desktop \
+    "$root/usr/share/applications/io.github.damnshabu.Stacked.desktop"
+install -Dm644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
+    "$root/usr/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
 
-docdir="$root/usr/share/doc/cordial"
+# Debian policy puts this under the package's own name, and the package is
+# `stacked`.
+docdir="$root/usr/share/doc/stacked"
 install -Dm644 THIRD-PARTY-NOTICES.md "$docdir/THIRD-PARTY-NOTICES.md"
 # Apache-2.0 section 4(d): the NOTICE for mocktail-webview, the basis for
-# Cordial's own in-experience web window, has to travel with a binary
-# distribution and not only with the source tree. Neither the Flatpak
-# manifest nor the RPM spec install this today -- see this change's report.
+# the in-experience web window, has to travel with a binary distribution and
+# not only with the source tree.
 install -Dm644 NOTICE "$docdir/NOTICE"
 install -Dm644 third_party/libbadcpu/LICENSE.upstream "$docdir/libbadcpu-MIT.txt"
 install -Dm644 third_party/mcpelauncher-linker/LICENSE "$docdir/mcpelauncher-linker-MIT.txt"
@@ -188,7 +181,7 @@ fi
 install -m755 packaging/deb/postinst "$root/DEBIAN/postinst"
 
 mkdir -p "$outdir"
-out="$outdir/cordial_${debversion}_${debarch}.deb"
+out="$outdir/stacked_${debversion}_${debarch}.deb"
 dpkg-deb --build --root-owner-group "$root" "$out"
 
 echo

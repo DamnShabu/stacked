@@ -3,8 +3,9 @@
 Sign in, load a game, move around. This is the full feature table that used
 to live in the README, what changed recently in this fork, and three of the
 harder bugs it took to get here. See also [`CHANGELOG.md`](../CHANGELOG.md)
-and the [releases page](https://github.com/luohoa97/cordial/releases) for
-what changed release by release.
+and upstream Cordial's [releases page](https://github.com/luohoa97/cordial/releases)
+for what changed release by release before the fork. Stacked has published no
+releases of its own yet.
 
 ## Recent desktop/runtime improvements in this fork
 
@@ -23,8 +24,8 @@ what changed release by release.
   lowered while a dialog or text overlay is visible and restored on close.
 - **Fullscreen on the gameplay window.** F11 now targets the window containing
   the engine, hides the title bar and persists the choice per profile.
-  The header uses the desktop's libadwaita/KDE theme colours instead of a
-  transparent custom background.
+  The header uses Stacked's own dark palette by default, or the desktop's
+  libadwaita/KDE theme colours with `stacked config set theme system`.
 - **Lower Android-runtime overhead.** Pointer positions use atomic pairs;
   ordinary Vulkan presents no longer contend on the screenshot mutex; looper
   accounting runs only when instrumentation is enabled; unchanged text avoids
@@ -54,17 +55,17 @@ what changed release by release.
 | Loading into an experience | ✅ world, avatar and UI render, signed in |
 | **Two accounts at once** | ✅ two profiles, two instances, side by side — see below |
 | Window — libadwaita header bar, engine as a subsurface | ✅ |
-| Launching from the shell | ✅ finds a build, or explains how to get one |
-| Choosing a profile | ✅ a chooser above the Launch button; creates one, and shows a profile another window holds as unavailable |
+| Launching from the terminal | ✅ `stacked` finds a build, and `stacked install` gets one |
+| Choosing a profile | ✅ `stacked profiles` lists, creates and selects them; `stacked play --profile NAME` picks one per launch, and one already open elsewhere is refused by name |
 | Audio | ✅ sound in an experience, reported from real play; the OpenSL ES bridge into PipeWire was measured with a control before that |
 | Voice chat | ✅ works in a real game on the shipped build. Confirmed by the maintainer in place 14236925335 on the 0.15.0 binary, joining by deep link and pressing that game's own Connect control; the microphone control appears in the in-game bar and transmission works. **The line to grep for is `WebRtcAudioManager.init reports success`**, logged by Cordial's own `Cordial-Audio` layer — present in the session that joined and connected, absent from one that only reached Home. Setting `FLogVoiceChatLogs` and `FLogVoiceChatControlPlaneTracingLogs` is a dead end: the string `VoiceChat` appears nowhere in a working session, so those channels emit nothing here and searching for them reads as failure when voice is fine. The run also answered every Android call it made (`stubs called: 2 distinct of 650`, both ZSTD). See [verification details](analysis/voice-dual-response.md). |
 | Web views (Marketplace, Profile, Communities…) | 🟡 they render in a real signed-in WebKitGTK window, with correct canvas stacking; both observed JavaScript bridge formats now reach the runtime, but more pages still need interactive coverage |
 | **Asset overlays** (custom textures, sounds, fonts) | ✅ drop a file mirroring the APK's `assets/` tree into `~/.config/cordial/overlay` and it is served instead; nothing is modified, remove the file and the original returns |
 | Fullscreen | ✅ F11 acts on the gameplay window, hides the title bar and persists per profile |
-| Getting the cursor back | ✅ **The same way you would in any other game.** Roblox takes the cursor when it wants it and gives it back when it does not — pressing Escape opens Roblox's own menu, which releases it. Your compositor's own escape (Super, an overview, a workspace switch) always works and Cordial cannot take it away: the lock is a `zwp_locked_pointer_v1` and breaking it is the compositor's decision. `CORDIAL_NO_POINTER_LOCK=1` turns capture off for a whole session |
+| Getting the cursor back | ✅ **The same way you would in any other game.** Roblox takes the cursor when it wants it and gives it back when it does not — pressing Escape opens Roblox's own menu, which releases it. Your compositor's own escape (Super, an overview, a workspace switch) always works and Stacked cannot take it away: the lock is a `zwp_locked_pointer_v1` and breaking it is the compositor's decision. `CORDIAL_NO_POINTER_LOCK=1` turns capture off for a whole session |
 | **The engine's content store** | ✅ `RbxStorage` initialises and is read back — a real SQLite database, the engine's own `files` table, eight engine-created partitions, and cache hits rising across launches. Assets are no longer refetched every session |
 | Clean shutdown | ✅ full pause/stop/destroy sequence, observed in the engine's own log |
-| Plugins | 🟡 host, broker and per-profile grants now enforce every capability, not only `flags.*`/`presence.*` as before — notify, url.open, asset overlays, `flags.write` and cross-plugin events all reach a real effect; Settings can grant or revoke a capability, and install or remove a plugin from a local `.tar.zst` archive; still no in-app fetch from a remote index, so the marketplace half of the registry is unbuilt |
+| Plugins | 🟡 host, broker and per-profile grants now enforce every capability, not only `flags.*`/`presence.*` as before — notify, url.open, asset overlays, `flags.write` and cross-plugin events all reach a real effect; `stacked plugins` can grant or revoke a capability, and install or remove a plugin from a local `.tar.zst` archive; nothing fetches from a remote index, and a plugin's declared preferences have no page to set them in |
 
 Frame rate measured with pointer motion driven for the whole run, because
 presents drop to exactly 1/s when nothing is happening and every earlier figure

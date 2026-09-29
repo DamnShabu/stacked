@@ -195,6 +195,11 @@ pub struct HostWindow {
     input: Mutex<InputState>,
     pointer_lock: Mutex<PointerLockState>,
     fullscreen: AtomicBool,
+    /// Whether the window holds keyboard focus, from `FocusIn`/`FocusOut`.
+    /// Starts true, which is what a freshly mapped window the user just
+    /// launched is, and what this backend assumed everywhere before it tracked
+    /// focus at all.
+    focused: AtomicBool,
 }
 
 /// Buttons and timing carried across calls to `pump_input_events`, the way a
@@ -226,6 +231,14 @@ struct PointerLockState {
     warp_echo_wait: u8,
     centre: (i32, i32),
     saved_root: Option<(i32, i32)>,
+    /// A confining grab is held for fullscreen, with no lock in play. See
+    /// [`HostWindow::confine_pointer`].
+    confined: bool,
+    /// The server refused the last confining grab. Not retried until focus or
+    /// fullscreen changes, so a window the server will not grab for (unmapped,
+    /// another client holding the pointer) costs one round trip rather than one
+    /// per pump.
+    confine_refused: bool,
 }
 
 impl PointerLockState {
@@ -237,6 +250,8 @@ impl PointerLockState {
             warp_echo_wait: 0,
             centre: (0, 0),
             saved_root: None,
+            confined: false,
+            confine_refused: false,
         }
     }
 }
@@ -286,11 +301,11 @@ struct XSizeHints {
 }
 
 /// `WM_CLASS`, whose second element must match `StartupWMClass` in
-/// `packaging/io.github.luohoa97.Cordial.desktop`. A mismatch is invisible in normal
+/// `packaging/io.github.damnshabu.Stacked.desktop`. A mismatch is invisible in normal
 /// use and shows up as an unnamed window in OBS and portal capture pickers, and
 /// as a second unbranded taskbar entry. See ADR-009.
-const WM_RES_NAME: &str = "cordial";
-const WM_RES_CLASS: &str = "Cordial";
+const WM_RES_NAME: &str = "stacked";
+const WM_RES_CLASS: &str = "Stacked";
 
 #[repr(C)]
 struct XClassHint {
@@ -664,6 +679,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         }),
         pointer_lock: Mutex::new(PointerLockState::new()),
         fullscreen: AtomicBool::new(place.fullscreen),
+        focused: AtomicBool::new(true),
     };
     // No touchscreen, and that is a statement about this backend rather than
     // about the machine: X11 core input has no touch at all, XInput2's is a
@@ -854,6 +870,7 @@ impl HostWindow {
             set_compositor_bypass(xlib, self.display, self.window, on);
         }
         self.fullscreen.store(on, Ordering::Relaxed);
+        self.pointer_lock.lock().unwrap_or_else(|e| e.into_inner()).confine_refused = false;
     }
 
     /// Take or release the pointer to match what the engine and the mouse are
@@ -861,7 +878,7 @@ impl HostWindow {
     /// button released mid-drain still ungrabs before the next frame rather
     /// than a whole pump late.
     ///
-    /// This duplicates Wayland's own `sync_pointer_lock` (`wayland.rs:3622`)
+    /// This duplicates Wayland's own `sync_pointer_lock` (in `wayland.rs`)
     /// rather than sharing it with it, which is exactly the thing ADR-024
     /// asks not to happen to logic common to both backends. Not shared here
     /// on purpose, for now: the two currently compute genuinely different
@@ -903,6 +920,7 @@ impl HostWindow {
 
         if std::env::var_os("CORDIAL_NO_POINTER_LOCK").is_some() {
             self.release_pointer_lock();
+            self.release_confine();
             return;
         }
 
@@ -921,6 +939,83 @@ impl HostWindow {
             self.lock_pointer();
         } else if !want && held {
             self.release_pointer_lock();
+        }
+
+        // Fullscreen keeps the cursor on the window even when nothing wants it
+        // locked -- in a menu, on the loading screen -- so a second monitor
+        // cannot take a click meant for the game. Only while focused: an X11
+        // grab is not the compositor's to suspend the way a Wayland
+        // constraint is, and one held past an alt-tab would leave the user
+        // unable to click the window they switched to.
+        let confine = !want
+            && self.fullscreen.load(Ordering::Relaxed)
+            && self.focused.load(Ordering::Relaxed)
+            && std::env::var_os("CORDIAL_NO_FULLSCREEN_CONFINE").is_none();
+        if confine {
+            self.confine_pointer();
+        } else {
+            self.release_confine();
+        }
+    }
+
+    /// Grab the pointer with `confine_to` set to this window and nothing else:
+    /// no warp, no hidden cursor. The lock's own grab already confines the
+    /// same way; this is that confinement without the lock.
+    ///
+    /// `INFERRED` against a real window manager. Built from the same
+    /// `XGrabPointer` call `lock_pointer` makes, which is exercised, but not
+    /// run on a multi-monitor X11 session here.
+    fn confine_pointer(&self) {
+        let mut state = self.pointer_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if state.confined || state.locked || state.confine_refused {
+            return;
+        }
+        // SAFETY: `display`/`window` are this struct's live handles; the
+        // arguments are the lock's own grab (owner events, button and motion
+        // masks, async both ways, confined to this window, no cursor change,
+        // CurrentTime).
+        let result = unsafe {
+            (self.xlib.grab_pointer)(
+                self.display,
+                self.window,
+                1,
+                0x4 | 0x8 | 0x40,
+                1,
+                1,
+                self.window,
+                0,
+                0,
+            )
+        };
+        if result != 0 {
+            state.confine_refused = true;
+            eprintln!(
+                "[cordial] X11 fullscreen confinement was refused (XGrabPointer={result}); \
+                 the cursor can leave the window"
+            );
+            return;
+        }
+        state.confined = true;
+        if super::input::trace_mouse() {
+            eprintln!("[cordial] X11 pointer confined for fullscreen");
+        }
+    }
+
+    /// Drop a confining grab, and only that: a lock's grab is the lock's to
+    /// release, with its warp back to where the cursor was.
+    fn release_confine(&self) {
+        let mut state = self.pointer_lock.lock().unwrap_or_else(|e| e.into_inner());
+        if !state.confined || state.locked {
+            return;
+        }
+        state.confined = false;
+        // SAFETY: this struct's own live display; CurrentTime is 0.
+        unsafe {
+            (self.xlib.ungrab_pointer)(self.display, 0);
+            (self.xlib.flush)(self.display);
+        }
+        if super::input::trace_mouse() {
+            eprintln!("[cordial] X11 fullscreen confinement released");
         }
     }
 
@@ -996,6 +1091,10 @@ impl HostWindow {
                 .unwrap_or_else(|e| e.into_inner());
 
             state.locked = true;
+            // A confining grab, if one was held, has just been replaced by
+            // this one rather than stacked under it: X keeps one active grab
+            // per client, and a second XGrabPointer changes it.
+            state.confined = false;
             state.ignore_next_warp = true;
             state.centre = centre;
             state.saved_root = saved_root;
@@ -1050,6 +1149,9 @@ impl HostWindow {
             state.locked = false;
             state.ignore_next_warp = false;
             state.centre = (0, 0);
+            // The ungrab below ends any grab this client holds, so a
+            // confinement taken over by the lock cannot survive it either.
+            state.confined = false;
 
             (was_locked, saved_root)
         };
@@ -1209,6 +1311,7 @@ struct XInputEvent {
 const KEY_PRESS: c_int = 2;
 const KEY_RELEASE: c_int = 3;
 const MOTION_NOTIFY: c_int = 6;
+const FOCUS_IN: c_int = 9;
 const FOCUS_OUT: c_int = 10;
 const BUTTON_PRESS: c_int = 4;
 const BUTTON_RELEASE: c_int = 5;
@@ -1737,8 +1840,15 @@ impl HostWindow {
                 KEY_PRESS | KEY_RELEASE => {
                     self.dispatch_key(handle, &mut buf, event_type == KEY_PRESS);
                 }
+                FOCUS_IN => {
+                    self.focused.store(true, Ordering::Relaxed);
+                    self.pointer_lock.lock().unwrap_or_else(|e| e.into_inner()).confine_refused =
+                        false;
+                }
                 FOCUS_OUT => {
+                    self.focused.store(false, Ordering::Relaxed);
                     self.release_pointer_lock();
+                    self.release_confine();
 
                     let mut state = self
                         .input
@@ -2272,12 +2382,12 @@ mod tests {
     fn wm_class_matches_the_desktop_entry() {
         // A capture tool, the taskbar and the portal picker all resolve a
         // window to its application by matching WM_CLASS against
-        // StartupWMClass. When they disagree nothing errors — Cordial just
+        // StartupWMClass. When they disagree nothing errors — the game just
         // shows up in OBS and GNOME as a nameless, iconless window, which is
         // exactly the kind of break nobody notices until a user reports it.
         // ADR-009 commits to this staying true, so it is checked rather than
         // asserted in prose.
-        let desktop = include_str!("../../../../packaging/io.github.luohoa97.Cordial.desktop");
+        let desktop = include_str!("../../../../packaging/io.github.damnshabu.Stacked.desktop");
         let declared = desktop
             .lines()
             .find_map(|l| l.strip_prefix("StartupWMClass="))

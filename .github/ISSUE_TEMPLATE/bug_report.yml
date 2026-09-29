@@ -32,11 +32,12 @@ body:
     attributes:
       label: Diagnostics
       description: |
-        Required. Get it from the **Copy diagnostics** button at **Settings → Report a Problem**, or from a terminal — `cordial --diagnostics` (.deb/.rpm/Arch), `flatpak run io.github.luohoa97.Cordial --diagnostics` (Flatpak), `./Cordial-*.AppImage --diagnostics` (AppImage), or `cordial-shell --diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
+        Required. Run `stacked diagnostics` in a terminal (.deb/.rpm/Arch), `flatpak run io.github.damnshabu.Stacked diagnostics` (Flatpak), `./Stacked-*.AppImage diagnostics` (AppImage), or `target/release/stacked diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
 
-        Six rows, looking like this:
+        Seven rows, looking like this:
         ```
-        Cordial   0.11.0 (0fdbb4425)
+        Stacked   0.11.0 (0fdbb4425)
+        Licence   GPL-3.0-or-later
         Install   rpm
         Roblox    2.736.1408 (fetched by Cordial)
         System    Linux host 7.1.8-200.fc44.x86_64 ... x86_64 GNU/Linux
@@ -46,7 +47,7 @@ body:
 
         It carries your hostname and your distribution's name, and no account name, session token, or profile name. You are about to paste this in public — edit the hostname out first if you would rather it not travel.
       render: text
-      placeholder: Paste the output of `cordial --diagnostics` here.
+      placeholder: Paste the output of `stacked diagnostics` here.
     validations:
       required: true
 
@@ -55,7 +56,7 @@ body:
     attributes:
       label: The engine's own log
       description: |
-        This is the most useful thing you can attach. Roblox writes its own log to `<files>/appData/logs/<version>_<timestamp>_Player_*.log` — by default under `~/.local/share/cordial/instances/default/data/files/appData/logs/`. Attach the newest one, or paste the last ~50 lines.
+        This is the most useful thing you can attach. Roblox writes its own log to `<files>/appData/logs/<version>_<timestamp>_Player_*.log` — by default under `~/.local/share/cordial/profiles/default/data/files/appData/logs/`. Attach the newest one, or paste the last ~50 lines.
       render: text
     validations:
       required: false

@@ -1,10 +1,11 @@
 # The remote definition users add. Published to the root of the GitHub Pages
 # site by .github/workflows/flatpak.yml, which is also the only thing that
-# should ever edit it:
+# should ever edit it. Not published yet: the fork's Pages site has not been
+# deployed, so every URL in this file 404s until it is.
 #
-#     flatpak remote-add --if-not-exists cordial \
-#         https://luohoa97.github.io/cordial/cordial.flatpakrepo
-#     flatpak install cordial io.github.luohoa97.Cordial
+#     flatpak remote-add --if-not-exists stacked \
+#         https://damnshabu.github.io/stacked/stacked.flatpakrepo
+#     flatpak install stacked io.github.damnshabu.Stacked
 #
 # There is deliberately no GPGKey line here. The workflow appends one when the
 # FLATPAK_GPG_PRIVATE_KEY secret is set, and appends nothing when it is not.
@@ -27,20 +28,20 @@
 # tagged release and is this remote's default, so the install command above
 # lands there with no branch named. `master` moves on every push to main and
 # is what installing before this comment existed put you on -- if `flatpak
-# list` shows `io.github.luohoa97.Cordial` on branch `master`, move to the
+# list` shows `io.github.damnshabu.Stacked` on branch `master`, move to the
 # release channel with:
 #
-#     flatpak uninstall io.github.luohoa97.Cordial//master
-#     flatpak install cordial io.github.luohoa97.Cordial//stable
+#     flatpak uninstall io.github.damnshabu.Stacked//master
+#     flatpak install stacked io.github.damnshabu.Stacked//stable
 #
 # (add --user to both if you installed with it). To stay on master instead --
 # every commit, not just releases -- name it explicitly:
 #
-#     flatpak install cordial io.github.luohoa97.Cordial//master
+#     flatpak install stacked io.github.damnshabu.Stacked//master
 
 [Flatpak Repo]
-Title=Cordial
-Url=https://luohoa97.github.io/cordial/repo/
-Homepage=https://luohoa97.github.io/cordial/
-Icon=https://raw.githubusercontent.com/luohoa97/cordial/main/packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
-Description=Run Roblox on Linux natively. Cordial loads Roblox's official Android x86-64 engine directly, with no emulator, container or virtual machine. It ships no Roblox code; you supply the Android client yourself.
+Title=Stacked
+Url=https://damnshabu.github.io/stacked/repo/
+Homepage=https://github.com/DamnShabu/stacked
+Icon=https://raw.githubusercontent.com/DamnShabu/stacked/main/packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
+Description=Run Roblox on Linux natively. Stacked, a fork of Cordial, loads Roblox's official Android engine directly, with no emulator, container or virtual machine. It ships no Roblox code; `stacked install` fetches a build signed by Roblox.

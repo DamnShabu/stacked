@@ -1,13 +1,17 @@
 # Shaders (vkBasalt): sharpening and anti-aliasing over the game
 
-Cordial can hand the client's frame to
+Stacked can hand the client's frame to
 [vkBasalt](https://github.com/DadSchoorse/vkBasalt), an open-source Vulkan
 implicit layer, for a sharpen pass and an anti-alias pass before it reaches the
-screen. Off by default, because it changes what is drawn: **Settings →
-Performance → Shaders (vkBasalt)**.
+screen. Off by default, because it changes what is drawn:
 
-The switch is only offered once vkBasalt is actually installed — a settings row
-that turns on and does nothing is worse than no row at all.
+```bash
+stacked config set vkbasalt true
+```
+
+Every launch checks that vkBasalt's layer is actually installed before using
+it. If it is not, the launch output says so, with how to install it, and the
+game runs without shaders rather than with a setting that does nothing.
 
 ## Install
 
@@ -15,41 +19,42 @@ that turns on and does nothing is worse than no row at all.
   -y vkBasalt` in a `distrobox` if the host is immutable).
 - **Arch:** `pacman -S vkbasalt` (multilib for a 32-bit game).
 - **Flatpak:** `flatpak install org.freedesktop.Platform.VulkanLayer.vkBasalt`.
-  This is a runtime extension, not a Cordial package change — it mounts under
-  `org.freedesktop.Platform`'s own `VulkanLayer` extension point, the same one
-  MangoHUD uses, so Cordial's manifest needs nothing added for it to be seen.
+  This is for a Flatpak you built yourself. It is a runtime extension, not a
+  change to Stacked's package — it mounts under `org.freedesktop.Platform`'s
+  own `VulkanLayer` extension point, the same one MangoHUD uses, so the
+  manifest needs nothing added for it to be seen.
 
-Restart Cordial after installing; the settings row only checks at startup.
+The next launch after installing picks it up.
 
 ## Config
 
-Turning the switch on for the first time writes
+The first launch with the setting on writes
 `<profile>/vkBasalt.conf` inside that profile's own data directory (next to its
 `appData` and cookie store) with sharpening (CAS) and anti-aliasing (SMAA) at
-vkBasalt's own documented defaults. **Cordial never rewrites this file again**
+vkBasalt's own documented defaults. **Stacked never rewrites this file again**
 — edit the effects list, the sharpening strength, or anything else vkBasalt
-supports, and your changes stay. The settings row names the exact path for
-your profile once vkBasalt is detected.
+supports, and your changes stay. Every launch with vkBasalt on prints the
+exact path, in a line starting `shell: vkBasalt on`.
 
 The full key reference is vkBasalt's own:
 <https://github.com/DadSchoorse/vkBasalt/blob/master/config/vkBasalt.json.in>.
 
 ## Toggle key
 
-Cordial's generated config sets `toggleKey = Scroll_Lock`, not vkBasalt's own
+Stacked's generated config sets `toggleKey = Scroll_Lock`, not vkBasalt's own
 `Home` default. Home is a real Roblox chat key — it jumps the cursor to the
 start of a line — and vkBasalt does not consume the key or care which window
 has focus, so the upstream default would toggle the effect on and off every
 time somebody typed a message starting with that jump.
 
-**On Cordial's default Wayland backend, the toggle key does nothing at all.**
+**On the default Wayland backend, the toggle key does nothing at all.**
 Confirmed by reading vkBasalt's own source
 (`src/keyboard_input_x11.cpp`): it polls a real X11 keyboard with
 `XQueryKeymap`, and does so only when `$DISPLAY` is set. Wayland sets
 `WAYLAND_DISPLAY`, not `DISPLAY`, so with no XWayland running the check
 degrades to "no X11 support" and the key can never register as pressed. The
 generated config sets `enableOnLaunch = True` for exactly this reason: it is
-the only lever there is on Wayland. The toggle key works on Cordial's X11
+the only lever there is on Wayland. The toggle key works on the X11
 backend, or if XWayland happens to be running alongside a Wayland session.
 
 ## What was verified and how

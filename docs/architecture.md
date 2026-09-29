@@ -1,7 +1,9 @@
-# How Cordial works
+# How Stacked works
 
-A map of the tree as it stands, not a specification. Where this and an ADR
-disagree, the ADR is the decision and this is out of date — say so and fix it.
+A map of the tree as it stands, not a specification. Nearly all of it is
+upstream Cordial's, which is why most names in it still say `cordial`. Where
+this and an ADR disagree, the ADR is the decision and this is out of date — say
+so and fix it.
 
 ```mermaid
 flowchart TB
@@ -9,7 +11,7 @@ flowchart TB
 
     subgraph desk["Your Linux desktop"]
       direction TB
-      shell["<b>cordial-shell</b> — the launcher<br/>GTK4 · libadwaita<br/>profiles · settings · updates · roblox:// links"]
+      shell["<b>stacked</b> — the launcher, crates/cordial-shell<br/>a command line, no window<br/>profiles · settings · updates · roblox:// links"]
       broker["<b>Capability broker</b><br/>presence.set · notify.send · url.open · events.*<br/><i>payloads and effects, never sockets</i>"]
       plugins["<b>Plugins</b><br/>TypeScript on Deno<br/>zero permissions + bwrap sandbox"]
     end
@@ -25,7 +27,7 @@ flowchart TB
       symtab["<b>Symbol table</b><br/>13 virtual libraries, ~650 symbols<br/>≈99 cordial · ≈502 host glibc · 49 honest stubs"]
       jnivm["<b>libjnivm</b><br/>stands in for Android's ART"]
       fw["<b>Framework layer</b><br/>GameActivity · ANativeWindow · AAssetManager<br/>input · clipboard · accessibility · OpenSL ES"]
-      engine["<b>libroblox.so</b><br/>Roblox's official Android x86-64 engine<br/><i>you supply it — Cordial ships none</i>"]
+      engine["<b>libroblox.so</b><br/>Roblox's official Android x86-64 engine<br/><i>you supply it — Stacked ships none</i>"]
     end
 
     linker -- "dlopen" --> engine
@@ -84,7 +86,7 @@ The `bwrap` layer under Deno can only ever *subtract*
 ([ADR-018](adr/ADR-018-plugin-sub-sandboxing.md)).
 
 **One process is one window is one profile.** A profile is storage; an instance
-is a window. The shell takes an `flock` on the profile and hands the descriptor
+is a window. `stacked` takes an `flock` on the profile and hands the descriptor
 to the child, so the client itself holds it for its lifetime. Multiple clients
 are unrestricted; two clients on *one* profile are refused, because two processes
 writing one `appData` and one cookie store corrupts Roblox's storage

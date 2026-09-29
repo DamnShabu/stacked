@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build a binary RPM for Cordial: the SRPM from make-srpm.sh, then rpmbuild
+# Build a binary RPM for Stacked: the SRPM from make-srpm.sh, then rpmbuild
 # against it.
 #
 # make-srpm.sh already does the hard, reproducibility-sensitive part -- the
@@ -23,7 +23,7 @@
 # hint that reads as a missing package rather than an old one).
 #
 # On a system where `dnf builddep` is not available or not wanted, install
-# the packages packaging/rpm/cordial.spec's BuildRequires: block names, by
+# the packages packaging/rpm/stacked.spec's BuildRequires: block names, by
 # hand, before running this.
 set -euo pipefail
 
@@ -62,7 +62,7 @@ if command -v dnf >/dev/null 2>&1; then
     # calling this script on a host machine instead.
     dnf builddep -y "$srpm"
 else
-    echo "warning: dnf not found; assuming packaging/rpm/cordial.spec's" >&2
+    echo "warning: dnf not found; assuming packaging/rpm/stacked.spec's" >&2
     echo "  BuildRequires are already satisfied on this system" >&2
 fi
 

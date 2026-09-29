@@ -203,15 +203,15 @@ impl Origin {
         match self {
             Origin::Managed => None,
             Origin::Environment => {
-                Some("CORDIAL_APK names the build for this run, so Cordial will not replace it.")
+                Some("CORDIAL_APK names the build for this run, so Stacked will not replace it.")
             }
             Origin::Chosen => Some(
-                "You chose this APK, so Cordial will not replace it. Clear it on the Roblox \
-                 page to let Cordial manage a build instead.",
+                "You chose this APK, so it will not be replaced. `stacked config unset roblox.apk` \
+                 lets Stacked manage a build instead.",
             ),
             Origin::Sober => Some(
-                "This build belongs to Sober and Cordial will not write to it. Download one \
-                 and Cordial will manage its own copy.",
+                "This build belongs to Sober and will not be written to. Download one and \
+                 Stacked will manage its own copy.",
             ),
         }
     }
@@ -219,9 +219,9 @@ impl Origin {
     pub fn describe(self) -> &'static str {
         match self {
             Origin::Environment => "Set by CORDIAL_APK for this run only",
-            Origin::Chosen => "Chosen in Settings",
-            Origin::Managed => "Downloaded by Cordial",
-            Origin::Sober => "Found in Sober's download (org.vinegarhq.Sober), which Cordial does not manage",
+            Origin::Chosen => "Chosen with `stacked config set roblox.apk`",
+            Origin::Managed => "Downloaded by Stacked",
+            Origin::Sober => "Found in Sober's download (org.vinegarhq.Sober), which Stacked does not manage",
         }
     }
 }
@@ -253,9 +253,9 @@ pub fn apply_pin(build: Build, profile_dir: &Path) -> Result<Build, NotFound> {
     let entries = cordial_update::store::list();
     let Some(entry) = entries.iter().find(|e| e.version == version) else {
         return Err(NotFound::Unusable(format!(
-            "This profile is pinned to Roblox {version}, and that build is not in Cordial's \
-             store. Open Settings and choose another version, or clear the pin to follow \
-             whichever build is current."
+            "This profile is pinned to Roblox {version}, and that build is not in the \
+             store. `stacked versions get {version}` fetches it, or `stacked unpin` clears \
+             the pin to follow whichever build is current."
         )));
     };
     let Some(apk) = entry.base_apk() else {
@@ -316,9 +316,9 @@ fn verified_once(apk: &Path, cache: &Path) -> Result<(), NotFound> {
             Ok(())
         }
         Err(e) => Err(NotFound::Unusable(format!(
-            "Cordial will not run {}: {e}.\n\nThis is the archive Cordial was pointed at, not \
-             one it downloaded. Clear the APK in Settings to let Cordial find or fetch a build \
-             it can check.",
+            "Stacked will not run {}: {e}.\n\nThis is the archive Stacked was pointed at, not \
+             one it downloaded. `stacked config unset roblox.apk` lets Stacked find or fetch \
+             a build it can check.",
             apk.display()
         ))),
     }
@@ -351,7 +351,8 @@ fn locate_with(
     };
     if !apk.is_file() {
         return Err(NotFound::Unusable(format!(
-            "No APK at {}. Open Settings and choose one, or clear it to let Cordial look again.",
+            "No APK at {}. `stacked config set roblox.apk PATH` chooses another, or \
+             `stacked config unset roblox.apk` lets Stacked look again.",
             apk.display()
         )));
     }
@@ -367,7 +368,7 @@ fn locate_with(
             Ok(Build { apk, lib_dir: lib_dir.clone() })
         } else {
             Err(NotFound::Unusable(format!(
-                "No {LIBRARY} in {}. Open Settings and clear the engine directory to let Cordial extract one.",
+                "No {LIBRARY} in {}. `stacked config unset roblox.lib_dir` lets Stacked extract one.",
                 lib_dir.display()
             )))
         };
@@ -594,7 +595,7 @@ fn extract_engine(apk: &Path, into: &Path) -> Result<PathBuf, String> {
     Err(format!(
         "No {LIBRARY_IN_APK} in {} or its split_config siblings ({} tried). \
          On a split build the engine is in {}, not base.apk — \
-         if it is somewhere else, set the engine directory in Settings.",
+         if it is somewhere else, `stacked config set roblox.lib_dir PATH`.",
         apk.display(),
         tried.len(),
         cordial_update::install::SPLIT_APK
@@ -684,12 +685,12 @@ mod tests {
         let sober_at = order.iter().position(|o| *o == Origin::Sober).unwrap();
         let chosen_at = order.iter().position(|o| *o == Origin::Chosen).unwrap();
         assert!(managed_at < sober_at, "a deliberate download must beat a file that was lying about");
-        assert!(chosen_at < managed_at, "an explicit choice in Settings must beat a download");
+        assert!(chosen_at < managed_at, "an explicit choice must beat a download");
 
         // And it says where it came from, because a detected path presenting
         // itself as configuration is how somebody ends up not knowing that
         // deleting another application will break this one.
-        assert!(Origin::Managed.describe().contains("Cordial"));
+        assert!(Origin::Managed.describe().contains("Stacked"));
         assert!(Origin::Sober.describe().contains("Sober"));
     }
 
@@ -732,7 +733,7 @@ mod tests {
         let dir = scratch("stale");
         let install = RobloxInstall { apk: Some(dir.join("gone.apk")), lib_dir: None };
         match locate(&install) {
-            Err(NotFound::Unusable(msg)) => assert!(msg.contains("Settings"), "{msg}"),
+            Err(NotFound::Unusable(msg)) => assert!(msg.contains("stacked config"), "{msg}"),
             other => panic!("expected a usable message, got {other:?}"),
         }
     }

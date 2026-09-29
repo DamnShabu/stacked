@@ -194,7 +194,7 @@ fn roblox() -> String {
 /// interleave with every other test in this crate that reads the environment.
 fn roblox_in(dir: &std::path::Path) -> String {
     if let Some(v) = cordial_update::cache::recorded_version(dir) {
-        return format!("{v} (fetched by Cordial)");
+        return format!("{v} (fetched by Stacked)");
     }
     match cordial_update::engine::installed_version(dir) {
         Some(v) => format!("{v} (read from the extracted library)"),
@@ -213,7 +213,7 @@ pub fn report() -> String {
         // groups meaning different things and reads as a mistake; and the
         // version and how it got here are separate questions a reader scans
         // for separately.
-        ("Cordial", cordial_shell::version::full()),
+        ("Stacked", cordial_shell::version::full()),
         // The identifier only. `version::NOTICE` carries the licence and the
         // project URL together for somebody holding a bare binary, but the row
         // above already names the version and the block is pasted into this
@@ -248,7 +248,7 @@ mod tests {
         // a seventh row was added, and the failure it produced said nothing
         // about which row was new.
         const LABELS: [&str; 7] =
-            ["Cordial", "Licence", "Install", "Roblox", "System", "Distro", "Session"];
+            ["Stacked", "Licence", "Install", "Roblox", "System", "Distro", "Session"];
         let text = report();
         for label in LABELS {
             let line = text
@@ -322,7 +322,7 @@ mod roblox_version_tests {
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("temp dir");
         cordial_update::cache::record_version(&dir, "2.736.0.1408").expect("record");
-        assert_eq!(roblox_in(&dir), "2.736.0.1408 (fetched by Cordial)");
+        assert_eq!(roblox_in(&dir), "2.736.0.1408 (fetched by Stacked)");
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

@@ -1,47 +1,47 @@
 Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
-Upstream-Name: cordial
-Upstream-Contact: luohoa97 <luohoa97@users.noreply.github.com>
-Source: https://github.com/luohoa97/cordial
+Upstream-Name: stacked
+Upstream-Contact: DamnShabu <damnshabu@users.noreply.github.com>
+Source: https://github.com/DamnShabu/stacked
 
 # The full text of each licence named below, except GPL-3.0-or-later, is
 # installed alongside this file as a standalone notice -- see
 # packaging/deb/build-deb.sh, which stages
-# usr/share/doc/cordial/{NOTICE,libbadcpu-MIT.txt,mcpelauncher-linker-MIT.txt,
+# usr/share/doc/stacked/{NOTICE,libbadcpu-MIT.txt,mcpelauncher-linker-MIT.txt,
 # aosp-NOTICE.txt,libjnivm-MIT.txt,mocktail-webview-Apache-2.0.txt} next to
 # this file. That mirrors THIRD-PARTY-NOTICES.md, which is the long form of
-# the same list and is installed as usr/share/doc/cordial/THIRD-PARTY-NOTICES.md.
+# the same list and is installed as usr/share/doc/stacked/THIRD-PARTY-NOTICES.md.
 # GPL-3.0-or-later is the one licence every Debian and Ubuntu install already
 # carries at /usr/share/common-licenses/GPL-3, so it is referenced rather than
 # duplicated.
 
 Files: *
-Copyright: 2026 the Cordial contributors
+Copyright: 2026 the Cordial contributors and the Stacked contributors
 License: GPL-3.0-or-later
 Comment:
- Cordial as a whole. See /usr/share/common-licenses/GPL-3, or LICENSE in the
- source tree.
+ Stacked as a whole, a fork of Cordial. See /usr/share/common-licenses/GPL-3,
+ or LICENSE in the source tree.
 
 Files: third_party/libbadcpu/*
 Copyright: 2026 Sober OSS Contributors
 License: MIT
 Comment:
  x86-64 CPU feature emulator, vendored from Z3ki/sober-oss. Full text at
- usr/share/doc/cordial/libbadcpu-MIT.txt.
+ usr/share/doc/stacked/libbadcpu-MIT.txt.
 
 Files: third_party/mcpelauncher-linker/*
 Copyright: minecraft-linux contributors
 License: MIT
 Comment:
  The ported AOSP bionic linker. Full text at
- usr/share/doc/cordial/mcpelauncher-linker-MIT.txt, with the upstream AOSP
- NOTICE at usr/share/doc/cordial/aosp-NOTICE.txt.
+ usr/share/doc/stacked/mcpelauncher-linker-MIT.txt, with the upstream AOSP
+ NOTICE at usr/share/doc/stacked/aosp-NOTICE.txt.
 
 Files: third_party/libjnivm/*
 Copyright: ChristopherHX
 License: MIT
 Comment:
  The JNI VM standing in for Android's ART. Full text at
- usr/share/doc/cordial/libjnivm-MIT.txt.
+ usr/share/doc/stacked/libjnivm-MIT.txt.
 
 Files: third_party/mocktail-webview/*
 Copyright: 2026 komaruworld
@@ -49,9 +49,9 @@ License: Apache-2.0
 Comment:
  mocktail's implementation of Roblox's in-experience web window, taken as the
  basis for Cordial's own -- see NOTICE at the repository root, installed as
- usr/share/doc/cordial/NOTICE, and Apache-2.0 section 4(d), which requires
+ usr/share/doc/stacked/NOTICE, and Apache-2.0 section 4(d), which requires
  that file to travel with a binary distribution and not only with source.
- Full licence text at usr/share/doc/cordial/mocktail-webview-Apache-2.0.txt.
+ Full licence text at usr/share/doc/stacked/mocktail-webview-Apache-2.0.txt.
 
 License: MIT
  Permission is hereby granted, free of charge, to any person obtaining a copy
@@ -84,9 +84,9 @@ License: Apache-2.0
  WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
  License for the specific language governing permissions and limitations
  under the License. The full text, with all nine sections, is at
- usr/share/doc/cordial/mocktail-webview-Apache-2.0.txt.
+ usr/share/doc/stacked/mocktail-webview-Apache-2.0.txt.
 
 License: GPL-3.0-or-later
  On Debian and Ubuntu systems, the complete text is at
- /usr/share/common-licenses/GPL-3. Cordial requires "or-later" rather than
+ /usr/share/common-licenses/GPL-3. Stacked requires "or-later" rather than
  pinning to version 3; see LICENSE in the source tree.

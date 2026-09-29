@@ -1,6 +1,6 @@
 # ADR-031: The launcher outlives its window, and the client is a child process
 
-**Status:** Accepted
+**Status:** Superseded in part by [ADR-043](ADR-043-the-launcher-is-a-command-line.md). The launcher is no longer a window, so it has none to outlive. The client stays a separate child process, which this ADR decided and which still holds.
 **Date:** 2026-09-13
 **Extends:** [ADR-012](ADR-012-profiles-and-instances.md)
 **Related:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md), [ADR-011](ADR-011-wayland-and-libadwaita.md)

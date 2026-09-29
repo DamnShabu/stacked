@@ -272,7 +272,7 @@ pub fn start_all() -> usize {
         // grants, the same as before this change, or turning this bug off
         // would quietly turn a different one on.
         if !enabled_in_profile(&profile, &id) {
-            println!("  plugin {id}: disabled in Settings, not started");
+            println!("  plugin {id}: switched off for this profile, not started");
             continue;
         }
 

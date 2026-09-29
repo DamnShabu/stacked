@@ -22,8 +22,8 @@
 # costs nothing to add and is worth more than the emulated smoke test
 # elsewhere in this project's toolchain: it is `cargo test` actually executing
 # aarch64 code on an aarch64 CPU, not qemu standing in for one. This is
-# separate from whether *Cordial itself* runs on aarch64 -- see
-# docs/multiarch.md and packaging/rpm/cordial.spec's `ExclusiveArch` for that
+# separate from whether *Stacked itself* runs on aarch64 -- see
+# docs/multiarch.md and packaging/rpm/stacked.spec's `ExclusiveArch` for that
 # question, which this test matrix does not answer by itself, only exercises
 # the workspace's own Rust and native code on the architecture.
 name: test

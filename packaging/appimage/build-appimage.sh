@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# Build a distro-agnostic AppImage for Cordial.
+# Build a distro-agnostic AppImage for Stacked.
 #
 # This is the packaging format with the most work still to prove out, and
 # that is worth saying before the recipe: an AppImage's whole job is to carry
 # its own copies of libraries a host might not have at the right version, and
-# Cordial links four things a bare `ldd`-following bundler does not fully
+# Stacked links four things a bare `ldd`-following bundler does not fully
 # reach -- GTK4, libadwaita and WebKitGTK are ordinary DT_NEEDED dependencies
 # that linuxdeploy's ELF walk does find, but WebKitGTK's own helper
 # processes (WebKitWebProcess, WebKitNetworkProcess, WebKitGPUProcess), its
@@ -45,7 +45,7 @@
 # Two caveats on that. The binaries inside the tested image came from the
 # installed cordial rpm rather than from the cargo build below, because the
 # machine it was measured on has no webkitgtk6.0-devel and cannot compile the
-# webview feature; and the probe was a WebKitWebView, not cordial-shell's own
+# webview feature; and the probe was a WebKitWebView, not the launcher's own
 # sign-in view. That whole measurement was taken against a Fedora-built
 # libwebkitgtk-6.0.so, which is no longer what this script bundles -- see the
 # note beside the layout section below and in AppRun for what changed and
@@ -85,7 +85,7 @@ done
 
 cd "$repo"
 eval "$(packaging/version.sh)"
-echo "==> building cordial ${CORDIAL_DESCRIBE}"
+echo "==> building stacked ${CORDIAL_DESCRIBE}"
 
 need() {
     command -v "$1" >/dev/null 2>&1 || {
@@ -209,7 +209,7 @@ export CC=clang CXX=clang++
 export CORDIAL_GIT_SHA="$CORDIAL_SHORTHASH"
 
 # Both crates' `webview` features, never one alone -- see the identical
-# comment in packaging/rpm/cordial.spec's %build and packaging/deb/build-deb.sh
+# comment in packaging/rpm/stacked.spec's %build and packaging/deb/build-deb.sh
 # for the shape of the bug that taught this project to say so at every
 # callsite: with only one crate's feature on, the linker collects
 # webview::open silently and the binary carries no WebKitGTK, with no error
@@ -226,17 +226,14 @@ appdir="$target_dir/appimage/AppDir"
 rm -rf "$appdir"
 mkdir -p "$appdir"
 
-install -Dm755 "$target_dir/release/cordial-shell" "$appdir/usr/bin/cordial-shell"
-# **`cordial` is the command; `cordial-shell` is the file.** Asked for on
-# 2026-08-28: nobody wants to type the second word, and every other launcher on
-# a desktop answers to its own name. A symlink rather than a rename so that
-# anything already invoking `cordial-shell` -- a .desktop file somebody edited,
-# a script, a bug report -- keeps working, and so the two binaries stay
-# obviously related in `ls /usr/bin`. `cordial-run` deliberately gets no alias:
-# it is the loader the shell launches and is not what anyone should run by hand.
-ln -sf cordial-shell "$appdir/usr/bin/cordial"
-# First-party plugins, read-only beside the binary.
-# Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+# `stacked` is the command AppRun execs; `cordial-run` is the loader it starts
+# and gets no alias, because it is not what anyone should run by hand.
+install -Dm755 "$target_dir/release/stacked" "$appdir/usr/bin/stacked"
+# First-party plugins, read-only beside the binary. Until the native packages
+# existed nothing installed these anywhere, so no built-in plugin was listed
+# for anybody -- including Flatpak users, whose /app/share/cordial/plugins the
+# code has looked in from the start and which had never existed. The path
+# keeps Cordial's name because the code that reads it does.
 for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
@@ -252,7 +249,8 @@ install -Dm755 "$target_dir/release/cordial-run"   "$appdir/usr/bin/cordial-run"
 # runtime you cannot get a backtrace out of is not worth the disk it saves. But
 # that is an argument about the build on a developer's machine, not about what a
 # user downloads: `cordial-run` is 207.4 MB unstripped and 15.7 MB with
-# `--strip-debug`, measured here, and `cordial-shell` is another 175.7 MB.
+# `--strip-debug`, measured here, and the GTK launcher `stacked` replaced was
+# another 175.7 MB; `stacked` itself has not been measured.
 #
 # Stripping at packaging time keeps both: full DWARF where somebody is debugging,
 # and a package that is not thirteen times larger than it needs to be. rpmbuild
@@ -263,18 +261,16 @@ install -Dm755 "$target_dir/release/cordial-run"   "$appdir/usr/bin/cordial-run"
 # below turns off linuxdeploy's own stripping because its bundled binutils is
 # from 2020 and mangles a `.relr.dyn` section -- but that is a reason to keep it
 # away from Fedora's libraries, not a reason to ship ours unstripped.
-strip --strip-debug "$appdir/usr/bin/cordial-shell" "$appdir/usr/bin/cordial-run"
+strip --strip-debug "$appdir/usr/bin/stacked" "$appdir/usr/bin/cordial-run"
 
-install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-    "$appdir/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-    "$appdir/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
+install -Dm644 packaging/io.github.damnshabu.Stacked.desktop \
+    "$appdir/usr/share/applications/io.github.damnshabu.Stacked.desktop"
+install -Dm644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
+    "$appdir/usr/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
+install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
+    "$appdir/usr/share/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg"
 
-licdir="$appdir/usr/share/licenses/cordial"
+licdir="$appdir/usr/share/licenses/stacked"
 install -Dm644 LICENSE "$licdir/LICENSE"
 install -Dm644 NOTICE "$licdir/NOTICE"
 install -Dm644 THIRD-PARTY-NOTICES.md "$licdir/THIRD-PARTY-NOTICES.md"
@@ -297,16 +293,16 @@ install -Dm755 packaging/appimage/AppRun "$appdir/AppRun"
 # desktop file and an icon at the AppDir root, not only under usr/share/. A
 # copy rather than a symlink, because appimagetool refuses to package a
 # symlink pointing outside the tree it is squashing.
-cp "$appdir/usr/share/applications/io.github.luohoa97.Cordial.desktop" \
-    "$appdir/io.github.luohoa97.Cordial.desktop"
+cp "$appdir/usr/share/applications/io.github.damnshabu.Stacked.desktop" \
+    "$appdir/io.github.damnshabu.Stacked.desktop"
 # Rasterised because AppImage's own integration (and thumbnailers that read
 # AppImages without extracting them) commonly assume a PNG at the root even
 # where the desktop's Icon= key resolves an SVG everywhere else -- 256x256
-# matches the largest size Cordial's own icon theme directory would carry had
+# matches the largest size Stacked's own icon theme directory would carry had
 # one been rendered, and is large enough not to look soft in a file manager.
 rsvg-convert --width 256 --height 256 \
-    packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    -o "$appdir/io.github.luohoa97.Cordial.png"
+    packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
+    -o "$appdir/io.github.damnshabu.Stacked.png"
 
 echo "==> bundling shared libraries with linuxdeploy"
 # Plain linuxdeploy, deliberately with no GTK plugin. linuxdeploy-plugin-gtk
@@ -341,7 +337,7 @@ webkit_pkg_files() {
 # assuming the one it was first measured against.
 webkit_libexec=$(webkit_pkg_files | grep -E '/(libexec|lib64|lib/[a-z0-9_]+-linux-gnu)/webkitgtk-6.0$' | head -1)
 webkit_bundle=$(webkit_pkg_files | grep -m1 '/webkitgtk-6.0/injected-bundle$' || true)
-deploy_args=(--executable "$appdir/usr/bin/cordial-shell" --executable "$appdir/usr/bin/cordial-run")
+deploy_args=(--executable "$appdir/usr/bin/stacked" --executable "$appdir/usr/bin/cordial-run")
 if [ -n "$webkit_libexec" ] && [ -d "$webkit_libexec" ]; then
     # Every helper binary passed as its own --executable, not just copied,
     # so linuxdeploy's dependency walk covers *their* DT_NEEDED entries too
@@ -400,8 +396,8 @@ done
 "$tools_dir/linuxdeploy-${appimage_arch}.AppImage" \
     --appdir "$appdir" \
     "${deploy_args[@]}" \
-    --desktop-file "$appdir/io.github.luohoa97.Cordial.desktop" \
-    --icon-file "$appdir/io.github.luohoa97.Cordial.png"
+    --desktop-file "$appdir/io.github.damnshabu.Stacked.desktop" \
+    --icon-file "$appdir/io.github.damnshabu.Stacked.png"
 
 echo "==> laying out what WebKitGTK reaches by absolute path"
 # linuxdeploy was just given each helper as an --executable so their own
@@ -490,7 +486,7 @@ echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 #
 # Two families are left to the host on purpose, and the first pass of this
 # fix copied one of them in before that was noticed -- worth recording so it
-# is not tried again. `cordial-shell`/`cordial-run` carry `RUNPATH
+# is not tried again. `stacked`/`cordial-run` carry `RUNPATH
 # $ORIGIN/../lib` (`readelf -d`, this pass), and copying `libc.so.6` and
 # `ld-linux-x86-64.so.2` into that directory put them ahead of the host's own
 # in the dynamic linker's search order for `DT_NEEDED` resolution -- while the
@@ -516,10 +512,10 @@ echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 # .interp` on either of the two binaries just linked answers that directly,
 # with no case statement mapping `uname -m` onto a loader name that could
 # itself go stale on a third architecture.
-ld_linux=$(readelf -p .interp "$appdir/usr/bin/cordial-shell" 2>/dev/null \
+ld_linux=$(readelf -p .interp "$appdir/usr/bin/stacked" 2>/dev/null \
     | grep -oE 'ld-linux[a-zA-Z0-9._-]*\.so\.[0-9]+' | head -1)
 if [ -z "$ld_linux" ]; then
-    echo "error: could not read the ELF interpreter out of cordial-shell's .interp section" >&2
+    echo "error: could not read the ELF interpreter out of stacked's .interp section" >&2
     exit 1
 fi
 never_bundle_libs="libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1 $ld_linux libstdc++.so.6 libgcc_s.so.1"
@@ -583,9 +579,9 @@ echo "==> checking every bundled ELF against the glibc floor"
 # v0.10.0's rpm uninstallable, and its own header predicted this exact
 # outcome: "The AppImage had it too, and that one bundles no libc at all, so
 # the format whose whole purpose is running anywhere would have run on Fedora
-# 44 and nothing else." The release workflow then ran it over
-# `target/release/cordial-run` and `target/release/cordial-shell` and nothing
-# else -- so Cordial's own two binaries were held at GLIBC_2.39, and the
+# 44 and nothing else." The release workflow then ran it over the two
+# binaries under `target/release/` and nothing else -- so Cordial's own two
+# binaries were held at GLIBC_2.39, and the
 # hundred-odd libraries linuxdeploy copies out of this Fedora 44 container
 # were never looked at.
 #
@@ -620,7 +616,7 @@ The AppImage was not written.
 One or more bundled libraries need a newer glibc than the floor, which means
 this image would fail to start on every host older than the container it was
 built in -- the failure mode v0.13.2 shipped with. The libraries named above
-came out of this build container, so the fix is not in Cordial's own code:
+came out of this build container, so the fix is not in Stacked's own code:
 either build the image on a base whose glibc is at or below the floor, or
 bundle the loader and libc alongside them and exec through it. Do not raise
 CORDIAL_GLIBC_FLOOR to make this pass; that silently drops distributions.
@@ -629,7 +625,7 @@ FLOOREOF
 fi
 
 echo "==> appimagetool"
-outfile="$outdir/Cordial-${CORDIAL_DESCRIBE}-${appimage_arch}.AppImage"
+outfile="$outdir/Stacked-${CORDIAL_DESCRIBE}-${appimage_arch}.AppImage"
 mkdir -p "$outdir"
 ARCH="$appimage_arch" "$tools_dir/appimagetool-${appimage_arch}.AppImage" "$appdir" "$outfile"
 
@@ -637,11 +633,9 @@ chmod +x "$outfile"
 ls -lh "$outfile"
 echo "built: $outfile"
 echo
-echo "The shell starts and draws: launched on Fedora 44 (Bluefin, GNOME,"
-echo "Wayland) on 2026-08-27, first-run window titled with CORDIAL_DESCRIBE,"
-echo "profile row and Roblox button, as a wl_surface with the right app id."
-echo "That run was against a Fedora-built AppImage, before ADR-032 moved the"
-echo "base to ubuntu:24.04; not yet repeated against this one."
+echo "Not yet launched: no AppImage has been run since \`stacked\` replaced the"
+echo "GTK launcher. The last image that was, on 2026-08-27, was Fedora-built and"
+echo "predates ADR-032 moving the base to ubuntu:24.04."
 echo
 echo "The web view's mount-namespace trick (AppRun binding WebKitGTK's helper"
 echo "processes, injected bundle, bwrap and xdg-dbus-proxy over the absolute"

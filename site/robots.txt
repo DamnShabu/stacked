@@ -1,4 +1,4 @@
 User-agent: *
 Allow: /
 
-Sitemap: https://luohoa97.github.io/cordial/sitemap.xml
+Sitemap: https://damnshabu.github.io/stacked/sitemap.xml

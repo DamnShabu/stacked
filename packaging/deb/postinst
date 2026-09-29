@@ -1,17 +1,17 @@
 #!/bin/sh
 # Said here as well as in the control file's Description, because a package
 # manager is where a false promise costs most: someone installs, launches,
-# gets a dialog they did not expect, and files a bug against a maintainer
+# gets a message they did not expect, and files a bug against a maintainer
 # rather than reading a README. The same note ships in
-# packaging/aur/cordial-git/cordial-git.install for the same reason.
+# packaging/aur/stacked-git/stacked-git.install for the same reason.
 set -e
 
 case "$1" in
     configure)
         cat <<'MSG'
 
-Cordial ships no Roblox build. On first run it offers to fetch one, and
-installs it only if Roblox's own signing certificate signed it.
+Stacked ships no Roblox build. `stacked install` fetches one, and installs
+it only if Roblox's own signing certificate signed it.
 
 Roblox publishes no Android binary of its own -- its endpoint answers
 supportsAndroidBinaries: false -- so the build comes from a third-party
@@ -23,10 +23,11 @@ it at:
 A local copy is preferred when there is one: it costs no request and no
 bytes, and it gets the same signature check either way.
 
-Start it by typing `cordial`, or from your application list. `cordial-run`
-is the loader it launches and is not what you run by hand.
+Start it by typing `stacked`, or from your application list; `stacked help`
+lists the other commands. `cordial-run` is the loader it launches and is not
+what you run by hand.
 
-https://github.com/luohoa97/cordial#readme says which claims were measured
+https://github.com/DamnShabu/stacked#readme says which claims were measured
 and how.
 
 MSG

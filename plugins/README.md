@@ -1,7 +1,11 @@
 # Plugins
 
-A plugin is a directory containing `plugin.json` and its entry module. Cordial
+A plugin is a directory containing `plugin.json` and its entry module. Stacked
 discovers them under `~/.local/share/cordial/plugins/`.
+
+Stacked runs Cordial's plugin system unchanged, so a plugin written for one
+runs on the other, and where this document says "Cordial" it means that
+system: the host your plugin talks to.
 
 ```json
 {
@@ -15,8 +19,14 @@ discovers them under `~/.local/share/cordial/plugins/`.
 ```
 
 `capabilities` is what the plugin **requests**. What it actually gets is what you
-approved, in the profile you approved it in —
-`~/.local/share/cordial/profiles/<profile>/plugin-grants.json`:
+approved, in the profile you approved it in, one capability at a time:
+
+```bash
+stacked plugins grant flag-inspector flags.read
+stacked plugins grant flag-inspector log
+```
+
+That writes `~/.local/share/cordial/profiles/<profile>/plugin-grants.json`:
 
 ```json
 { "flag-inspector": ["flags.read", "log"] }
@@ -213,11 +223,16 @@ have to be trusted to rewrite it.
 ## Preferences: you declare them, Cordial draws them
 
 The section above is your plugin's own scratch document. This is a different
-thing: **settings a person sets**, in a page Cordial builds and Cordial owns.
+thing: **settings a person sets**, whose answers Cordial owns.
 
-Declare them in `plugin.json` and a gear appears on your row in Settings. There
-is no capability and no other manifest key to set — declaring a field *is* how
-you get a page, so the button can never appear with nothing behind it.
+Declare them in `plugin.json`. There is no capability and no other manifest
+key to set. **Under Cordial they became a page in its Settings window, and
+Stacked has no page for them.** It has no window of its own
+([ADR-043](../docs/adr/ADR-043-the-launcher-is-a-command-line.md)) and no
+command for preferences yet, so a user sets them by writing
+`<profile>/plugins/<your-id>/preferences.json` by hand, a flat object of your
+keys. Your plugin reads them exactly as below either way, and until someone
+writes that file it gets your defaults.
 
 ```json
 {
@@ -238,7 +253,7 @@ you get a page, so the button can never appear with nothing behind it.
 }
 ```
 
-| `type` | the row you get | its own keys |
+| `type` | the row Cordial draws | its own keys |
 |---|---|---|
 | `bool` | a switch | `default` |
 | `int` | a spin box | `default`, `minimum`, `maximum`, `step` |
@@ -246,8 +261,8 @@ you get a page, so the button can never appear with nothing behind it.
 | `text` | an entry | `default` |
 
 Every field takes `key`, `title`, and optionally `description` and `group`.
-Fields sharing a `group` become one group on the page, in the order the groups
-first appear; ungrouped fields come first.
+Fields sharing a `group` become one group on Cordial's page, in the order the
+groups first appear; ungrouped fields come first.
 
 Reading them is the same shape as settings, and needs the same `settings.read`:
 
@@ -276,8 +291,8 @@ them refuses the whole plugin at install rather than being stripped quietly.
 **Why you cannot draw the page yourself.** GNOME Shell extensions can, because
 they run inside the shell's own process. Your plugin does not: it is a separate
 sandboxed process with no display and no toolkit, and a plugin able to draw in
-Cordial's window could draw something indistinguishable from Cordial's own
-sign-in dialog. See
+the game window could draw something indistinguishable from Roblox's own
+sign-in screen. See
 [ADR-020](../docs/adr/ADR-020-declarative-plugin-preferences.md), which also
 lists what the declarative form gives up and what is planned to be added to it.
 
@@ -334,11 +349,11 @@ and where each came from, then deliberately attempts a write it was not granted
 so the refusal is visible.
 
 [`discord-presence/`](discord-presence) is first-party — it ships with
-Cordial — and is still an ordinary plugin: same manifest, same grants, same
+Stacked, as it did with Cordial — and is still an ordinary plugin: same manifest, same grants, same
 isolation ([ADR-006](../docs/adr/ADR-006-plugin-events-and-first-party.md)
 is explicit that "built in" and "a plugin" are not opposites). It listens for
 client lifecycle events and keeps Discord Rich Presence in step with them,
-through `presence.set`/`presence.clear` — the two lines in its own source say
-plainly that its Discord application id is a placeholder and that the
+through `presence.set`/`presence.clear`. Its own source says plainly that the
 lifecycle push does not yet carry which game is running, because that needs
-work in `cordial-runtime` this plugin does not touch.
+work in `cordial-runtime` this plugin does not touch, and that its default
+Discord application id is Cordial's.

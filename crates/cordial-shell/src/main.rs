@@ -1,282 +1,587 @@
-//! `cordial-shell` — the core shell binary.
+//! `stacked` -- the command-line launcher.
 //!
-//! [ADR-002](../../../docs/adr/ADR-002-core-shell-and-ui-handoff.md) draws the
-//! line this crate has to stay inside: core owns a window, the chooser that
-//! paints at T1, and a minimal settings fallback narrow enough to disable a
-//! broken plugin. Everything richer — real settings, themes, plugin-contributed
-//! chooser entries, instance management — belongs to the UI plugin that takes
-//! over at T3. This binary does not link the plugin host or the engine at all;
-//! it is built standalone on purpose, so the window/chooser/settings shape can
-//! be proven before either of those exist. See `window.rs` for the seam where
-//! the engine's Wayland surface will eventually be embedded.
+//! It finds a Roblox build, picks a profile, turns the saved settings into the
+//! client's environment, and starts `cordial-run`, which opens the one window
+//! there is: the game's. Everything the GTK launcher that used to live here
+//! did through windows -- the chooser, the settings page, the profile
+//! switcher, the update dialog, the plugin pages -- is a subcommand instead,
+//! and the pure logic underneath each of them (`install.rs`, `launch.rs`,
+//! `shell_config.rs`, `browser_account`) is the same code it always was.
 //!
-//! [ADR-011](../../../docs/adr/ADR-011-wayland-and-libadwaita.md) is why this
-//! is libadwaita rather than bare GTK: `AdwStyleManager` tracks
-//! `org.freedesktop.appearance color-scheme` on its own, live, which is what
-//! keeps the area behind the engine's canvas the desktop's actual background
-//! colour instead of a flash of white while a resize catches up.
+//! Why a CLI rather than a window: the launcher window stayed resident for the
+//! whole of a session (ADR-031) with its own GTK main loop, watchers and update
+//! timer, for a user whose only interaction with it was pressing Play. A
+//! terminal command that starts the game and waits costs nothing while the
+//! game runs, and a desktop entry that runs it is still one click.
+//!
+//! Deep links still work. The desktop entry passes `%u`, and a bare
+//! `roblox-player:` or `roblox:` argument is taken as "play, joining this".
+//! What is gone is single-instance forwarding: the GTK application registered
+//! on the session bus and handed a second invocation's link to the first. A
+//! second `stacked` against a profile that is already open is refused by the
+//! profile lock (ADR-012) with the holder named, which is the same outcome a
+//! user saw from the old launcher when both tried to start a client.
 
 // This binary compiles its own copies of `audio_devices.rs` and
-// `root_warning.rs` (see the `mod` lines below) rather than depending on the
-// `cordial_shell` lib crate for them, so `[lints] workspace = true`'s
-// `unsafe_code = "deny"` applies to this crate root independently of the
-// `#![allow(unsafe_code)]` on `lib.rs` -- see that file's comment, and
-// [ADR-036](../../../docs/adr/ADR-036-unsafe-is-a-boundary-not-a-convention.md),
-// for why cordial-shell carries the allow at all.
+// `root_warning.rs` rather than depending on the `cordial_shell` lib crate for
+// them, so `[lints] workspace = true`'s `unsafe_code = "deny"` applies to this
+// crate root independently of the `#![allow(unsafe_code)]` on `lib.rs` -- see
+// that file's comment, and ADR-036, for why cordial-shell carries the allow.
 #![allow(unsafe_code)]
 
 mod audio_devices;
-mod chooser;
+mod browser_account;
+mod cli_config;
+mod cli_plugins;
+mod cli_roblox;
 mod crash;
 mod deep_link;
-mod browser_account;
 mod diagnostics;
-mod download_progress;
 mod install;
-mod instructions;
 mod launch;
-mod multi_instance_warning;
-mod profile_switcher;
-mod refresh_watch;
-mod roblox_versions;
 mod root_warning;
-mod settings;
 mod shell_config;
-mod updater;
-// The window itself needs webkitgtk6.0-devel, which an immutable host does not
-// have; the policy beside it needs nothing and is always compiled, because it is
-// the part that has to be right and it should be under test everywhere.
-#[cfg(feature = "webview")]
-mod webview;
-mod webview_policy;
-mod window;
-use cordial_shell::window_state;
+
+use cordial_shell::profile;
+use std::process::ExitCode;
 
 /// Guards `CORDIAL_PROFILE_ROOT` across every test in this binary that points
 /// it at a scratch directory.
 ///
 /// **Shared rather than one per file, and that distinction is load-bearing.**
-/// `profile_switcher.rs` and `launch.rs` each used to keep their own private
-/// mutex for this, on the reasonable-looking assumption that a mutex local to
-/// a file's own `mod tests` was enough to stop its own tests interleaving.
-/// It stops that, and does nothing at all about a *different* file's tests
-/// setting the same process-wide variable at the same moment — two locks
-/// guarding one variable serialise nothing against each other. Measured, not
-/// assumed: adding `launch.rs`'s vpn-gate test surfaced this by actually
-/// failing `profile_switcher::tests::the_list_offers_no_profile_that_does_not_exist`
-/// on one run out of several, reading back
-/// `["CordialTest", "evr_l", "main"]` where only `["alt", "main"]` should have
-/// existed — another test's scratch directory, torn into view mid-assertion.
-/// It did not reproduce every run, which is exactly the "one-in-three flake"
-/// shape `profile.rs`'s own tests already warn about, and exactly why a fix
-/// that "seemed to work" on a single clean run would not have been evidence of
-/// anything.
+/// Two files each keeping a private mutex for the same process-wide variable
+/// serialise nothing against each other; measured, when a vpn-gate test in
+/// `launch.rs` read another test's scratch directory mid-assertion on one run
+/// in several.
 #[cfg(test)]
 pub(crate) static PROFILE_ROOT_ENV: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-use libadwaita::gtk::gio;
-use libadwaita::prelude::*;
-use std::cell::RefCell;
-use std::rc::Rc;
+const USAGE: &str = "\
+Usage: stacked [COMMAND] [ARGS]
 
-/// Must match `packaging/io.github.luohoa97.Cordial.desktop`'s file name and
-/// `StartupWMClass`. GNOME Shell uses the application id to find the desktop
-/// entry for window-to-launcher matching; let the two drift and the taskbar
-/// icon and startup notification silently stop matching up rather than erroring.
-///
-/// It is also what makes Cordial single-instance, which the deep-link handler
-/// depends on rather than works around: a `GApplication` with a fixed id
-/// registers on the session bus, and a second invocation carrying a URL hands
-/// that URL to the process already registered and exits, which is why clicking
-/// a link on a website wakes the launcher instead of starting a second one.
-const APP_ID: &str = "io.github.luohoa97.Cordial";
+With no command, starts Roblox on the current profile. A roblox-player: or
+roblox: link on its own joins that experience, which is what a browser hands
+over when you press Play on the website.
 
-fn main() -> libadwaita::glib::ExitCode {
-    // **Answered before the `GApplication` exists, and that is the whole
-    // point.** This binary is a single-instance application: with a Cordial
-    // already running, anything handed to a second invocation is forwarded to
-    // the first over D-Bus and this process exits. A diagnostics flag that went
-    // through that would print nothing, or print into the other process's
-    // terminal, which is worse than printing nothing.
-    //
-    // It also has to work when the shell cannot start at all -- a missing
-    // WebKitGTK, a GTK too old, no display -- because that is exactly the
-    // report that most needs the distribution and the package format in it.
-    // Reading `argv` directly costs nothing and depends on none of that.
-    let flags: Vec<String> = std::env::args().skip(1).collect();
-    if flags.iter().any(|a| a == "--diagnostics") {
-        print!("{}", diagnostics::report());
-        return libadwaita::glib::ExitCode::SUCCESS;
-    }
-    // **`--help` printed nothing at all and exited 0**, which is how a flag
-    // gets shipped and never found. `GApplication` only prints its own usage
-    // for options it was told about, and this binary registers none -- it takes
-    // a deep link positionally and now one flag. Four lines beat a user
-    // discovering `--diagnostics` from a bug report template they cannot open
-    // because the shell will not start.
-    if flags.iter().any(|a| a == "--help" || a == "-h") {
-        println!(
-            "cordial {version}\n\
-             \n\
-             Usage: cordial [ROBLOX-LINK]\n\
-             \n\
-             With no arguments it opens the launcher. A `roblox-player:` or\n\
-             `roblox:` link joins that experience, which is what your browser\n\
-             hands over when you press Play on the website.\n\
-             \n\
-             Options:\n\
-             \x20 --diagnostics  Print which Cordial and Roblox build this is, the\n\
-             \x20                distribution, and how Cordial was installed. Paste\n\
-             \x20                it into a bug report. Settings has the same block\n\
-             \x20                behind a Copy button.\n\
-             \x20 -h, --help     This.\n\
-             \n\
-             `cordial-run` is the loader this launches and is not meant to be run\n\
-             by hand. Issues: https://github.com/luohoa97/cordial/issues\n\
-             \n\
-             {notice}",
-            version = cordial_shell::version::full(),
-            notice = cordial_shell::version::NOTICE,
-        );
-        return libadwaita::glib::ExitCode::SUCCESS;
-    }
+Playing
+  play [--profile NAME] [--run SECS] [LINK]
+                          Start Roblox. --run stops it after SECS seconds.
+  status                  Which Roblox build and profile a launch would use.
 
-    // Both flags, and the second one is the load-bearing one.
-    //
-    // `HANDLES_OPEN` says this application takes URLs at all; a `GApplication`
-    // without it refuses arguments outright. On its own it delivers them as
-    // `GFile`s to the `open` signal, and **`GFile` reshapes a Roblox link**:
-    // `roblox-player:1+launchmode:play+gameinfo:AAA` comes back out as
-    // `roblox-player:///1+launchmode:play+gameinfo:AAA`, because GIO parses it
-    // as a URL with an empty authority. `deep_link`'s tests pin that
-    // measurement. So `HANDLES_COMMAND_LINE` is added, which hands over the
-    // invoking process's `argv` — remote invocations included, which is where
-    // the string would otherwise have already been rewritten before this
-    // process saw it — and the link is taken from there, byte for byte.
-    //
-    // `open` stays connected for the other route in: a caller that speaks
-    // `org.freedesktop.Application.Open` over D-Bus hands over URIs and never
-    // an `argv`, and a link arriving that way is better carried in GIO's
-    // spelling than dropped.
-    let app = libadwaita::Application::builder()
-        .application_id(APP_ID)
-        .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::HANDLES_COMMAND_LINE)
-        .build();
+Roblox builds
+  install                 Find a Roblox build, or download one if there is none.
+                          A copy Sober already downloaded is used first.
+  update                  Download the newest Roblox build.
+  versions                List the builds kept on disk.
+  versions available      List the builds that can be downloaded.
+  versions get VERSION    Download one build into the store.
+  versions remove VERSION Delete a kept build.
+  pin VERSION [--profile NAME]   Always run VERSION on a profile.
+  unpin [--profile NAME]         Run the current build again.
 
-    // The shell, once there is one. A link that arrives while Cordial is
-    // already up is the ordinary case — somebody clicks Play on the website
-    // with the launcher open — and it must reach that window rather than build
-    // a second one.
-    let shell: Rc<RefCell<Option<window::Shell>>> = Rc::new(RefCell::new(None));
+Profiles (each is a separate sign-in and data directory)
+  profiles                List profiles; * marks the current one.
+  profiles new NAME       Create a profile.
+  profiles use NAME       Make NAME the current profile.
 
-    {
-        let shell = shell.clone();
-        app.connect_activate(move |app| {
-            start(app, &shell);
-            if let Some(shell) = shell.borrow().as_ref() {
-                shell.present();
-            }
-        });
-    }
-    {
-        // The path every desktop launch takes, local or remote: `Exec=` in the
-        // desktop entry passes `%u` as an argument, and this is where it lands
-        // unaltered.
-        let shell = shell.clone();
-        app.connect_command_line(move |app, command_line| {
-            start(app, &shell);
-            let mut links = 0;
-            for argument in command_line.arguments().into_iter().skip(1) {
-                // Lossy is safe here rather than convenient: anything that was
-                // not valid UTF-8 comes out with replacement characters, which
-                // `accept` refuses along with everything else that is not
-                // printable ASCII.
-                queue(&shell, &argument.to_string_lossy());
-                links += 1;
-            }
-            // A second invocation with nothing on it is somebody starting
-            // Cordial again — from the desktop icon, most likely — and what
-            // they want is the window they already have, in front.
-            if links == 0 {
-                if let Some(shell) = shell.borrow().as_ref() {
-                    shell.present();
+Settings
+  config                  Show every setting and its value.
+  config get KEY          Show one setting.
+  config set KEY VALUE    Change a setting. `stacked config` lists the keys.
+  config unset KEY        Put a setting back to its default.
+  config path             Where the settings file is.
+  flags path [--profile NAME]    Where a profile's FastFlags file is.
+  audio-outputs           List the audio outputs `audio_output` can name.
+
+Plugins
+  plugins                 List installed plugins and whether each is on.
+  plugins install FILE    Install a plugin from a .tar.zst archive.
+  plugins remove ID       Uninstall a plugin.
+  plugins enable|disable ID [--profile NAME]
+  plugins grant|revoke ID CAPABILITY [--profile NAME]
+                          Grant only what the plugin asks for; `plugins` lists it.
+  plugins deno            Install Deno, which plugins with code run on.
+
+Other
+  diagnostics             Print the build, distribution and install method,
+                          for a bug report. Also --diagnostics.
+  help                    This. Also -h, --help.
+  version                 The version. Also -V, --version.
+
+cordial-run is the loader this starts and is not meant to be run by hand.";
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let (command, rest) = match args.split_first() {
+        Some((first, rest)) => (first.as_str(), rest),
+        None => ("play", &[][..]),
+    };
+
+    // Answered before anything touches a profile, a lock or a display: this is
+    // the report that most needs to work on a machine where nothing else does.
+    let code = match command {
+        "diagnostics" | "--diagnostics" => {
+            print!("{}", diagnostics::report());
+            0
+        }
+        "help" | "-h" | "--help" => {
+            println!("{} {}\n\n{USAGE}\n\n{}", cordial_shell::branding::NAME.to_lowercase(),
+                cordial_shell::version::full(), cordial_shell::version::NOTICE);
+            0
+        }
+        "version" | "-V" | "--version" => {
+            println!("{} {}", cordial_shell::branding::NAME, cordial_shell::version::full());
+            0
+        }
+        _ => {
+            // Before anything can be launched or listed, because the storage
+            // that has a login in it may still be at the pre-ADR-012 path.
+            // Skipped when there is nothing to move, which is every run after
+            // the first.
+            profile::migrate_legacy_layout();
+            match command {
+                "play" => play(rest),
+                "status" => status(rest),
+                "install" => cli_roblox::install(),
+                "update" => cli_roblox::update(),
+                "versions" => cli_roblox::versions(rest),
+                "pin" => cli_roblox::pin(rest),
+                "unpin" => cli_roblox::unpin(rest),
+                "profiles" | "profile" => profiles(rest),
+                "config" => cli_config::run(rest),
+                "flags" => flags(rest),
+                "audio-outputs" => {
+                    for sink in audio_devices::sinks() {
+                        println!("{}", audio_devices::row_label(&sink));
+                    }
+                    0
+                }
+                "plugins" | "plugin" => cli_plugins::run(rest),
+                // A bare link is the desktop entry's `%u`: play, joining it.
+                link if looks_like_link(link) => play(&args),
+                other => {
+                    eprintln!("stacked: unknown command {other:?}. Try `stacked help`.");
+                    2
                 }
             }
-            // The status the *invoking* process exits with, which for a remote
-            // invocation is the one the browser waits on. Nothing here can
-            // fail in a way that process should hear about: a refused link is
-            // reported on the primary's stdout and the launcher is up either
-            // way.
-            libadwaita::glib::ExitCode::SUCCESS
-        });
-    }
-    {
-        let shell = shell.clone();
-        app.connect_open(move |app, files, _hint| {
-            start(app, &shell);
-            for file in files {
-                queue(&shell, &file.uri());
-            }
-        });
-    }
-
-    app.run()
+        }
+    };
+    ExitCode::from(code)
 }
 
-/// Check a link and hand it to the window, or say why not.
+/// A value that should be treated as a Roblox link rather than a command.
 ///
-/// Nothing about the string is trusted: it was produced by a browser acting on
-/// somebody's click. [`deep_link::accept`] validates the envelope before the
-/// window attempts account routing or holds it for a manual launch.
-fn queue(shell: &Rc<RefCell<Option<window::Shell>>>, raw: &str) {
-    match deep_link::accept(raw) {
-        Ok(url) => match shell.borrow().as_ref() {
-            Some(shell) => {
-                println!("  shell: received Roblox link");
-                shell.queue_join(url);
+/// Only a prefix check: [`deep_link::accept`] does the real validation, and
+/// the point here is only to route a link to `play` rather than report it as
+/// an unknown command.
+fn looks_like_link(arg: &str) -> bool {
+    // `get` rather than indexing: an argument is arbitrary text, and slicing
+    // one at a byte offset inside a multi-byte character panics.
+    deep_link::SCHEMES.iter().any(|s| {
+        arg.get(..s.len()).is_some_and(|head| head.eq_ignore_ascii_case(s))
+            && arg.get(s.len()..).is_some_and(|rest| rest.starts_with(':'))
+    })
+}
+
+/// Pull `--profile NAME` out of an argument list, returning the rest.
+pub(crate) fn take_profile(args: &[String]) -> Result<(Option<String>, Vec<String>), String> {
+    let mut profile = None;
+    let mut rest = Vec::new();
+    let mut it = args.iter();
+    while let Some(arg) = it.next() {
+        if arg == "--profile" || arg == "-p" {
+            let name = it.next().ok_or("--profile needs a name")?;
+            profile = Some(name.clone());
+        } else if let Some(name) = arg.strip_prefix("--profile=") {
+            profile = Some(name.to_string());
+        } else {
+            rest.push(arg.clone());
+        }
+    }
+    Ok((profile, rest))
+}
+
+/// The profile a command acts on: the one named, or the current one.
+pub(crate) fn chosen_profile(named: Option<String>) -> String {
+    named.unwrap_or_else(|| shell_config::load(&shell_config::path()).profile)
+}
+
+fn play(args: &[String]) -> u8 {
+    let (named, rest) = match take_profile(args) {
+        Ok(v) => v,
+        Err(e) => {
+            report(&e.to_string());
+            return 2;
+        }
+    };
+    let mut run_seconds = None;
+    let mut link = None;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--run" => match it.next().and_then(|s| s.parse::<u64>().ok()) {
+                Some(n) => run_seconds = Some(n),
+                None => {
+                    eprintln!("stacked: --run needs a number of seconds");
+                    return 2;
+                }
+            },
+            other if link.is_none() => link = Some(other.to_string()),
+            other => {
+                eprintln!("stacked: unexpected argument {other:?}");
+                return 2;
             }
-            // `start` built the window immediately above, so this is
-            // unreachable rather than merely unlikely — and said out loud,
-            // because a link silently going nowhere is the failure this whole
-            // path exists to avoid.
-            None => println!("  shell: no window to receive Roblox link"),
-        },
-        // Reported rather than swallowed: somebody whose browser opens Cordial
-        // and appears to do nothing has no other way to find out that the link
-        // was refused, or why.
-        Err(why) => {
-            println!("  shell: ignoring {why}");
-            if let Some(shell) = shell.borrow().as_ref() {
-                shell.present();
+        }
+    }
+
+    let config = shell_config::load(&shell_config::path());
+    let explicit_profile = named.is_some();
+    let mut profile_name = named.unwrap_or_else(|| config.profile.clone());
+
+    // Nothing about a link is trusted: it was produced by a browser acting on
+    // somebody's click. Refused links are reported rather than dropped,
+    // because somebody whose browser opens Stacked and sees nothing happen has
+    // no other way to find out why.
+    let mut join_url = None;
+    let mut matched = None;
+    if let Some(raw) = link {
+        let url = match deep_link::accept(&raw) {
+            Ok(url) => url,
+            Err(why) => {
+                report(&format!("ignoring the link: {why}"));
+                return 2;
             }
+        };
+        let routing = std::env::var("CORDIAL_BROWSER_ACCOUNT_ROUTING").as_deref() != Ok("0");
+        match routing.then(|| browser_account::LaunchTicket::parse(&url)).flatten() {
+            // ADR-035: the browser's one-use ticket says which account pressed
+            // Play. If a saved profile is signed in as that account, it is the
+            // one to launch -- unless a profile was named on the command line,
+            // which is the more specific instruction. The ticket itself is
+            // stripped from what the engine is handed either way.
+            Some(ticket) => {
+                join_url = Some(ticket.join_url.clone());
+                if !explicit_profile {
+                    println!("stacked: checking which account the browser is signed in as");
+                    if let Some(found) = browser_account::resolve(ticket) {
+                        println!("stacked: the browser's account is saved as profile {:?}", found.name());
+                        profile_name = found.name().to_string();
+                        matched = Some(found);
+                    } else {
+                        println!("stacked: no saved profile matches the browser's account; using {profile_name:?}");
+                    }
+                }
+            }
+            None => join_url = Some(url),
+        }
+    }
+
+    if root_warning::running_as_root() {
+        eprintln!("stacked: {}", root_warning::WARNING);
+    }
+
+    let build = match install::locate(&config.roblox) {
+        Ok(build) => build,
+        Err(install::NotFound::NoBuild) => {
+            report(
+                "no Roblox build found. `stacked install` downloads one, or uses the copy \
+                 Sober downloaded if Sober is installed.",
+            );
+            return 1;
+        }
+        Err(install::NotFound::Unusable(message)) => {
+            report(&message);
+            return 1;
+        }
+    };
+    // A profile that names a Roblox version gets that one, whatever the
+    // current build is -- and a pin that cannot be honoured refuses the launch
+    // rather than quietly running the build it was pinned away from.
+    let build = match profile::dir(&profile_name)
+        .map_err(install::NotFound::Unusable)
+        .and_then(|d| install::apply_pin(build, &d))
+    {
+        Ok(build) => build,
+        Err(install::NotFound::NoBuild) => {
+            report(&format!(
+                "profile {profile_name:?} is pinned to a build that is not on disk. \
+                 `stacked versions get VERSION` fetches it, or `stacked unpin` clears the pin."
+            ));
+            return 1;
+        }
+        Err(install::NotFound::Unusable(message)) => {
+            report(&message);
+            return 1;
+        }
+    };
+
+    // ADR-012's claim, taken before the process exists so that a refusal
+    // costs nothing, and naming the profile because "already open" on its own
+    // does not tell anyone which one to close.
+    let claim = match profile::acquire(&profile_name) {
+        Ok(claim) => claim,
+        Err(e @ profile::Error::Busy(..)) => {
+            report(&format!(
+                "{e}\nTo run a second client alongside it, give it a profile of its own: \
+                 `stacked profiles new NAME`, then `stacked play --profile NAME`."
+            ));
+            return 3;
+        }
+        Err(e) => {
+            report(&e.to_string());
+            return 1;
+        }
+    };
+
+    // Account routing authenticated exact identity and cookie bytes before
+    // the lock was taken. If the saved values changed in between, the name no
+    // longer identifies the session that was authenticated, so the launch goes
+    // ahead without pinning the secret store to it.
+    let secret_store = matched.and_then(|m| {
+        m.still_matches(&profile_name, claim.profile_dir()).then(|| m.store())
+    });
+
+    match &join_url {
+        Some(url) => println!(
+            "stacked: starting Roblox on profile {profile_name:?}, joining {}",
+            deep_link::summarise(url)
+        ),
+        None => println!("stacked: starting Roblox on profile {profile_name:?}"),
+    }
+    let mut instance = match launch::spawn(
+        &build,
+        claim,
+        launch::LaunchRequest { run_seconds, join_url: join_url.as_deref(), secret_store },
+    ) {
+        Ok(instance) => instance,
+        Err(message) => {
+            report(&message);
+            return 1;
+        }
+    };
+
+    println!("stacked: cordial-run is pid {}", instance.pid());
+    // Ctrl-C reaches the whole foreground process group, so the client hears
+    // it and shuts down in order on its own. This process must not die first:
+    // it holds the read end of the client's output, and a client that loses
+    // its stdout mid-shutdown fails there instead of exiting cleanly. Set only
+    // now, after the spawn, because an ignored signal survives `exec` and a
+    // client started with SIGINT ignored would never hear Ctrl-C at all.
+    //
+    // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
+    // changes this process's disposition.
+    unsafe {
+        libc::signal(libc::SIGINT, libc::SIG_IGN);
+    }
+    let status = match instance.wait() {
+        Ok(status) => status,
+        Err(e) => {
+            report(&format!("lost track of the client: {e}"));
+            return 1;
+        }
+    };
+    if crash::is_crash(&status, &instance.recent_output()) {
+        eprintln!();
+        report(&format!(
+            "{} Its output is above, or in the journal if it was started from the desktop. \
+             `stacked diagnostics` prints what a bug report needs alongside it.",
+            crash::describe(&status),
+        ));
+        eprintln!("It was started with:\n{}", instance.command_line);
+        return 1;
+    }
+    0
+}
+
+/// A launch that could not happen, said where the person who asked for it
+/// will see it.
+///
+/// On a terminal that is stderr. Launched from the desktop entry or a browser's
+/// Play button there is no terminal (`Terminal=false`), and a message on a
+/// stderr nobody reads is a Play button that silently does nothing. So when
+/// stderr is not a terminal the same sentence also goes out as a desktop
+/// notification, through the portal `cordial_plugins::notify` already uses,
+/// which reaches the desktop from inside the Flatpak too.
+fn report(message: &str) {
+    let message = message.trim();
+    eprintln!("stacked: {message}");
+    // SAFETY: `isatty` reads nothing but its argument.
+    if unsafe { libc::isatty(2) } != 1 {
+        if let Err(e) = cordial_plugins::notify::send("Stacked could not start Roblox", message) {
+            eprintln!("stacked: the desktop notification failed too: {e}");
         }
     }
 }
 
-/// Build the window, once.
-///
-/// Called from all three entry points because any of them can be the first
-/// thing that happens, and called again on every subsequent one because that is
-/// what a remote invocation looks like from in here. The second call does
-/// nothing.
-fn start(app: &libadwaita::Application, shell: &Rc<RefCell<Option<window::Shell>>>) {
-    if shell.borrow().is_some() {
-        return;
+fn status(args: &[String]) -> u8 {
+    let (named, _) = match take_profile(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 2;
+        }
+    };
+    let config = shell_config::load(&shell_config::path());
+    let name = named.unwrap_or_else(|| config.profile.clone());
+    println!("profile:  {name}");
+    if let Ok(dir) = profile::dir(&name) {
+        println!("          {}", dir.display());
+        if let Some(pin) = profile::pinned_version(&dir) {
+            println!("pinned:   {pin}");
+        }
+    }
+    match install::effective_apk(&config.roblox) {
+        Some((apk, origin)) => {
+            println!("roblox:   {}", apk.display());
+            println!("          {}", origin.describe());
+        }
+        None => println!("roblox:   none found -- `stacked install` gets one"),
+    }
+    if profile::is_held(&name) {
+        println!("running:  yes");
+    }
+    0
+}
+
+fn profiles(args: &[String]) -> u8 {
+    let config_path = shell_config::path();
+    let mut config = shell_config::load(&config_path);
+    match args.first().map(String::as_str) {
+        None | Some("list") => {
+            let mut names = profile::list();
+            if !names.contains(&config.profile) {
+                names.push(config.profile.clone());
+                names.sort();
+            }
+            for name in names {
+                let current = if name == config.profile { "*" } else { " " };
+                let running = if profile::is_held(&name) { "  (running)" } else { "" };
+                println!("{current} {name}{running}");
+            }
+            0
+        }
+        Some("new" | "create" | "add") => {
+            let Some(name) = args.get(1) else {
+                eprintln!("stacked: profiles new needs a name");
+                return 2;
+            };
+            if !profile::is_valid_name(name) {
+                eprintln!("stacked: {name:?} is not a usable profile name: letters, digits, - and _, up to 64");
+                return 2;
+            }
+            if profile::list().iter().any(|n| n == name) {
+                eprintln!("stacked: profile {name:?} already exists");
+                return 1;
+            }
+            // Creating a profile is taking its lock once and letting it go,
+            // which is also what makes the directory: the same thing the GTK
+            // profile switcher did.
+            match profile::acquire(name) {
+                Ok(claim) => {
+                    drop(claim);
+                    println!("created profile {name:?}. `stacked profiles use {name}` makes it current.");
+                    0
+                }
+                Err(e) => {
+                    eprintln!("stacked: {e}");
+                    1
+                }
+            }
+        }
+        Some("use" | "switch" | "select") => {
+            let Some(name) = args.get(1) else {
+                eprintln!("stacked: profiles use needs a name");
+                return 2;
+            };
+            if !profile::list().iter().any(|n| n == name) {
+                eprintln!("stacked: there is no profile {name:?}. `stacked profiles new {name}` creates it.");
+                return 1;
+            }
+            config.profile = name.clone();
+            if let Err(e) = shell_config::save(&config_path, &config) {
+                eprintln!("stacked: could not save {}: {e}", config_path.display());
+                return 1;
+            }
+            println!("current profile is now {name:?}");
+            0
+        }
+        Some(other) => {
+            eprintln!("stacked: unknown profiles command {other:?}. Try `stacked help`.");
+            2
+        }
+    }
+}
+
+fn flags(args: &[String]) -> u8 {
+    let (named, rest) = match take_profile(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 2;
+        }
+    };
+    match rest.first().map(String::as_str) {
+        None | Some("path") => {
+            let name = chosen_profile(named);
+            match profile::dir(&name) {
+                // The runtime reads `<profile>/flags.json` unless
+                // `CORDIAL_FLAGS` points elsewhere; see `docs/fastflags.md`.
+                Ok(dir) => {
+                    match std::env::var_os("CORDIAL_FLAGS") {
+                        Some(over) => println!("{}", std::path::Path::new(&over).display()),
+                        None => println!("{}", cordial_plugins::flag_document::path_in(&dir).display()),
+                    }
+                    0
+                }
+                Err(e) => {
+                    eprintln!("stacked: {e}");
+                    1
+                }
+            }
+        }
+        Some(other) => {
+            eprintln!("stacked: unknown flags command {other:?}. Try `stacked help`.");
+            2
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_bare_link_is_routed_to_play_and_a_command_is_not() {
+        assert!(looks_like_link("roblox-player:1+launchmode:play"));
+        assert!(looks_like_link("roblox://experiences/start?placeId=1"));
+        assert!(looks_like_link("ROBLOX-PLAYER:1"));
+        for not_a_link in ["play", "roblox", "roblox-player", "robloxian:1", "config", "roblo€x:1", "é"] {
+            assert!(!looks_like_link(not_a_link), "{not_a_link}");
+        }
     }
 
-    // Before anything can be launched, because the launcher points the
-    // engine at a profile directory and the storage that has a login in it
-    // is still at the pre-ADR-012 path. Skipped when there is nothing to
-    // move, which is every run after the first.
-    cordial_shell::profile::migrate_legacy_layout();
+    #[test]
+    fn the_profile_flag_is_taken_out_wherever_it_is() {
+        let args: Vec<String> =
+            ["--run", "5", "--profile", "alt", "roblox:x"].iter().map(|s| s.to_string()).collect();
+        let (profile, rest) = take_profile(&args).unwrap();
+        assert_eq!(profile.as_deref(), Some("alt"));
+        assert_eq!(rest, ["--run", "5", "roblox:x"]);
 
-    let config_path = Rc::new(shell_config::path());
-    let config = Rc::new(RefCell::new(shell_config::load(&config_path)));
+        let (profile, _) = take_profile(&["--profile=main".to_string()]).unwrap();
+        assert_eq!(profile.as_deref(), Some("main"));
+        assert!(take_profile(&["--profile".to_string()]).is_err());
+    }
 
-    // Applied before the window exists so the very first paint already
-    // matches whatever the user last chose in Appearance, rather than
-    // flashing the libadwaita default and then correcting itself.
-    config.borrow().appearance.apply();
-
-    *shell.borrow_mut() = Some(window::build(app, config, config_path));
+    #[test]
+    fn every_command_in_the_usage_text_is_one_main_dispatches() {
+        // A usage line naming a command that falls through to "unknown
+        // command" is the `--help` that lies; this keeps the two in step.
+        for command in [
+            "play", "status", "install", "update", "versions", "pin", "unpin", "profiles",
+            "config", "flags", "audio-outputs", "plugins", "diagnostics", "help", "version",
+        ] {
+            assert!(USAGE.contains(&format!("  {command}")), "{command} missing from usage");
+        }
+    }
 }

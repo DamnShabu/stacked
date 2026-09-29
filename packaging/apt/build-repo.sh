@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # Build a signed APT repository from one or more already-built .deb files.
 #
-# This is Cordial's own repository -- the analogue of
-# packaging/cordial.flatpakrepo and packaging/build-flatpak.sh for `apt
-# install` rather than `flatpak install`. It does not build Cordial and does
+# This is Stacked's own repository -- the analogue of
+# packaging/stacked.flatpakrepo and packaging/build-flatpak.sh for `apt
+# install` rather than `flatpak install`. It does not build Stacked and does
 # not build a .deb; packaging/deb/build-deb.sh already does that, and this
 # script's whole job starts after that one's is finished. See
 # docs/design/apt-repository.md for what this is, what it deliberately is
@@ -202,8 +202,8 @@ for deb in "${debs[@]}"; do
     # archive layout: prefix is the package's first letter, except for a
     # lib-prefixed package, which uses its first four characters (libg,
     # libc...) so that the hundreds of libfoo packages on a real mirror do
-    # not all collect under pool/main/l/.  Cordial ships one package and
-    # this branch is exercised only by "cordial" today, but a plugin or a
+    # not all collect under pool/main/l/.  Stacked ships one package and
+    # this branch is exercised only by "stacked" today, but a plugin or a
     # future split package should not need this rewritten.
     case "$pkg" in
         lib?*) prefix="${pkg:0:4}" ;;
@@ -319,14 +319,14 @@ done
 echo "==> writing $distdir/Release"
 release_date=$(date -u '+%a, %d %b %Y %H:%M:%S UTC')
 {
-    echo "Origin: Cordial"
-    echo "Label: Cordial"
+    echo "Origin: Stacked"
+    echo "Label: Stacked"
     echo "Suite: $SUITE"
     echo "Codename: $SUITE"
     echo "Components: $COMPONENT"
     echo "Architectures: ${archs[*]}"
     echo "Date: $release_date"
-    echo "Description: Cordial's own APT repository -- see docs/design/apt-repository.md"
+    echo "Description: Stacked's own APT repository -- see docs/design/apt-repository.md"
     # MD5Sum and SHA256 only, not SHA1: apt has treated SHA1 as untrusted
     # for repository metadata since 1.6 (2018) and the only thing MD5Sum is
     # still carried for here is the small number of very old apt versions
@@ -370,7 +370,7 @@ else
     # convention (debian-archive-keyring) rather than something generic like
     # pubkey.gpg, so it is recognisable for what it is if it ever ends up
     # somewhere out of context.
-    gpg --batch --yes --export "$APT_GPG_KEY_ID" > "$outdir/cordial-archive-keyring.gpg"
+    gpg --batch --yes --export "$APT_GPG_KEY_ID" > "$outdir/stacked-archive-keyring.gpg"
 fi
 
 echo "==> built: $outdir"

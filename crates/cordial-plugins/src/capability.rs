@@ -205,7 +205,7 @@ impl Capability {
             Capability::FlagsWrite => {
                 "Change how Cordial itself renders and behaves. Sets Roblox FastFlags, and also \
                  Cordial's own settings including the graphics backend and present mode. Takes \
-                 effect at the next launch. Your own choices in Settings still win."
+                 effect at the next launch. Your own settings and flags.json still win."
             }
             Capability::FlagsWriteDynamic => {
                 "Change a dynamic Roblox setting while you are playing, without a restart. Static \

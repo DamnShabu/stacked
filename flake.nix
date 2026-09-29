@@ -1,5 +1,5 @@
 {
-  # A shell that can BUILD Cordial, and a package output that installs it.
+  # A shell that can BUILD Stacked, and a package output that installs it.
   #
   # The devShell exists because the build quietly compiles different code
   # depending on what happens to be installed: `native/CMakeLists.txt` probes
@@ -15,15 +15,15 @@
   # like Fedora Silverblue, where `dnf install` means layering onto the host
   # image for one project's build dependency.
   #
-  # `packages.default` / `packages.cordial` below is a separate concern: an
-  # actual installable Cordial for anyone on Nix, alongside the Flatpak,
+  # `packages.default` / `packages.stacked` below is a separate concern: an
+  # actual installable Stacked for anyone on Nix, alongside the Flatpak,
   # AppImage, deb, rpm and AUR builds. It is INFERRED, not verified — see the
-  # comment on `cordial` below for exactly what could and could not be checked
+  # comment on `stacked` below for exactly what could and could not be checked
   # and why.
   #
   # Deliberately out of scope:
   #
-  #   * Roblox. Cordial ships no Roblox code and never will. This pins the
+  #   * Roblox. Stacked ships no Roblox code and never will. This pins the
   #     toolchain, not the input; you still supply an APK yourself, and
   #     CONTRIBUTING.md explains the least fiddly way to obtain one.
 
@@ -38,7 +38,7 @@
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
 
-        # Cordial loads Roblox's official Android **x86-64** build natively —
+        # Stacked loads Roblox's official Android **x86-64** build natively —
         # no emulation, no CPU translation (see docs/multiarch.md and the
         # rpm spec's `ExclusiveArch: x86_64`). A package for any other system
         # cannot run the one thing this project exists to run, so rather than
@@ -50,10 +50,10 @@
         # binary it produces is not.
         isPackageableSystem = system == "x86_64-linux";
 
-        cordial = pkgs.rustPlatform.buildRustPackage rec {
-          pname = "cordial";
+        stacked = pkgs.rustPlatform.buildRustPackage rec {
+          pname = "stacked";
           # Read rather than duplicated, so this cannot drift from the
-          # workspace the way packaging/rpm/cordial.spec's hand-maintained
+          # workspace the way packaging/rpm/stacked.spec's hand-maintained
           # %%global version has already been caught doing.
           version = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package.version;
 
@@ -70,7 +70,7 @@
           # unless the caller asks for it with a `?submodules=1` query
           # parameter on the flake URL — that is Nix's fetcher behaviour, not
           # something this file can default on the caller's behalf. A user
-          # who runs `nix run github:luohoa97/cordial` without it will hit
+          # who runs `nix run github:DamnShabu/stacked` without it will hit
           # the `preConfigure` check below with a clear message rather than
           # the build.rs panic's `git submodule update --init --recursive`,
           # which cannot be run inside the sandbox (no network, no `.git`).
@@ -82,7 +82,7 @@
             if [ ! -f third_party/mcpelauncher-linker/bionic/linker/linker.cpp ]; then
               echo "error: third_party/mcpelauncher-linker (a git submodule) has no content in this source tree." >&2
               echo "Flakes do not fetch submodules by default. Re-run with the flake URL suffixed" >&2
-              echo '  ?submodules=1  (e.g. nix run "github:luohoa97/cordial?submodules=1")' >&2
+              echo '  ?submodules=1  (e.g. nix run "github:DamnShabu/stacked?submodules=1")' >&2
               echo "or, from a local checkout, run: git submodule update --init --recursive" >&2
               exit 1
             fi
@@ -136,7 +136,7 @@
             # at all, not merely to run — same set the devShell already
             # lists, for the same reason (ADR-011, ADR-002).
             #
-            # Version floor: cordial-shell/Cargo.toml pins `gtk4 0.11` with
+            # Version floor: crates/cordial-shell/Cargo.toml pins `gtk4 0.11` with
             # feature `v4_20` and `libadwaita 0.9` with `v1_8` — i.e. GTK
             # 4.20+ and libadwaita 1.8+ at the C library level, not just the
             # Rust binding version. This project's own floor, not one raised
@@ -166,7 +166,7 @@
             libxkbcommon
 
             # `org.gnome.desktop.interface`'s `color-scheme` key, read by
-            # `cordial-shell/src/lib.rs` to follow the system dark-mode
+            # `crates/cordial-shell/src/lib.rs` to follow the system dark-mode
             # setting. Degrades gracefully without it —
             # `gio::SettingsSchemaSource::lookup` returning `None` is checked
             # before the read — so this is a quality-of-life addition rather
@@ -188,7 +188,7 @@
             webkitgtk_6_0
 
             # Headers only, same reasoning as pipewire/webkitgtk above and
-            # matching packaging/rpm/cordial.spec's BuildRequires list:
+            # matching packaging/rpm/stacked.spec's BuildRequires list:
             # native/CMakeLists.txt compiles the real ALSA/PulseAudio backend
             # when it finds these and the honest "unavailable" arm when it
             # does not. `libpipewire-0.3.so.0`, `libasound.so.2` and
@@ -210,7 +210,7 @@
           # cfg'd out, the linker collects `webview::open`, and the binary
           # links no WebKitGTK at all — silently, the build still succeeds.
           # That exact shape shipped once in the Flatpak
-          # (packaging/io.github.luohoa97.Cordial.yml's own comment on this
+          # (packaging/io.github.damnshabu.Stacked.yml's own comment on this
           # line) and was reported as "webview doesnt work in cordial
           # flatpak". This package makes the same choice every other
           # packaging script here makes: build the full client, not the
@@ -219,7 +219,7 @@
           cargoBuildFeatures = [ "cordial-shell/webview" "cordial-runtime/webview" ];
 
           # `cargo test --workspace` is not run as part of this build.
-          # `packaging/rpm/cordial.spec`'s own `%check` already had to skip
+          # `packaging/rpm/stacked.spec`'s own `%check` already had to skip
           # three tests by name for environments this sandboxed either —
           # two secrets-service round-trip tests that need a live
           # `org.freedesktop.secrets` on the session bus, and one GIO
@@ -236,8 +236,8 @@
           # Neither this nor the CMake build reach the network — no
           # `--share=network`-equivalent exists for a Nix build sandbox in
           # the first place, so there is nothing to disable here the way
-          # packaging/io.github.luohoa97.Cordial.yml's build-commands do
-          # deliberately for reproducibility. Worth restating anyway: Cordial
+          # packaging/io.github.damnshabu.Stacked.yml's build-commands do
+          # deliberately for reproducibility. Worth restating anyway: Stacked
           # ships no Roblox code, this derivation fetches none, and nothing
           # here tries to.
 
@@ -252,7 +252,7 @@
             # nothing" signal `crates/cordial-shell/build.rs` already treats
             # as absent — filtered out by its own `.filter(|s| !s.is_empty())`
             # — so a build with no git identity present degrades to the
-            # documented, correct behaviour: a clean "Cordial ${version}"
+            # documented, correct behaviour: a clean "Stacked ${version}"
             # with no parenthesised commit, not a build error.
             self.shortRev or self.dirtyShortRev or "";
 
@@ -276,8 +276,8 @@
           # way to add to a wrapGAppsHook wrapper without fighting it.
           #
           # `deno` goes on `PATH` for the same reason
-          # packaging/rpm/cordial.spec explains it could NOT: plugins are Deno
-          # programs (ADR-008) and Cordial bundles no runtime, so without
+          # packaging/rpm/stacked.spec explains it could NOT: plugins are Deno
+          # programs (ADR-008) and Stacked bundles no runtime, so without
           # `deno` reachable every plugin fails to spawn. The rpm spec says
           # outright "there is no `deno` package" for Fedora or Debian: nixpkgs
           # has one, so this is one thing a Nix install can offer that the
@@ -295,22 +295,17 @@
           '';
 
           postInstall = ''
-            # `cordial`, not just `cordial-shell` — the same alias
-            # packaging/deb/build-deb.sh and packaging/rpm/cordial.spec both
-            # add, and for the same reason given there: "nobody wants to type
-            # the second word", and a symlink rather than a rename keeps
-            # anything already invoking `cordial-shell` by name working.
-            # `cordial-run` deliberately gets no alias — it is the loader the
-            # shell launches, found as `current_exe`'s sibling, and is not
-            # what anyone should run by hand.
-            ln -sf cordial-shell "$out/bin/cordial"
+            # `stacked` and `cordial-run` are both installed by the cargo
+            # install hook. `cordial-run` deliberately gets no alias — it is
+            # the loader `stacked` launches, found as `current_exe`'s sibling,
+            # and is not what anyone should run by hand.
 
             # First-party plugins, read-only beside the binary — the same
             # install performed by every other packaging script here.
             # `system_plugin_dir` only ever looks in a packaged location
             # ($out/share/cordial/plugins, or /app/share/... under Flatpak),
-            # so without this a Nix-installed Cordial's settings window would
-            # list no built-in plugins at all, same bug this project already
+            # so without this a Nix-installed Stacked would have no built-in
+            # plugins at all, same bug this project already
             # shipped once for deb/rpm before those scripts existed.
             for plugin in plugins/*/; do
               id=$(basename "$plugin")
@@ -319,45 +314,38 @@
               install -Dm644 "$plugin/main.ts" "$out/share/cordial/plugins/$id/main.ts"
             done
 
-            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-              "$out/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg"
-            # Frostbite, the twice-a-year joke in
-            # crates/cordial-shell/src/branding.rs — installed unconditionally
-            # for the same reason every other packaging script here installs
-            # it unconditionally: the alternative is a name that resolves to
-            # nothing on the one day nobody is watching for it.
-            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-              "$out/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg"
-            install -Dm644 packaging/io.github.luohoa97.Cordial.desktop \
-              "$out/share/applications/io.github.luohoa97.Cordial.desktop"
-            install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-              "$out/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+            install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
+              "$out/share/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg"
+            install -Dm644 packaging/io.github.damnshabu.Stacked.desktop \
+              "$out/share/applications/io.github.damnshabu.Stacked.desktop"
+            install -Dm644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
+              "$out/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
 
             # Licence and attribution, travelling with the binary rather than
             # only with the source tree — MIT requires its notice in "all
             # copies or substantial portions", Apache-2.0 section 4(d)
             # requires NOTICE to travel with derivative works. Same set the
             # Flatpak manifest and the deb/rpm scripts install.
-            install -Dm644 LICENSE "$out/share/licenses/cordial/LICENSE"
-            install -Dm644 THIRD-PARTY-NOTICES.md "$out/share/licenses/cordial/THIRD-PARTY-NOTICES.md"
-            install -Dm644 NOTICE "$out/share/licenses/cordial/NOTICE"
+            install -Dm644 LICENSE "$out/share/licenses/stacked/LICENSE"
+            install -Dm644 THIRD-PARTY-NOTICES.md "$out/share/licenses/stacked/THIRD-PARTY-NOTICES.md"
+            install -Dm644 NOTICE "$out/share/licenses/stacked/NOTICE"
             install -Dm644 third_party/libbadcpu/LICENSE.upstream \
-              "$out/share/licenses/cordial/libbadcpu-MIT.txt"
+              "$out/share/licenses/stacked/libbadcpu-MIT.txt"
             install -Dm644 third_party/mcpelauncher-linker/LICENSE \
-              "$out/share/licenses/cordial/mcpelauncher-linker-MIT.txt"
+              "$out/share/licenses/stacked/mcpelauncher-linker-MIT.txt"
             install -Dm644 third_party/mcpelauncher-linker/core/NOTICE \
-              "$out/share/licenses/cordial/aosp-NOTICE.txt"
+              "$out/share/licenses/stacked/aosp-NOTICE.txt"
             install -Dm644 third_party/libjnivm/LICENSE \
-              "$out/share/licenses/cordial/libjnivm-MIT.txt"
+              "$out/share/licenses/stacked/libjnivm-MIT.txt"
             install -Dm644 third_party/mocktail-webview/LICENSE \
-              "$out/share/licenses/cordial/mocktail-webview-Apache-2.0.txt"
+              "$out/share/licenses/stacked/mocktail-webview-Apache-2.0.txt"
           '';
 
           meta = {
             description = "Run Roblox natively on Linux -- you supply the Roblox build, none is shipped";
-            homepage = "https://github.com/luohoa97/cordial";
+            homepage = "https://github.com/DamnShabu/stacked";
             license = lib.licenses.gpl3Plus;
-            mainProgram = "cordial-shell";
+            mainProgram = "stacked";
             # Real, not a formality — see `isPackageableSystem` above. The
             # engine this loads is Roblox's Android **x86-64** build, run
             # with no emulation, so a `libroblox.so` built for any other
@@ -399,29 +387,29 @@
             # Optional at build time, and that is exactly the problem this
             # shell solves: without them the tree still compiles, it just
             # silently loses the audio backend and the web views. Including
-            # them means everyone builds the same Cordial.
+            # them means everyone builds the same Stacked.
             pipewire
             webkitgtk_6_0
           ];
 
           shellHook = ''
-            echo "cordial: clang $(clang --version | head -1 | grep -o '[0-9.]*' | head -1), rust $(rustc --version | cut -d' ' -f2)"
+            echo "stacked: clang $(clang --version | head -1 | grep -o '[0-9.]*' | head -1), rust $(rustc --version | cut -d' ' -f2)"
             echo "  pipewire  $(pkg-config --modversion libpipewire-0.3 2>/dev/null || echo MISSING)"
             echo "  webkitgtk $(pkg-config --modversion webkitgtk-6.0 2>/dev/null || echo MISSING)"
             echo "  gtk4      $(pkg-config --modversion gtk4 2>/dev/null || echo MISSING)"
             echo "  libadwaita $(pkg-config --modversion libadwaita-1 2>/dev/null || echo MISSING)"
             echo
-            echo "This shell builds Cordial. Run it on the host: just dev"
+            echo "This shell builds Stacked. Run it on the host: just dev"
           '';
         };
       }
       // lib.optionalAttrs isPackageableSystem {
-        packages.default = cordial;
-        packages.cordial = cordial;
+        packages.default = stacked;
+        packages.stacked = stacked;
 
         apps.default = {
           type = "app";
-          program = "${cordial}/bin/cordial-shell";
+          program = "${stacked}/bin/stacked";
         };
       });
 }

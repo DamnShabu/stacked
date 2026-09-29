@@ -31,12 +31,12 @@ const SECONDS_BEFORE_QUIT: u32 = 25;
 fn main() -> libadwaita::glib::ExitCode {
     let url = std::env::args().nth(1).unwrap_or_else(|| "https://www.roblox.com/login".to_string());
 
-    // A distinct application id from the shell's. Sharing `io.github.luohoa97.Cordial`
+    // A distinct application id from the shell's. Sharing `io.github.damnshabu.Stacked`
     // would make this a second invocation of a single-instance application —
     // it would hand its arguments to a running Cordial and exit without ever
     // opening a view, which reads as the probe silently doing nothing.
     let app = libadwaita::Application::builder()
-        .application_id("io.github.luohoa97.Cordial.WebAuthnProbe")
+        .application_id("io.github.damnshabu.Stacked.WebAuthnProbe")
         .build();
 
     app.connect_activate(move |app| {
