@@ -81,6 +81,9 @@ pub enum Source {
     /// for a mode whose tables nothing on this project's hardware has
     /// measured.
     Performance,
+    /// A launcher setting turned into flags, today only the frame-rate
+    /// target. See [`fps_cap_layer`].
+    Launcher,
 }
 
 impl Source {
@@ -90,6 +93,7 @@ impl Source {
             Source::Plugin(id) => format!("plugin:{id}"),
             Source::Builtin => "built-in".into(),
             Source::Performance => "performance mode".into(),
+            Source::Launcher => "launcher setting".into(),
         }
     }
 }
@@ -724,10 +728,66 @@ pub fn collect() -> Vec<Layer> {
         }
     }
 
+    // After the plugins and before the user's own file: the launcher's
+    // setting is the user's choice too, made somewhere friendlier than JSON,
+    // and a plugin should not be able to outvote it -- but a line the user
+    // wrote into `flags.json` by hand is the more specific statement.
+    layers.push(fps_cap_layer());
+
     if let Some(layer) = read_layer(&user_path(), Source::User) {
         layers.push(layer);
     }
     layers
+}
+
+/// The launcher's frame-rate target, as a number of frames a second.
+pub const FPS_CAP_ENV: &str = "CORDIAL_FPS_CAP";
+
+/// `DFIntTaskSchedulerTargetFps`, which is the scheduler's own target and the
+/// one flag of the family measured to act here: `docs/NEXT.md` records a
+/// target of 10 giving 9.5-10.9 fps against 36.5-47.2 uncapped in the same
+/// session, and `FIntTaskSchedulerTargetFps` -- one letter different -- doing
+/// nothing at all.
+pub const FPS_CAP_FLAG: &str = "DFIntTaskSchedulerTargetFps";
+
+/// The flags a frame-rate target contributes, or why it contributes none.
+///
+/// Pure, so the parsing is testable without the environment. `INFERRED` that a
+/// target *above* the engine's own default raises the frame rate: the positive
+/// control above only ever lowered it, and a raised target also needs a
+/// present mode that is not FIFO (the default, MAILBOX, is not) and a display
+/// that is not the limit.
+pub fn fps_cap_flags(text: &str) -> Result<Vec<(String, String)>, String> {
+    let text = text.trim();
+    if text.is_empty() {
+        return Ok(Vec::new());
+    }
+    match text.parse::<u32>() {
+        Ok(n) if (1..=1000).contains(&n) => Ok(vec![(FPS_CAP_FLAG.to_string(), n.to_string())]),
+        _ => Err(format!("{FPS_CAP_ENV}={text:?} is not a frame rate between 1 and 1000")),
+    }
+}
+
+fn fps_cap_layer() -> Layer {
+    let values: BTreeMap<String, String> = match std::env::var(FPS_CAP_ENV) {
+        Err(_) => BTreeMap::new(),
+        Ok(text) => match fps_cap_flags(&text) {
+            Ok(flags) => {
+                if let Some((_, n)) = flags.first() {
+                    println!("  flags: launcher frame-rate target {n}");
+                }
+                flags.into_iter().collect()
+            }
+            // Said rather than swallowed, like an unparseable performance
+            // mode: a setting that looks set and does nothing is the failure
+            // this module keeps writing rules against.
+            Err(why) => {
+                println!("  flags: {why}; leaving the engine's own target");
+                BTreeMap::new()
+            }
+        },
+    };
+    Layer { source: Source::Launcher, values }
 }
 
 /// Which device Cordial claims to be when the engine asks — the Android
@@ -1369,5 +1429,37 @@ mod performance_tests {
         let threads = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1);
         assert!(p >= 1, "{p}");
         assert!(p <= threads, "physical {p} cannot exceed threads {threads}");
+    }
+
+    #[test]
+    fn a_frame_rate_target_becomes_the_scheduler_flag_and_nothing_else() {
+        assert_eq!(
+            fps_cap_flags("144").unwrap(),
+            vec![(FPS_CAP_FLAG.to_string(), "144".to_string())]
+        );
+        assert_eq!(fps_cap_flags(" 60 ").unwrap().len(), 1);
+        assert!(fps_cap_flags("").unwrap().is_empty(), "unset is not a target");
+    }
+
+    #[test]
+    fn a_frame_rate_target_nobody_could_mean_is_refused_by_name() {
+        for bad in ["0", "-5", "fast", "1001", "60.5"] {
+            let why = fps_cap_flags(bad).unwrap_err();
+            assert!(why.contains(FPS_CAP_ENV), "{why}");
+        }
+    }
+
+    #[test]
+    fn the_users_own_file_still_outranks_the_launcher_target() {
+        let layer = |source, key: &str, value: &str| Layer {
+            source,
+            values: [(key.to_string(), value.to_string())].into_iter().collect(),
+        };
+        let resolved = resolve(vec![
+            layer(Source::Launcher, FPS_CAP_FLAG, "144"),
+            layer(Source::User, FPS_CAP_FLAG, "30"),
+        ]);
+        assert_eq!(resolved[FPS_CAP_FLAG].value, "30");
+        assert_eq!(resolved[FPS_CAP_FLAG].overridden[0].0, Source::Launcher);
     }
 }
