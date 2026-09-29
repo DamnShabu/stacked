@@ -162,6 +162,9 @@ char* s_realpath(const char* path, char* resolved) {
         // if slightly degraded, POSIX outcome: the caller falls back to the
         // path it already had, which is what every caller of this GNU form is
         // required to handle.
+        //
+        // `vasprintf` and `getcwd(NULL, n)` have the same shape and get the same
+        // treatment in foreign_alloc.cpp.
         char tmp[PATH_MAX];
         char* r = ::realpath(real, tmp);
         trace("realpath", real, r ? r : "null (unsupported: no caller buffer)");

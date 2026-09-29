@@ -86,6 +86,10 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
     // glibc, and the `AI_*` constants disagree outright. Same class as the
     // `sigset_t` and `pthread_mutex_t` translations above.
     v.extend(netdb_overrides());
+    // `vasprintf` and `getcwd(NULL, n)` return a host-`malloc`'d block that the
+    // engine would free through its own allocator. Refused rather than answered
+    // -- see `alloc_overrides` and `native/foreign_alloc.cpp`.
+    v.extend(alloc_overrides());
     // OpenSL ES. Data symbols, so a missing one fails the DT_NEEDED walk rather
     // than the first audio call — see `opensles_overrides`.
     v.extend(opensles_overrides());
@@ -850,4 +854,89 @@ pub fn netdb_overrides() -> Vec<(&'static str, *mut c_void)> {
             (name, e.addr)
         })
         .collect()
+}
+
+// ------------------------------------------------------------ foreign frees
+
+/// `vasprintf` and `getcwd` refused in their allocating forms —
+/// `native/foreign_alloc.cpp`.
+///
+/// The engine runs its own statically linked allocator and imports no `free`,
+/// so a block glibc allocated cannot be released by it. `s_realpath` established
+/// the pattern: never produce the host allocation. ADR-040 has the measurement.
+pub fn alloc_overrides() -> Vec<(&'static str, *mut c_void)> {
+    #[repr(C)]
+    struct Symbol {
+        name: *const c_char,
+        addr: *mut c_void,
+    }
+    extern "C" {
+        fn cordial_alloc_symbols(count: *mut usize) -> *const Symbol;
+    }
+
+    let mut count = 0usize;
+    // SAFETY: the table is a static in foreign_alloc.cpp and outlives the process.
+    let table = unsafe { cordial_alloc_symbols(&mut count) };
+    if table.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: `table` points at `count` initialised entries with static names.
+    let entries = unsafe { std::slice::from_raw_parts(table, count) };
+    entries
+        .iter()
+        .map(|e| {
+            // SAFETY: each `name` is a string literal in foreign_alloc.cpp.
+            let name = unsafe { CStr::from_ptr(e.name) }.to_str().unwrap_or("");
+            (name, e.addr)
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod foreign_alloc_tests {
+    use super::*;
+
+    extern "C" {
+        #[link_name = "__errno_location"]
+        fn libc_errno() -> *mut c_int;
+    }
+
+    fn find(name: &str) -> *mut c_void {
+        function_overrides()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is not overridden"))
+            .1
+    }
+
+    /// The point of the whole change: the engine's `getcwd` import lands on the
+    /// refusal, not on glibc. Reads the override table the loader consults, not
+    /// the C++ symbol directly, so a table that lost the entry fails here.
+    #[test]
+    fn getcwd_null_buffer_is_refused_through_the_override_table() {
+        type Getcwd = unsafe extern "C" fn(*mut c_char, usize) -> *mut c_char;
+        // SAFETY: the address is `cordial_getcwd`, which has this signature.
+        let getcwd: Getcwd = unsafe { std::mem::transmute(find("getcwd")) };
+
+        // SAFETY: a null buffer is the case under test; the real one is 4096 bytes.
+        unsafe {
+            *libc_errno() = 0;
+            assert!(getcwd(std::ptr::null_mut(), 0).is_null());
+            assert_eq!(*libc_errno(), 12, "ENOMEM");
+
+            let mut buf = [0 as c_char; 4096];
+            let got = getcwd(buf.as_mut_ptr(), buf.len());
+            assert_eq!(got, buf.as_mut_ptr());
+            let want = std::env::current_dir().unwrap();
+            assert_eq!(
+                CStr::from_ptr(buf.as_ptr()).to_str().unwrap(),
+                want.to_str().unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn vasprintf_is_overridden() {
+        assert!(!find("vasprintf").is_null());
+    }
 }

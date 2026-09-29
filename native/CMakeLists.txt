@@ -173,7 +173,7 @@ endif()
 # pipewire-devel, and honestly refuses every stream there, exactly as
 # `slCreateEngine` does.
 add_library(cordial_liblog STATIC
-  liblog.cpp system_paths.cpp netdb_compat.cpp opensles.cpp pipewire_backend.cpp
+  liblog.cpp system_paths.cpp netdb_compat.cpp foreign_alloc.cpp opensles.cpp pipewire_backend.cpp
   pulse_backend.cpp alsa_backend.cpp oss_backend.cpp aaudio.cpp
   aaudio_input_callback.cpp thread_trace.cpp)
 # Compiled unconditionally, like every other file here: without the headers it
@@ -266,6 +266,16 @@ add_custom_command(TARGET cordial_aaudio_input_test POST_BUILD
   COMMAND cordial_aaudio_input_test
   COMMENT "Running AAudio callback and blocking input ABI checks")
 add_dependencies(cordial_liblog cordial_aaudio_input_test)
+
+# The two libc allocators refused in foreign_alloc.cpp. Run at build time, like
+# the tests around it, so a shim that stops refusing cannot ship unnoticed.
+add_executable(cordial_foreign_alloc_test EXCLUDE_FROM_ALL
+  foreign_alloc.cpp foreign_alloc_test.cpp)
+target_compile_options(cordial_foreign_alloc_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET cordial_foreign_alloc_test POST_BUILD
+  COMMAND cordial_foreign_alloc_test
+  COMMENT "Running foreign-allocation shim checks")
+add_dependencies(cordial_liblog cordial_foreign_alloc_test)
 
 add_library(cordial_linker_shim STATIC shim.cpp)
 target_link_libraries(cordial_linker_shim PUBLIC linker)

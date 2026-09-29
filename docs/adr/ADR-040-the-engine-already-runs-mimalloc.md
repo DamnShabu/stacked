@@ -87,8 +87,8 @@ established this session, not its options' effect on this hardware.
 ## A real cross-allocator danger this did surface, separate from the above
 
 Auditing the "engine frees what a host libc call allocated" list this task
-named turned up a live instance, already found and fixed once, and at least
-two more candidates that have not been.
+named turned up a live instance, already found and fixed once, and two more
+candidates, which have since been guarded (below).
 
 **That Roblox statically links mimalloc was not this ADR's discovery — it was
 already in `docs/NEXT.md`'s "Solved, for reference" table**, one line, from the
@@ -121,7 +121,7 @@ readelf --dyn-syms -W libroblox.so | awk '$7=="UND"{print $8}' | sort -u \
   | grep -E '^(getcwd|vasprintf)$'
 ```
 
-— and neither has a Cordial override in `crate::bionic`. `symtab.rs::resolve`
+— and, when this was written, neither had a Cordial override in `crate::bionic`. `symtab.rs::resolve`
 sends any `Class::Generic` symbol with no override straight to the host's real
 libc.so.6 whenever `--host-libc` is set, which is the flag AGENTS.md's own
 example invocation uses. `vasprintf` always allocates its return buffer —
@@ -132,15 +132,43 @@ see. `getcwd(NULL, 0)` is the same shape as `realpath(path, NULL)` exactly:
 safe when the engine supplies its own buffer, and the same latent fault as
 `s_realpath`'s when it does not.
 
-**This was not fixed here.** Reaching for the same pattern `s_realpath`
-proved without first checking, from a trace, whether the engine's call sites
-ever exercise the allocating form would be guessing from the binary about
-*consequences*, which is the mistake AGENTS.md opens with — the shape of the
-fix is well-established by `s_realpath`, but whether skipping it correctly
-degrades behaviour (as `ENOTSUP` did for `realpath`) or removes something a
-caller actually depends on needs the same kind of live check `s_realpath`'s
-own fix was verified with, not an inference from the import list alone. A
-follow-up task has been filed for it.
+**That was the state when this ADR was written, and it has since been audited
+and guarded** (2026-09-29, `native/foreign_alloc.cpp`). Both resolved to glibc:
+the engine's own GOT was read back under gdb and pointed at `libc.so.6`'s
+`vasprintf` and `getcwd`. Both now resolve to Cordial shims that refuse the
+allocating form, the way `s_realpath` does, and report failure with `ENOMEM`,
+the errno each is documented to set when it cannot allocate. `getcwd` with a
+caller buffer is forwarded untouched.
+
+**Neither refusal was seen to fire, so both rest on INFERRED grounds.** Two
+signed-out runs, 40 s and 110 s, covering startup, the landing page and the
+sign-in form, with gdb breakpoints on the host entry points: the engine made
+four `getcwd` calls, all with a 128-byte caller buffer, and no `vasprintf`
+call. `realpath` was not called by the engine either, so even the confirmed
+case did not recur in those runs. Anything in a game session is unexercised.
+The first eight refusals of each are logged to stderr as `[alloc] ...`, so a
+run that reaches one says so.
+
+Every other import that returns or takes memory was checked and needs nothing:
+
+- `getaddrinfo`/`freeaddrinfo` are both Cordial shims (`netdb_compat.cpp`) that
+  copy the result, so the engine never holds a glibc block.
+- `newlocale`/`freelocale`, `opendir`/`closedir`, `fdopen`/`fopen`/`fclose` and
+  `pthread_attr_init`/`pthread_getattr_np`/`pthread_attr_destroy` all resolve to
+  the host on both halves. `pthread_getattr_np` allocates a cpuset that only
+  `pthread_attr_destroy` frees; the engine made 38 calls and 38 adjacent
+  destroys, so nothing leaks.
+- `sscanf`/`fscanf`/`vsscanf` allocate for `%m`. 34,049 `fscanf` and 1,546
+  `sscanf` calls in the 110 s run, none with one, and the binary has no `%m`
+  format string. Not guarded: wrapping a variadic on that path costs more than
+  the risk.
+- Not imported at all, so unreachable except through `dlsym`, and the engine
+  looked up only `getauxval` from libc: `asprintf`, `strdup`, `strndup`,
+  `wcsdup`, `getline`, `getdelim`, `open_memstream`, `scandir`, `tempnam`,
+  `canonicalize_file_name`, `get_current_dir_name`, `backtrace_symbols`.
+- The reverse direction, engine memory freed by glibc, has no importer: `putenv`
+  and `setenv` are not imported, `setvbuf` was never called, and glibc does not
+  free a caller-supplied stdio or thread-stack buffer.
 
 ## What would change this
 
