@@ -96,20 +96,15 @@ What works: signing in, loading and playing experiences, keyboard and mouse,
 camera, text entry, audio, voice chat, controllers, fullscreen, and two
 accounts side by side.
 
-**What is still broken**, as reported against Cordial:
+**What is still broken.** These bugs were reported against Cordial. Where
+each stands in Stacked is in [`docs/known-issues.md`](docs/known-issues.md).
 
-- No window at all on COSMIC, KWin, and some wlroots compositors
-  ([cordial#38](https://github.com/luohoa97/cordial/issues/38)).
-- Fullscreen can freeze, and leaving it can crash
-  ([cordial#39](https://github.com/luohoa97/cordial/issues/39)).
-- A crash on the second launch
-  ([cordial#44](https://github.com/luohoa97/cordial/issues/44)), and a SIGSEGV
-  at launch on some machines
-  ([cordial#35](https://github.com/luohoa97/cordial/issues/35)).
-- Touchscreen input crashes
-  ([cordial#36](https://github.com/luohoa97/cordial/issues/36)).
-- The keyboard can stop working after another app takes focus
-  ([cordial#31](https://github.com/luohoa97/cordial/issues/31)).
+- No window at all on COSMIC, KWin, and some wlroots compositors.
+- The first touch on a touchscreen crashes.
+- A SIGSEGV at launch on some machines, including the Steam Deck.
+- The keyboard is sometimes dead after joining an experience.
+- Fullscreen freezes, hangs on exit, and X11 keys that stay held have fixes in
+  the code that nobody has confirmed on an affected machine yet.
 
 The fork's own new pieces have limits too:
 

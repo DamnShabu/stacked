@@ -2213,7 +2213,60 @@ impl WaylandWindow {
         // what is different about that and admits the control has not been run.
         // The sentence above is about the attempt that was withdrawn; someone
         // reading it as "nothing drives this native" would be wrong.
-        self.apply_resize(w, h);
+        if self.resize_due((w, h)) {
+            self.apply_resize(w, h);
+        }
+    }
+
+    /// Whether a new canvas size has settled enough to hand to the engine.
+    ///
+    /// Every distinct size a pump sees used to go straight to `apply_resize`,
+    /// and every one of those is an `onSurfaceChangedNative` -- a swapchain
+    /// recreation in the engine. Entering or leaving fullscreen animates
+    /// libadwaita's header bar in or out, so the content area passes through a
+    /// size per animation frame. Issue #39's log is that shape: swapchains
+    /// recreated at extents stepping from 1920x1050 up to 1920x1080, then
+    /// "presented nothing for 5s after 426 frames" with the pump still
+    /// running, and a crash on the way back out.
+    ///
+    /// So a changed size is forwarded once it has held for `RESIZE_SETTLE`, or
+    /// once a change has been waiting `RESIZE_MAX_DEFER`, so a size that never
+    /// stops moving -- an edge drag -- still reaches the engine a few times a
+    /// second. The subsurface's position and the parent commit above are not
+    /// deferred; only the engine's resize is.
+    ///
+    /// `INFERRED` that this is the whole of #39: the reveal animation is
+    /// documented libadwaita behaviour and the forwarding of every
+    /// intermediate size is read off this file, but no fullscreen toggle has
+    /// been run against an engine here. The control is `CORDIAL_INSTR=1` and
+    /// counting `apply_resize(accept)` lines per toggle, with and without.
+    fn resize_due(&self, size: (i32, i32)) -> bool {
+        let current = {
+            let g = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
+            (g.width, g.height)
+        };
+        let mut pending = RESIZE_PENDING.lock().unwrap_or_else(|e| e.into_inner());
+        if size == current {
+            // Nothing to change; `apply_resize` returns early on its own and
+            // any half-settled change it was waiting on no longer applies.
+            *pending = None;
+            return true;
+        }
+        let now = std::time::Instant::now();
+        match *pending {
+            Some((waiting, seen, began)) if waiting == size => {
+                now.duration_since(seen) >= RESIZE_SETTLE
+                    || now.duration_since(began) >= RESIZE_MAX_DEFER
+            }
+            Some((_, _, began)) => {
+                *pending = Some((size, now, began));
+                now.duration_since(began) >= RESIZE_MAX_DEFER
+            }
+            None => {
+                *pending = Some((size, now, now));
+                false
+            }
+        }
     }
 
     /// A web-view dialog just opened; make sure the engine's canvas is not
@@ -3377,6 +3430,44 @@ const WHEEL_AXIS_STEP: f32 = 10.0;
 /// `hide_pointer` fired for it.
 static POINTER_ON_CANVAS: AtomicBool = AtomicBool::new(false);
 
+/// Whether `POINTER_ON_CANVAS` is true because of the toplevel rather than the
+/// canvas subsurface -- see [`parent_is_canvas`]. Coordinates arrive in the
+/// toplevel's space then, and are moved into the canvas's before the engine
+/// sees them.
+static POINTER_VIA_PARENT: AtomicBool = AtomicBool::new(false);
+
+/// Whether pointer events on GTK's toplevel belong to the engine.
+///
+/// Only in fullscreen with nothing of Cordial's own in front, where the header
+/// bar is hidden and the canvas covers the whole window, so every point on the
+/// toplevel is a point on the canvas. Everywhere else the toplevel is GTK's.
+///
+/// Needed because a compositor may keep pointer focus on the toplevel over
+/// the canvas. #56's reporter found exactly that on Hyprland -- constraining
+/// the toplevel "froze camera panning entirely", and letting the canvas check
+/// accept the parent surface brought the motion back -- and a downstream
+/// packaging of this fork reported the same compositor losing the mouse to
+/// fullscreen confinement. On a compositor that does route the canvas to the
+/// subsurface this never fires: the canvas rectangle is cut out of the
+/// toplevel's input region, so the toplevel is never entered over it.
+fn parent_is_canvas(w: &WaylandWindow) -> bool {
+    w.host.0.window().is_fullscreen() && !cordial_ui_in_front(w)
+}
+
+/// A toplevel-space position moved into the canvas's space.
+fn parent_to_canvas(w: &WaylandWindow, x: f32, y: f32) -> (f32, f32) {
+    let (ox, oy) = *w.placed_at.lock().unwrap_or_else(|e| e.into_inner());
+    (x - ox as f32, y - oy as f32)
+}
+
+/// For motion, buttons and scroll: is this event the engine's, given where the
+/// pointer entered. A pointer that entered the toplevel during fullscreen stops
+/// counting the moment fullscreen ends or a dialog comes up.
+fn pointer_is_engines(w: &WaylandWindow) -> bool {
+    POINTER_ON_CANVAS.load(Ordering::Acquire)
+        && (!POINTER_VIA_PARENT.load(Ordering::Acquire) || parent_is_canvas(w))
+}
+
 /// Whether a web-view dialog of Cordial's own is in front of the engine.
 ///
 /// **Stacking and input focus are decided separately, and only stacking was
@@ -3437,8 +3528,11 @@ unsafe extern "C" fn pointer_enter(
     y: i32,
 ) {
     let Some(w) = current() else { return };
-    let ours = std::ptr::eq(surface, w.surface);
+    let on_canvas = std::ptr::eq(surface, w.surface);
+    let via_parent = !on_canvas && std::ptr::eq(surface, w.parent_surface) && parent_is_canvas(&w);
+    let ours = on_canvas || via_parent;
     POINTER_ON_CANVAS.store(ours, Ordering::Release);
+    POINTER_VIA_PARENT.store(via_parent, Ordering::Release);
     if !ours {
         return;
     }
@@ -3478,7 +3572,11 @@ unsafe extern "C" fn pointer_enter(
     // already canvas-local — no offset for the header bar has to be
     // subtracted anywhere, which is the main practical reason to let the
     // compositor do this rather than translating window coordinates by hand.
-    w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
+    // Only the toplevel route needs moving, and in fullscreen the offset is
+    // whatever `placed_at` says rather than assumed to be zero.
+    let (x, y) = (fixed_to_f32(x), fixed_to_f32(y));
+    let (x, y) = if via_parent { parent_to_canvas(&w, x, y) } else { (x, y) };
+    w.dispatch_pointer_motion(x, y);
 }
 unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _serial: u32, _surface: *mut c_void) {
     // **Let go of anything still held, before the canvas flag drops.**
@@ -3505,6 +3603,7 @@ unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _s
         w.release_held_buttons();
     }
     POINTER_ON_CANVAS.store(false, Ordering::Release);
+    POINTER_VIA_PARENT.store(false, Ordering::Release);
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
 }
@@ -3513,10 +3612,16 @@ unsafe extern "C" fn pointer_motion(_data: *mut c_void, _pointer: *mut c_void, _
         return;
     }
     if let Some(w) = current() {
-        if dialog_in_front(&w) {
+        if dialog_in_front(&w) || !pointer_is_engines(&w) {
             return;
         }
-        w.dispatch_pointer_motion(fixed_to_f32(x), fixed_to_f32(y));
+        let (x, y) = (fixed_to_f32(x), fixed_to_f32(y));
+        let (x, y) = if POINTER_VIA_PARENT.load(Ordering::Acquire) {
+            parent_to_canvas(&w, x, y)
+        } else {
+            (x, y)
+        };
+        w.dispatch_pointer_motion(x, y);
     }
 }
 unsafe extern "C" fn pointer_button(
@@ -3531,6 +3636,9 @@ unsafe extern "C" fn pointer_button(
         return;
     }
     let Some(w) = current() else { return };
+    if !pointer_is_engines(&w) {
+        return;
+    }
     if dialog_in_front(&w) {
         // Said once per press rather than per motion event, which would be a
         // line per frame while the pointer moves over the dialog.
@@ -3551,7 +3659,7 @@ unsafe extern "C" fn pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _ti
         return;
     }
     if let Some(w) = current() {
-        if dialog_in_front(&w) {
+        if dialog_in_front(&w) || !pointer_is_engines(&w) {
             return;
         }
         w.dispatch_pointer_axis(axis, fixed_to_f32(value));
@@ -3969,14 +4077,24 @@ static LOCKED_POINTER_LISTENER: LockedPointerListener =
     LockedPointerListener { locked: locked_pointer_locked, unlocked: locked_pointer_unlocked };
 
 /// Whether the compositor has answered a confine request with `confined`.
-/// Reported, never acted on: unlike a lock, a confinement that is refused or
-/// deactivated costs nothing but the confinement -- the cursor still moves and
-/// the engine still gets absolute motion -- so there is no dead camera to
-/// rescue and no state machine to drive from it.
+/// Reported, and read for one thing: a confinement deactivated and never
+/// reactivated is asked for again -- see `CONFINE_INACTIVE_SINCE`.
 static POINTER_CONFINE_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// When a live confinement was last deactivated, or `None` while it is active
+/// or none exists.
+///
+/// KWin drops a confinement across the fullscreen transition itself -- the
+/// surface is reconfigured under it -- and does not reactivate it, so with a
+/// `persistent` lifetime the object stays alive, Cordial believes it holds a
+/// confinement, and nothing ever asks again. Reported from a downstream
+/// packaging of this fork, whose own patch re-requested it; the same shape as
+/// the lock's `lock_went_dead`. `INFERRED` against KWin: not run here.
+static CONFINE_INACTIVE_SINCE: Mutex<Option<std::time::Instant>> = Mutex::new(None);
 
 unsafe extern "C" fn confined_pointer_confined(_data: *mut c_void, _cp: *mut c_void) {
     POINTER_CONFINE_ACTIVE.store(true, Ordering::Release);
+    *CONFINE_INACTIVE_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
     if super::input::trace_mouse() {
         eprintln!("[cordial] pointer confine: compositor sent confined");
     }
@@ -3984,6 +4102,10 @@ unsafe extern "C" fn confined_pointer_confined(_data: *mut c_void, _cp: *mut c_v
 
 unsafe extern "C" fn confined_pointer_unconfined(_data: *mut c_void, _cp: *mut c_void) {
     POINTER_CONFINE_ACTIVE.store(false, Ordering::Release);
+    CONFINE_INACTIVE_SINCE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(std::time::Instant::now);
     if super::input::trace_mouse() {
         eprintln!("[cordial] pointer confine: compositor sent unconfined");
     }
@@ -4002,7 +4124,21 @@ static CONFINED_POINTER_LISTENER: LockedPointerListener = LockedPointerListener 
 /// monitor while working on another.
 fn no_fullscreen_confine() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_FULLSCREEN_CONFINE").is_some())
+    *ON.get_or_init(|| {
+        std::env::var_os("CORDIAL_NO_FULLSCREEN_CONFINE").is_some()
+    })
+}
+
+/// Whether this is Hyprland, which routes pointer focus differently enough to
+/// need its own answers in two places -- see `confine_pointer` and
+/// `parent_is_canvas`.
+fn is_hyprland() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
+            || std::env::var("XDG_CURRENT_DESKTOP")
+                .is_ok_and(|d| d.to_ascii_lowercase().contains("hyprland"))
+    })
 }
 
 unsafe extern "C" fn relative_pointer_motion(
@@ -4430,6 +4566,21 @@ impl WaylandWindow {
             *self.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner()) = None;
         }
         if confine {
+            // A confinement the compositor switched off and has not switched
+            // back on for a second, while this window has focus and the
+            // pointer is over it, is dropped and asked for again. Gated like
+            // the lock's re-request so that being alt-tabbed away -- where
+            // deactivation is correct -- does not churn a destroy and create.
+            let dead = !POINTER_CONFINE_ACTIVE.load(Ordering::Acquire)
+                && POINTER_ON_CANVAS.load(Ordering::Acquire)
+                && CONFINE_INACTIVE_SINCE
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .is_some_and(|at| at.elapsed() > std::time::Duration::from_secs(1));
+            if dead {
+                println!("[cordial] pointer confine: deactivated and not restored; asking again");
+                self.release_confine();
+            }
             self.confine_pointer();
         }
 
@@ -4635,7 +4786,17 @@ fn constrain_toplevel() -> bool {
             self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null(),
             "confine requested over a live lock"
         );
-        let target = if Self::constrain_toplevel() { self.parent_surface } else { self.surface };
+        // The toplevel on Hyprland as well as where the lock uses it. #56
+        // established that Hyprland never activates a constraint on the canvas
+        // subsurface -- the lock there is "never answered with `locked`" in ten
+        // runs of ten -- because pointer focus stays on the toplevel. A
+        // constraint on a surface that never has focus is a constraint that
+        // never applies, and the cursor walks onto the next monitor.
+        // Confinement can move there safely where the lock could not: it keeps
+        // absolute motion, and `parent_is_canvas` carries that motion to the
+        // engine while fullscreen. `INFERRED`: not run on Hyprland.
+        let on_toplevel = Self::constrain_toplevel() || is_hyprland();
+        let target = if on_toplevel { self.parent_surface } else { self.surface };
         // SAFETY: `pointer_constraints` and the target surface are live
         // proxies, and `capture_pointer` is GDK's live borrowed pointer on this
         // connection. The argument list matches `confine_pointer`'s "noo?ou"
@@ -4695,6 +4856,7 @@ fn constrain_toplevel() -> bool {
         }
         *slot = std::ptr::null_mut();
         POINTER_CONFINE_ACTIVE.store(false, Ordering::Release);
+        *CONFINE_INACTIVE_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if super::input::trace_mouse() {
             eprintln!("[cordial] pointer confine: released");
         }
@@ -6011,6 +6173,17 @@ static NO_CONTENT_RECT: AtomicBool = AtomicBool::new(false);
 /// See `sync_canvas_geometry`'s use of it for the white window this exists to
 /// prevent.
 static EVER_PLACED: AtomicBool = AtomicBool::new(false);
+
+/// A canvas size waiting to settle: the size, when it was first seen at that
+/// value, and when the current run of changes began. See `resize_due`.
+static RESIZE_PENDING: Mutex<Option<((i32, i32), std::time::Instant, std::time::Instant)>> =
+    Mutex::new(None);
+/// How long a size must hold before the engine is told. Longer than one
+/// animation frame at any refresh rate, short enough not to be seen.
+const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
+/// The longest a run of changes is held back, so a continuous drag still
+/// resizes the engine rather than waiting for the mouse to stop.
+const RESIZE_MAX_DEFER: std::time::Duration = std::time::Duration::from_millis(600);
 
 // TEMPORARY INSTRUMENTATION -- not for commit. See the session notes.
 static INSTR_SET_POSITIONS: AtomicI64 = AtomicI64::new(0);

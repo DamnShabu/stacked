@@ -785,6 +785,9 @@ fn dispatch_touch(
         return;
     };
     if handle != 0 && !no_agdk_touch() {
+        if trace_touch() {
+            eprintln!("[cordial] onTouchEventNative(action={:#x}) ...", d.action);
+        }
         match cordial_linker_sys::game_activity::touch_multi(
             handle,
             d.action,
@@ -806,6 +809,13 @@ fn dispatch_touch(
         }
     }
 
+    // The other half of #36's bisection, beside `CORDIAL_NO_AGDK_TOUCH`: a
+    // touchscreen kills the client on the first touch with nothing logged, and
+    // every contact goes to two natives, so which of them faults cannot be
+    // read off a log that stops. Off by default; it exists to be asked for.
+    if no_pass_input() {
+        return;
+    }
     let f = PASS_INPUT.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
         report_unregistered("nativePassInput");
@@ -813,6 +823,11 @@ fn dispatch_touch(
     }
     let (w, h) = surface;
     for (contact, action) in d.pass {
+        // Before the call as well as after it, so that a crash inside the
+        // native still leaves the line that names it as the log's last.
+        if trace_touch() {
+            eprintln!("[cordial] nativePassInput(id={}, action={action}) ...", contact.id);
+        }
         // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
         let r = unsafe { cordial_linker_sys::game_activity::pass_input(
             f,
@@ -2112,6 +2127,15 @@ pub fn trace_wheel() -> bool {
 fn no_agdk_touch() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_AGDK_TOUCH").is_some())
+}
+
+/// `CORDIAL_NO_PASS_INPUT=1` -- touch goes only through AGDK's
+/// `onTouchEventNative`, not also through `nativePassInput`. With
+/// `CORDIAL_NO_AGDK_TOUCH=1` for the other arm, three runs under
+/// `CORDIAL_TRACE_TOUCH=1` say which native a touchscreen crash is in (#36).
+fn no_pass_input() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_PASS_INPUT").is_some())
 }
 
 /// Which of the two key paths carries a keystroke. **AGDK's is off by default**,

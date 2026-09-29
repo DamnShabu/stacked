@@ -213,6 +213,9 @@ struct InputState {
     /// exact meaning: constant across a MOVE/UP sequence, not per-event.
     down_time_ms: i64,
     clock: std::time::Instant,
+    /// Keys the engine has been told are down and not yet told are up, as
+    /// (Android keycode, X keycode). See the `FOCUS_OUT` arm.
+    held_keys: Vec<(i32, i32)>,
 }
 
 /// X11 pointer capture state.
@@ -676,6 +679,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
             buttons: 0,
             down_time_ms: 0,
             clock: std::time::Instant::now(),
+            held_keys: Vec::new(),
         }),
         pointer_lock: Mutex::new(PointerLockState::new()),
         fullscreen: AtomicBool::new(place.fullscreen),
@@ -1728,6 +1732,17 @@ impl HostWindow {
         // AKEYCODE has a name for it, and an email address is unusable without
         // it. So this is now a branch rather than an exit.
         if let Some(keycode) = keysym_to_android(keysym) {
+            {
+                let mut input = self.input.lock().unwrap_or_else(|e| e.into_inner());
+                let held = (keycode, ev.detail as i32);
+                if down {
+                    if !input.held_keys.contains(&held) {
+                        input.held_keys.push(held);
+                    }
+                } else {
+                    input.held_keys.retain(|k| *k != held);
+                }
+            }
             deliver_key(handle, down, keycode, ev.detail as i32, meta, 0, unicode, now, now);
             // The evdev code, not the Android keycode. X11 keycodes are evdev
             // offset by 8 -- XKB reserves the low 8 for historical reasons every
@@ -1850,32 +1865,36 @@ impl HostWindow {
                     self.release_pointer_lock();
                     self.release_confine();
 
-                    let mut state = self
-                        .input
-                        .lock()
-                        .unwrap_or_else(|e| e.into_inner());
+                    let stranded = {
+                        let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
+                        state.buttons = 0;
+                        std::mem::take(&mut state.held_keys)
+                    };
 
-                    state.buttons = 0;
-
-                    // Mouse buttons get corrected here, but nothing does the
-                    // same for the keyboard: this backend keeps no held-key
-                    // set at all (only `InputState.buttons`), and there is no
-                    // `FOCUS_IN` arm to reconcile one even if it did. A
-                    // KeyRelease for a key that is let go while this window
-                    // does not have focus is never delivered to it -- X only
-                    // sends key events to the focused client -- so the
-                    // engine's own idea of "is W still held" has no external
-                    // correction the way the button bitmask just got one.
-                    // `INFERRED`, not confirmed: this is a candidate mechanism
-                    // for #41's second fault (movement continuing for several
-                    // seconds after the pointer lock's warp/grab cycle), not
-                    // an established cause -- reproducing it needs a real
-                    // keyboard and a focus change mid-drag, which this
-                    // sandbox cannot generate (see AGENTS.md on synthesised
-                    // input) and the MCP's `cordial_key` cannot exercise
-                    // either, since it calls `input::pass_key_event` directly
-                    // (`devctl.rs`'s `Cmd::Key`) and never goes through this
-                    // X11 event path at all.
+                    // **Let go of every key the engine still thinks is down.**
+                    // X only sends key events to the focused client, so a key
+                    // released while another window has focus never produces a
+                    // KeyRelease here, and the engine goes on walking in the
+                    // direction it was last told. Issue #41 describes exactly
+                    // that on X11: movement continuing in the previous
+                    // direction for about five seconds after the camera's
+                    // warp/grab cycle, which releases the grab through this
+                    // arm. The Wayland backend has done this on
+                    // `wl_keyboard.leave` for some time; this backend kept no
+                    // held-key set to do it with. `INFERRED` that this is the
+                    // whole of #41's second symptom -- no X11 session was run
+                    // here -- but a release for a key that is up is harmless,
+                    // and a missing one is the reported bug's shape.
+                    if !stranded.is_empty() {
+                        let now = self.now_ms();
+                        for (keycode, x_keycode) in stranded {
+                            deliver_key(handle, false, keycode, x_keycode, 0, 0, 0, now, now);
+                            pass_key_event(false, x_keycode - 8, 0);
+                        }
+                        if super::input::trace_mouse() || super::input::trace_text() {
+                            eprintln!("[cordial] X11 focus out: released keys still held");
+                        }
+                    }
                 }
                 EXPOSE => {
                     // SAFETY: `event_type == EXPOSE` means `XNextEvent` just

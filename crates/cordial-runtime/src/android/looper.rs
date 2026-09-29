@@ -1482,10 +1482,53 @@ fn teardown(handle: i64) {
         }
     }
 
+    // **A watchdog, because the engine's own teardown can wait for ever.**
+    // Issue #52: one launch in seven on X11 never exited, and SIGTERM did
+    // nothing -- the main thread was parked in `pthread_cond_wait` inside the
+    // engine's lifecycle callback, called from here, on a condition nothing
+    // was going to signal (that session had presented a single frame). The
+    // signal handler only asks this loop to stop, and this loop was already
+    // stopped, so nothing short of SIGKILL ended it.
+    //
+    // Nothing is lost by cutting it short: the cookie jar was written just
+    // before this call, and the profile lock and every descriptor are the
+    // kernel's to release. The watchdog is a separate thread because the
+    // stuck one cannot time itself out, and it stands down as soon as the
+    // sequence returns, so an ordinary exit is untouched.
+    let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    {
+        let finished = finished.clone();
+        let limit = teardown_limit();
+        std::thread::Builder::new()
+            .name("teardown-watchdog".into())
+            .spawn(move || {
+                let deadline = std::time::Instant::now() + limit;
+                while std::time::Instant::now() < deadline {
+                    if finished.load(std::sync::atomic::Ordering::Acquire) {
+                        return;
+                    }
+                    std::thread::sleep(std::time::Duration::from_millis(100));
+                }
+                eprintln!(
+                    "[android] the engine's shutdown sequence has not returned after {}s; \
+                     exiting without it (issue #52). Cookies were saved before it started.",
+                    limit.as_secs()
+                );
+                extern "C" {
+                    fn _exit(status: c_int) -> !;
+                }
+                // SAFETY: `_exit` runs no handlers and touches no memory; the
+                // stuck thread holds nothing the kernel will not reclaim.
+                unsafe { _exit(0) }
+            })
+            .ok();
+    }
+
     step("onWindowFocusChangedNative(false)", game_activity::window_focus(handle, false));
     for name in TEARDOWN_LIFECYCLE_SEQUENCE {
         step(name, game_activity::lifecycle(handle, name));
     }
+    finished.store(true, std::sync::atomic::Ordering::Release);
 
     // A brief grace period. The engine's flag-cache/telemetry writes this
     // chain triggers are not guaranteed to be finished by the time
@@ -1499,6 +1542,20 @@ fn teardown(handle: i64) {
     while std::time::Instant::now() < grace {
         looper_poll_once(50, std::ptr::null_mut(), std::ptr::null_mut(), std::ptr::null_mut());
     }
+}
+
+/// How long the engine's shutdown sequence gets before the watchdog in
+/// [`teardown`] ends the process. Ten seconds: a healthy sequence returns in
+/// well under one, including the grace period, and somebody who closed the
+/// window is not going to wait longer than this before reaching for a kill.
+/// `CORDIAL_TEARDOWN_TIMEOUT_S` changes it, for investigating a slow teardown.
+fn teardown_limit() -> std::time::Duration {
+    let secs = std::env::var("CORDIAL_TEARDOWN_TIMEOUT_S")
+        .ok()
+        .and_then(|v| v.trim().parse::<u64>().ok())
+        .filter(|&s| s > 0)
+        .unwrap_or(10);
+    std::time::Duration::from_secs(secs)
 }
 
 /// Add a descriptor to the calling thread's looper so `pollOnce` returns as soon
