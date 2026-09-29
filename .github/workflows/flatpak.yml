@@ -506,6 +506,7 @@ jobs:
           elif [ "$had_stable" = "true" ]; then
             echo "not tagged: carrying the existing stable ref forward unchanged"
             ostree --repo=repo refs --create="$stable_ref" "pages-live:$stable_ref" --force
+            ostree --repo=repo refs --delete "pages-live:$stable_ref"
           else
             echo "not tagged and no stable ref published yet: nothing to carry forward"
           fi
@@ -730,7 +731,13 @@ jobs:
           for arch_dir in legs/flatpak-repo-*; do
             mkdir -p "$arch_dir/refs/remotes" "$arch_dir/refs/mirrors"
             echo "==> pulling $arch_dir into the merged repo"
-            ostree --repo=merged pull-local "$arch_dir"
+            # Named refs only. Enumerating also finds the remote-tracking
+            # `pages-live:app/.../stable` the stable carry-forward leaves
+            # behind, which pull-local rejects as "Invalid ref name": every
+            # untagged run failed that way once a stable ref existed on the
+            # live site. Reproduced locally with a throwaway repository.
+            mapfile -t leg_refs < <(ostree --repo="$arch_dir" refs | grep -v ':')
+            ostree --repo=merged pull-local "$arch_dir" "${leg_refs[@]}"
           done
           echo "==> refs in the merged repo:"
           ostree --repo=merged refs
