@@ -19,4 +19,4 @@ Categories=Game;
 # for.
 MimeType=x-scheme-handler/roblox-player;x-scheme-handler/roblox;
 StartupNotify=true
-StartupWMClass=Stacked
+StartupWMClass=io.github.damnshabu.Stacked

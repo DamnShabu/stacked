@@ -306,9 +306,10 @@ struct XSizeHints {
 /// `WM_CLASS`, whose second element must match `StartupWMClass` in
 /// `packaging/io.github.damnshabu.Stacked.desktop`. A mismatch is invisible in normal
 /// use and shows up as an unnamed window in OBS and portal capture pickers, and
-/// as a second unbranded taskbar entry. See ADR-009.
+/// as a second unbranded taskbar entry. See ADR-009. The same id as the Wayland
+/// app_id in `cordial_shell::host_window::APP_ID`, for the same reason.
 const WM_RES_NAME: &str = "stacked";
-const WM_RES_CLASS: &str = "Stacked";
+const WM_RES_CLASS: &str = "io.github.damnshabu.Stacked";
 
 #[repr(C)]
 struct XClassHint {

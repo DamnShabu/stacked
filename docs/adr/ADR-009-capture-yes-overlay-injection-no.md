@@ -45,7 +45,7 @@ Nothing that is not already done, which is why this is cheap to commit to:
 
 | | |
 |---|---|
-| `WM_CLASS` | `cordial` / `Cordial`, set at window creation |
+| `WM_CLASS` / Wayland app_id | `io.github.damnshabu.Stacked`, set at window creation |
 | `StartupWMClass` | matches, so the window resolves to the desktop entry |
 | Window name | set via `XStoreName` |
 
@@ -53,6 +53,12 @@ Together these are what make Cordial appear as a named entry in OBS's window
 picker and in portal capture dialogs rather than as an untitled surface. They
 should not regress; a capture tool that cannot identify the window is the only
 way this feature breaks.
+
+The id is the reverse-DNS one the desktop entry and icon are named after, not
+the bare product name. It was `Stacked` until 2026-09-29, which satisfied
+`StartupWMClass` and therefore GNOME, and nothing else: KDE, waybar and the
+wlroots bars resolve a window by `<app_id>.desktop` or an icon named after the
+app_id, found neither, and showed a generic icon.
 
 ## On the Windows-only tools specifically
 

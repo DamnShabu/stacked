@@ -163,7 +163,7 @@ for f in (stamp, cfg):
 open(cfg, "w").write(
     "xwayland disable\noutput HEADLESS-1 mode 1280x800\ndefault_border none\n"
     "focus_follows_mouse no\n"
-    + ('no_focus [app_id="Cordial"]\n' if os.environ.get("NOFOCUS") == "1" else "")
+    + ('no_focus [app_id="io.github.damnshabu.Stacked"]\n' if os.environ.get("NOFOCUS") == "1" else "")
     + "exec sh -c 'printf %%s \"$WAYLAND_DISPLAY\" > %s'\n" % stamp)
 subprocess.Popen(["distrobox", "enter", "cordial", "--", "bash", "-lc",
   "exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 "

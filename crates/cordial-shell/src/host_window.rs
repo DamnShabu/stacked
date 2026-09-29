@@ -30,7 +30,13 @@ use std::time::{Duration, Instant};
 /// window to its desktop entry through this string, and a drift shows up as a
 /// missing icon rather than as an error. Pinned by
 /// `tests::app_id_matches_the_desktop_entry`.
-pub const APP_ID: &str = "Stacked";
+///
+/// It is the reverse-DNS id and not the bare name because `StartupWMClass` is
+/// a GNOME courtesy. KDE's task manager, waybar, the Hyprland and sway bars
+/// and most docks look for `<app_id>.desktop`, or an icon named `<app_id>`,
+/// and nothing else; while this read `Stacked` neither existed and the window
+/// showed a generic icon everywhere but GNOME.
+pub const APP_ID: &str = crate::branding::APP_ID;
 
 /// What the header bar says.
 ///
@@ -175,6 +181,9 @@ fn init_wayland_once() -> Result<(), String> {
     gtk::gdk::set_allowed_backends("wayland");
     glib::set_prgname(Some(APP_ID));
     adw::init().map_err(|e| format!("libadwaita would not initialise: {e}"))?;
+    // For the compositors that take a toplevel icon from the client
+    // (xdg-toplevel-icon) rather than from the desktop entry.
+    gtk::Window::set_default_icon_name(crate::branding::ICON);
     // Before the window exists, so the first frame is already the right
     // scheme rather than a light flash corrected a frame later -- the flash
     // ADR-011 chose libadwaita to avoid.
