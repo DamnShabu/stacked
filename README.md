@@ -5,46 +5,47 @@
 <h1 align="center">Stacked</h1>
 
 <p align="center">
-  Roblox's Android build, running natively on Linux. Launched from the terminal.<br>
+  Roblox's Android build, running natively on Linux.<br>
   No emulator, no container, no virtual machine. GPL-3.0-or-later.
 </p>
 
-Stacked is a fork of [Cordial](https://github.com/luohoa97/cordial). The
-engine underneath is Cordial's. The fork changes four things:
+Stacked is a fork of [Cordial](https://github.com/luohoa97/cordial), and the
+engine underneath is Cordial's. What the fork changes:
 
-- **A command-line launcher.** There are no launcher, settings or chooser
-  windows. `stacked` starts the game, and the game's window is the only
-  window.
-- **The cursor stays on the window in fullscreen**, including in menus, so a
-  second monitor can't take a click meant for the game.
-- **A frame-rate target** you can set, with GameMode and low-latency MAILBOX
-  presentation on by default.
-- **Its own look.** The game window's title bar uses the Stacked palette,
-  or your desktop's theme if you prefer.
+- **No launcher windows.** `stacked` is a command. It starts the game, and the
+  game's window is the only window. A browser's Play button still works.
+- **The cursor stays on the game's screen in fullscreen**, even in menus, so a
+  second monitor can't take a click meant for the game. It still moves freely.
+- **Performance defaults like Sober's**: GameMode on, low-latency MAILBOX
+  presentation, and a frame-rate target you can set.
+- **Its own look**, or your desktop's if you prefer.
 
-It is experimental. Roblox does not support third-party clients and bans
+It is experimental. Roblox doesn't support third-party clients and bans
 accounts for using them, in waves, including by mistake. **Don't use an
 account you care about.**
 
 ## Install
 
-There are no prebuilt packages for Stacked yet, so build it from source. You
-need Rust, Clang (bionic won't build with GCC), and the GTK4 >= 4.12 and
-libadwaita >= 1.5 development packages. PipeWire and WebKitGTK-6.0 headers are
-optional.
+There are no prebuilt packages yet, so build it from source. You need
+[Rust](https://rustup.rs) 1.75 or newer, Clang (bionic won't build with GCC),
+CMake, and GTK >= 4.12 with libadwaita >= 1.5. That means Ubuntu 24.04,
+Debian 13, Fedora 40 or newer, or Arch.
 
 ```bash
-# Debian/Ubuntu:  sudo apt install clang cmake libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev
-# Fedora:         sudo dnf install clang cmake gtk4-devel libadwaita-devel pipewire-devel
+# Ubuntu/Debian: sudo apt install clang cmake pkg-config libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev
+# Fedora:        sudo dnf install clang cmake gtk4-devel libadwaita-devel pipewire-devel
+# Arch:          sudo pacman -S clang cmake gtk4 libadwaita pipewire
 git clone --recursive https://github.com/DamnShabu/stacked
 cd stacked
 cargo build --release
 install -Dm755 target/release/stacked target/release/cordial-run -t ~/.local/bin/
 ```
 
-`stacked` and `cordial-run` must sit in the same directory, or both must be on
-your `PATH`. To make browser Play buttons open Stacked, install the desktop
-entry and icon too:
+PipeWire's headers are optional, but without them there is no sound.
+`stacked` and `cordial-run` have to stay in the same directory.
+
+To have browser Play buttons and your app menu open Stacked, also install the
+desktop entry and icon:
 
 ```bash
 install -Dm644 packaging/io.github.damnshabu.Stacked.desktop -t ~/.local/share/applications/
@@ -53,42 +54,56 @@ install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked
 update-desktop-database ~/.local/share/applications
 ```
 
+**To update Stacked**, run `git pull --recurse-submodules` and repeat the
+`cargo build` and first `install` lines.
+
 ## Use
 
 ```bash
-stacked install        # get Roblox: uses Sober's copy if it has one, else downloads and checks it
-stacked                # play
+stacked install    # get Roblox: Sober's copy if you have one, otherwise a download checked against Roblox's signature
+stacked            # play
 ```
 
-You supply Roblox yourself. Stacked ships none of it. `stacked install` looks
-for a copy [Sober](https://sober.vinegarhq.org/) has already downloaded, and
-otherwise fetches one and refuses it unless it is signed with Roblox's own
-certificate.
+Stacked ships no part of Roblox; `stacked install` gets it for you.
 
 | | |
 |---|---|
-| `stacked play --profile alt` | Play on another profile. Each profile is a separate sign-in. |
-| `stacked profiles new alt` | Make a profile. `profiles use alt` makes it the default. |
+| `stacked play --profile alt` | Play signed in as someone else. Each profile is its own sign-in. |
+| `stacked profiles new alt` | Make a profile. `stacked profiles use alt` makes it the default. |
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
-| `stacked config` | List every setting with its current value. |
 | `stacked update` | Download the newest Roblox build. |
-| `stacked plugins install x.tar.zst` | Install a plugin. One that runs code starts switched off, and nothing is granted until you grant it. |
+| `stacked config` | List every setting and its current value. |
+| `stacked plugins install x.tar.zst` | Add a plugin. One that runs code starts switched off with no permissions. |
 | `stacked diagnostics` | Print what a bug report needs. |
 
-F11 toggles fullscreen. [`docs/usage.md`](docs/usage.md) lists every command
-and setting.
+**F11** toggles fullscreen. **Ctrl-C** in the terminal closes the game. Every command and setting is in [`docs/usage.md`](docs/usage.md).
 
-## Settings worth knowing
+### Settings worth knowing
 
 ```bash
 stacked config set fps_cap 144              # frame-rate target (unset = the engine's own)
-stacked config set theme system             # desktop colours instead of Stacked's
+stacked config set present_mode fifo        # vsync: uses less power, adds latency
 stacked config set fullscreen_confine false # let the cursor leave a fullscreen window
-stacked config set present_mode fifo        # vsync: less power, more latency
+stacked config set theme system             # your desktop's colours instead of Stacked's
 ```
 
-FastFlags go in the file `stacked flags path` prints
-([`docs/fastflags.md`](docs/fastflags.md)).
+FastFlags go in the file `stacked flags path` prints; see
+[`docs/fastflags.md`](docs/fastflags.md).
+
+## Troubleshooting
+
+- **Pressing Play in the browser does nothing.** Run `stacked` in a terminal
+  to see why. When it's started from the browser, Stacked also sends the
+  reason as a desktop notification.
+- **"profile is already open"** means another client is using that profile.
+  Close it, or play on a second profile with `--profile`.
+- **The cursor won't leave the window.** Alt-tab, or leave fullscreen with F11.
+  To turn confinement off, run `stacked config set fullscreen_confine false`.
+- **No window appears at all** on COSMIC, KWin or some wlroots compositors.
+  This is a known bug with no fix yet
+  ([cordial#38](https://github.com/luohoa97/cordial/issues/38)).
+- **It closed on its own.** The output above the prompt is what it printed.
+  Include it, and `stacked diagnostics`, in a bug report.
 
 ## Status
 
@@ -96,51 +111,47 @@ What works: signing in, loading and playing experiences, keyboard and mouse,
 camera, text entry, audio, voice chat, controllers, fullscreen, and two
 accounts side by side.
 
-**What is still broken.** These bugs were reported against Cordial. Where
-each stands in Stacked is in [`docs/known-issues.md`](docs/known-issues.md).
+**What doesn't yet.** These were reported against Cordial, and apply here too:
 
-- No window at all on COSMIC, KWin, and some wlroots compositors.
+- No window on COSMIC, KWin or some wlroots compositors.
 - The first touch on a touchscreen crashes.
-- A SIGSEGV at launch on some machines, including the Steam Deck.
+- A crash at launch on some machines, including the Steam Deck.
 - The keyboard is sometimes dead after joining an experience.
-- Fullscreen freezes, hangs on exit, and X11 keys that stay held have fixes in
-  the code that nobody has confirmed on an affected machine yet.
 
-The fork's own new pieces have limits too:
+Fixes for the fullscreen freeze, the hang on exit, X11 keys staying held, and
+cursor confinement on Hyprland and KWin are in the code. Nobody has confirmed
+them on an affected machine yet. [`docs/known-issues.md`](docs/known-issues.md)
+has the state of each bug and what to run if you can help.
 
-- **Fullscreen cursor confinement** has been checked against a real
-  compositor (sway) but not yet on a real multi-monitor desktop, and not at all
-  on X11.
-- **Raising the frame rate** with `fps_cap` is untested. The flag is known to
-  *lower* the rate, but not whether it raises it past the engine's default.
-- **Frame rate in general** hasn't been re-measured. The records are in
-  [`docs/status.md`](docs/status.md).
+Two of the fork's own features are untested:
+
+- Raising the frame rate above the engine's default with `fps_cap`. The flag
+  is known to *lower* it.
+- Cursor confinement on a real multi-monitor desktop. So far it has only run
+  in a nested compositor.
 
 Wayland is the main target. X11 works but gets less attention.
 
 ## FAQ
 
-**Is this faster than Sober?** It hasn't been measured side by side. Stacked
-does what Sober does by default: it asks Feral GameMode for the performance
-governor, presents with MAILBOX rather than FIFO, and doesn't keep a launcher
-process running while you play. Beyond that, the only lever is `fps_cap`.
+**Is it faster than Sober?** It hasn't been measured side by side. Stacked uses
+the same defaults Sober does: GameMode for the performance governor, MAILBOX
+rather than FIFO presentation, and no launcher left running while you play.
+Beyond that, the lever is `fps_cap`.
 
-**Where did the settings window go?** It's now `stacked config`, and the
-settings file is the same `~/.config/cordial/shell.json` as before. Profiles,
-sign-ins and FastFlags carry over from Cordial unchanged, because the data
-paths haven't moved.
+**I used Cordial. What carries over?** Everything: profiles, sign-ins,
+FastFlags, and settings. Stacked reads the same `~/.local/share/cordial` and
+`~/.config/cordial` paths. Cordial's Settings window is `stacked config` here.
 
-**Can I run it beside Cordial?** A source build in `~/.local/bin` can sit
-beside Cordial's Flatpak. It has its own application id, desktop entry and
-icon. Native packages can't be installed together, because both ship
-`cordial-run`. The two share profiles, and a profile open in one is locked
-against the other.
+**Can I keep Cordial installed too?** A source build in `~/.local/bin` can sit
+beside Cordial's Flatpak, since the two have different application ids.
+Native packages of the two can't be installed together. Both use the same
+profiles, and a profile open in one is locked against the other.
 
 **Is it a cheat or a mod injector?** No. There is no script execution, no
-hooking and no access to the Roblox process's memory. Those capabilities are
-absent from the code, not just disabled
-([ADR-001](docs/adr/ADR-001-in-process-hooking.md)). Plugins extend Stacked,
-not Roblox.
+hooking and no access to the Roblox process's memory. That code is absent, not
+just disabled ([ADR-001](docs/adr/ADR-001-in-process-hooking.md)). Plugins
+extend Stacked, not Roblox.
 
 **How does it work?** A ported AOSP bionic linker loads Roblox's unmodified
 `libroblox.so`. `libjnivm` stands in for Android's Java runtime, and a
@@ -149,11 +160,9 @@ framework layer answers the platform calls the engine makes. See
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and
-[`AGENTS.md`](AGENTS.md). Decisions and their reasons are in
-[`docs/adr/`](docs/adr). The launcher's move to a CLI is
-[ADR-043](docs/adr/ADR-043-the-launcher-is-a-command-line.md). Report bugs
-[here](https://github.com/DamnShabu/stacked/issues) with the output of
+Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md).
+Decisions and the reasons behind them are in [`docs/adr/`](docs/adr). Report
+bugs [here](https://github.com/DamnShabu/stacked/issues) with the output of
 `stacked diagnostics`.
 
 ## Credits and licence
