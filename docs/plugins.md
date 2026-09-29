@@ -1,26 +1,26 @@
 # Installing plugins
 
-## Plugins need Deno, and Cordial will fetch it
+## Plugins need Deno, and you install it
 
 Plugins are TypeScript run under [Deno](https://deno.com)
 ([ADR-008](adr/ADR-008-plugins-are-typescript-on-deno.md)), so there has to
 be an interpreter on the machine. **Arch is the only distribution that packages
-one**, and Cordial's AUR packages depend on it; Fedora and Debian ship none, and
-inside the Flatpak there is no host to install one on at all.
+one**; Fedora and Debian ship none, and Deno's own installer is the usual
+route there.
 
-So where there is no `deno` on `PATH`, **Settings → Plugins** shows a row
-offering to download it, and that row is absent on a machine that already has
-one. The download is a pinned Deno release with its checksum written into
-Cordial's source, verified before the file is put in place, and it lands under
-Cordial's own data directory rather than anywhere system-wide. It is about
-39 MB and you only do it once.
+Stacked looks for `deno` on `PATH` first, then in `~/.deno/bin` (where Deno's
+installer puts it) and Homebrew's `bin`, and last in
+`~/.local/share/cordial/deno/2.9.6/`, where Cordial's Settings window used to
+download a pinned copy. **Stacked has no command that downloads Deno**; that
+download was a button in the window that no longer exists
+([ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md)). A copy Cordial
+already fetched is still used.
 
-If you would rather install it yourself, any `deno` on `PATH` is used in
-preference to the downloaded one.
-
-**Before 0.13.1 there was no interpreter and no row**, so on every install
-except a hand-built one with Deno already present, plugins were listed, granted
-and switched on without ever running a line.
+**Without Deno, a plugin with code is listed, granted and switched on and
+still never starts**; the client's output says `deno is not on PATH` when it
+tries. A Flatpak cannot see a host `deno` at all, so plugins with code do not
+run in one you build yourself unless that sandbox's own data directory
+already has the pinned copy.
 
 ## Installing somebody else's plugin
 
@@ -29,36 +29,60 @@ registry format, signature checking and an installer, and no populated registry
 to point them at. Until there is, a plugin arrives as a directory or an archive
 and you put it in place yourself.
 
-**Settings → Get Plugins → Plugin archive (`.tar.zst`)**, and choose the file.
-Cordial unpacks it into place, and it then appears under Plugins, switched off,
-with the permissions it is asking for listed. Nothing runs until you say so.
+```bash
+stacked plugins install thing.tar.zst
+```
 
-That is the whole procedure. You do not need a terminal and you do not need to
-know where plugins live.
+Stacked unpacks it into place and prints what it is asking for, with the
+command that grants each capability. A plugin with code starts switched off
+and nothing is granted, so nothing runs until you say so:
+
+```bash
+stacked plugins grant thing presence.set
+stacked plugins enable thing
+stacked plugins                        # what is installed, on or off, and granted
+```
+
+Grants and the on/off switch belong to the current profile; add
+`--profile NAME` for another. `stacked plugins remove thing` uninstalls it.
+Cordial's plugin marketplace browser has no Stacked equivalent, so there is
+no way to install from a registry index either.
 
 **The archive is how a plugin travels; a folder is what it is.** A `.tar.zst`
 holds the plugin directory's contents, zstd-compressed — zstd for ratio and
 speed, tar because zip's Unix mode bits are optional and a plugin arriving
 without its execute bit is a confusing failure. **It is not a `.tar.gz`.** If
-somebody hands you one of those it is not a Cordial plugin archive, whatever is
-inside it, and the picker will not take it.
+somebody hands you one of those it is not a plugin archive, whatever is
+inside it, and `stacked plugins install` will not take it.
 
 If you are writing a plugin rather than installing one, skip the archive: put
 the folder straight into `~/.local/share/cordial/plugins/<plugin-id>/` so that
-its `plugin.json` is at `…/<plugin-id>/plugin.json`. Under Flatpak that path is
-`~/.var/app/io.github.luohoa97.Cordial/data/plugins/` instead, since that is
-where the sandbox keeps its data.
+its `plugin.json` is at `…/<plugin-id>/plugin.json`, or load it where it is
+with `stacked config set unpacked_plugins '["/path/to/plugin"]'`. Under a
+Flatpak you built yourself the plugins directory is
+`~/.var/app/io.github.damnshabu.Stacked/data/cordial/plugins/` instead, since
+that is where the sandbox keeps its data.
 
 **No restart needed, since [ADR-038](adr/ADR-038-plugin-hot-swap.md).** A
 client already running notices the new directory, the grant you add for it,
-and Settings' own switch within a second or two, and starts, stops or
-restarts exactly the plugin that changed rather than needing a fresh launch.
+and `stacked plugins enable` or `disable` within a second or two, and starts,
+stops or restarts exactly the plugin that changed rather than needing a fresh
+launch.
 That covers installing, updating, removing, enabling, disabling and granting
 — everything except a `flags.write` layer, which has always taken effect at
 the next launch and still does (ADR-005), because `FFlag`/`FInt`/`FString`
 are read once at startup regardless of who is asking to change them.
 
-**Trust the source.** A plugin runs as a real process on your machine. Cordial
+**A plugin's preferences have no page any more.** Cordial drew one in
+Settings for every plugin that declares preferences, which three of the four
+shipped plugins do. Stacked has no window to draw it in and no command for
+it yet, so a plugin runs with its declared defaults unless you write
+`~/.local/share/cordial/profiles/<profile>/plugins/<plugin-id>/preferences.json`
+yourself: a flat JSON object of key to value, using the keys in the plugin's
+`plugin.json`. A value that does not fit the declaration falls back to the
+default.
+
+**Trust the source.** A plugin runs as a real process on your machine. Stacked
 gives it no ambient permissions — no file access, no network, no environment, no
 subprocess, and every capability it uses is one you approved by name — but that
 is a boundary, not a guarantee about intent, and installing something because a

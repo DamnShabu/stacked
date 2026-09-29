@@ -1,13 +1,13 @@
 # Controllers work, and the on-screen button glyphs may name the wrong brand
 
-Controller support is on by default. Cordial reads your pad from
+Controller support is on by default. Stacked reads your pad from
 `/dev/input/js*` and hands its buttons and sticks to Roblox, and that part is
 tested.
 
 **What is not established is which number tells Roblox your controller's
 brand.** Roblox ships separate glyph sets for PlayStation, Xbox and a generic
 pad, and picks between them with an integer whose meaning is not published
-anywhere we can read. Cordial sends a value; it may be the wrong one. If it is,
+anywhere we can read. Stacked sends a value; it may be the wrong one. If it is,
 **you will see the wrong brand of button prompt and every button will still
 work.** Sober has the same fault from the same cause — its issues
 [#584](https://github.com/vinegarhq/sober/issues/584) and
@@ -16,13 +16,13 @@ work.** Sober has the same fault from the same cause — its issues
 Try other values if the glyphs look wrong:
 
 ```bash
-CORDIAL_GAMEPAD_TYPE=1 cordial      # then 2, 3, ...
+CORDIAL_GAMEPAD_TYPE=1 stacked      # then 2, 3, ...
 ```
 
 **If you find the value that draws your controller's own glyphs, please
-[open an issue](https://github.com/luohoa97/cordial/issues) and say which pad
+[open an issue](https://github.com/DamnShabu/stacked/issues) and say which pad
 and which number.** That settles it for everyone, and it is the one thing we
-cannot work out without a controller in front of the engine. Cordial prints the
+cannot work out without a controller in front of the engine. Stacked prints the
 value it used at launch, once, the first time it sees a pad.
 
 Force feedback is absent rather than broken: there is no rumble, deliberately,
@@ -34,5 +34,6 @@ CORDIAL_MONITOR=1 CORDIAL_FULLSCREEN=1 cargo run --release --bin cordial-run -- 
   --host-libc --game-activity --run 30
 ```
 
-`cordial-run --help` lists the rest, and `CORDIAL_GAMEPAD=0` turns controller
-support off entirely.
+`cordial-run --help` lists the rest. `stacked config set gamepad false` turns
+controller support off entirely, and `CORDIAL_GAMEPAD=0` does the same for one
+launch.

@@ -1,5 +1,13 @@
 # The Cordial plugin API
 
+Stacked runs Cordial's plugin system unchanged, so this is its plugin API too,
+and "Cordial" below means that host. One difference matters to an author:
+Stacked's launcher is a command line with no Settings window
+([ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md)). Where this document
+describes a switch, a row or a dialog in Settings, the user does the same thing
+with `stacked plugins`, and preferences have no page at all (see
+[Preferences](#preferences-the-answers-the-user-owns)).
+
 A plugin is a directory holding a `plugin.json` and, usually, one TypeScript
 module. Cordial runs that module as a separate Deno process with **no
 permissions at all** — no file, network, environment or subprocess access — and
@@ -9,7 +17,7 @@ checked against the capabilities the user granted it, in this profile, before
 anything happens.
 
 So a plugin can read and contribute FastFlags and Cordial's own render
-settings, keep a settings document, have Cordial draw it a preferences page,
+settings, keep a settings document, declare preferences for the user to set,
 publish Discord Rich Presence, post a desktop notification, open an `http` or
 `https` page, talk to other plugins over a small event bus, and shadow Roblox's
 own textures, sounds, fonts and models with files of its own.
@@ -155,8 +163,7 @@ The third file is the grants file, and it is not yours because it records the
 user's decision rather than yours. Until something is granted, this plugin is
 not merely refused — it is **never started at all**: `start_all` skips any
 plugin whose grant set is empty and prints `plugin hello: no capabilities
-granted, not started`. Either flip the `log` switch on the plugin's row in
-Settings, or write
+granted, not started`. Either run `stacked plugins grant hello log`, or write
 `~/.local/share/cordial/profiles/default/plugin-grants.json` by hand:
 
 ```json
@@ -191,12 +198,12 @@ were chosen so that plugins written before a field existed keep working.
 | Key | Required | If it is missing |
 |---|---|---|
 | `id` | yes | The manifest does not deserialise at all, and discovery reports it as not loadable, quoting serde's own "missing field id". Present but empty is a different refusal, and the one people expect: `id must not be empty`. |
-| `name` | no | Empty. Settings and the install prompt show the `id` instead. |
+| `name` | no | Empty. `stacked plugins` shows the `id` instead. |
 | `entry` | no | The plugin is data, not code. Nothing is spawned and Cordial prints `data only, nothing to start`. |
-| `capabilities` | no | Requests nothing. Settings shows `Requests no capabilities`. |
+| `capabilities` | no | Requests nothing. `stacked plugins` lists no capabilities under it. |
 | `version` | no | Loads normally, but cannot be published to an index or depended upon. |
 | `dependencies` | no | Depends on nothing. |
-| `preferences` | no | No preferences page, and no gear button on the row. |
+| `preferences` | no | No preferences. |
 
 `id` may contain only ASCII letters, digits, `-` and `_`. That is not
 fastidiousness: the id names your installed directory and your settings
@@ -477,7 +484,8 @@ running and so a plugin that misbehaves cannot interfere with bring-up.
 For each directory found under the plugin root, in sorted order:
 
 1. **Enabled?** If the profile's `plugin-enabled.json` says no, it prints
-   `plugin hello: disabled in Settings, not started` and moves on. Absence from
+   `plugin hello: disabled in Settings, not started` and moves on (the
+   message predates the CLI; `stacked plugins disable` is what sets it now). Absence from
    that file means enabled, with two exceptions. Plugins that ship with Cordial
    may be listed as starting switched off — currently `fps-flex` — so that
    nothing changes how a machine behaves because somebody installed Cordial. And
@@ -503,9 +511,10 @@ namespaces and settings directories are all keyed by id and the second claimant
 would otherwise inherit the first's approvals.
 
 One detail that costs time if you do not know it: the grants file is the
-authority, not your manifest — the broker is built from what the file says, and
-Settings only limits itself to offering switches for capabilities you actually
-requested.
+authority, not your manifest — the broker is built from what the file says.
+Cordial's Settings only offered switches for capabilities you actually
+requested; `stacked plugins grant` checks only that the capability exists, so
+it will write one your manifest never asked for.
 
 **Correction: `start_all` discovers and spawns from *both* roots, system
 first.** This used to say the system root — where first-party plugins ship —
@@ -715,8 +724,8 @@ core events, three of which are published and two of which are not. Everything
 else in the table works.
 
 Every capability also carries a second-person sentence,
-`Capability::consequence`, which is what the install dialog shows instead of the
-wire name. A test asserts that no such sentence contains its own dotted name,
+`Capability::consequence`, which is what `stacked plugins install` and
+`stacked plugins grant` print beside the wire name. A test asserts that no such sentence contains its own dotted name,
 because "this plugin wants `flags.write`, allow?" is accurate, unreadable, and
 answered yes by everybody.
 
@@ -982,47 +991,44 @@ configuration.
 
 ## Granting, revoking, and the difference from switching off
 
-The install prompt is all-or-nothing. `consent::verdict` decides whether to ask
-at all: a plugin with no entry module *and* no capabilities installs silently,
-because if every import prompts then the prompt means nothing by the third one.
-Anything with code or capabilities gets a dialog listing each capability's
-consequence sentence, and pressing Allow writes **every requested capability**
-into the grants file at once. "Not now" is both the default response and the
-close response, so dismissing the dialog with Escape grants nothing.
+**Installing grants nothing.** `stacked plugins install` unpacks the archive,
+prints each capability the plugin requests with its consequence sentence and
+the command that would grant it, and stops there. Each grant is then its own
+command, `stacked plugins grant ID CAPABILITY`, writing through `grants::set`,
+which flips one entry and leaves every other plugin — and every other
+capability of this one — alone. `stacked plugins revoke` is the reverse.
+Revoking a plugin's last capability drops its key from the file entirely
+rather than leaving `"id": []`, since an empty set and an absent key mean the
+same thing to both `load` and the broker.
 
-Allowing is still not starting. `consent::starts_disabled` returns whether the
-plugin has an entry module, and the shell writes a plugin with code into
-`plugin-enabled.json` as **off** whatever you told the dialog — the success
-subtitle says so: "Installed {name} and allowed what it asked for. It is
-switched off until you turn it on." An install dialog's OK button granting the
-capabilities *and* starting the process would be one act where there should be
-two. Data-only plugins are left absent from the file and therefore on, because
-there is nothing to start and a switch with no argument behind it is not a
-choice.
+Cordial's Settings window asked this as one all-or-nothing dialog, where Allow
+wrote every requested capability at once. That dialog, and the
+`consent::verdict` question of whether to show it, no longer has a caller in
+Stacked; a terminal asks as separate commands, which is the same consent
+spelled out.
 
-Per-capability control comes afterwards, on the plugin's row in Settings: one
-switch per capability the plugin requested, each writing through `grants::set`,
-which flips one entry and leaves every other plugin — and every other capability
-of this one — alone. Revoking a plugin's last capability drops its key from the
-file entirely rather than leaving `"id": []`, since an empty set and an absent
-key mean the same thing to both `load` and the broker.
+Granting is still not starting. `consent::starts_disabled` returns whether the
+plugin has an entry module, and `stacked plugins install` writes a plugin with
+code into this profile's `plugin-enabled.json` as **off** and says so:
+"it contains code, so it is off. `stacked plugins enable ID` switches it on."
+Granting the capabilities *and* starting the process in one act would be one
+decision where there should be two. Data-only plugins are left absent from the
+file and therefore on, because there is nothing to start and a switch with no
+argument behind it is not a choice.
 
 **Disabling is not revoking.** `plugin-enabled.json` sits beside the grants file
 and answers a different question: is this thing running, as against what it is
-allowed to do. Grants survive a disable untouched, so switching a plugin off for
-an afternoon costs nothing to undo. Conflating them would mean the price of
-turning something off is every approval decision you already made, and the likely
-response to that price is leaving a suspect plugin enabled. The Settings subtitle
-says so out loud, when there is anything to say it about: `capability_summary`
-returns "Off. What you allowed it to do is kept." for a disabled plugin that
-holds at least one granted capability, and the bare "Off" for one that holds
-none — the sentence exists to answer a fear about losing approvals, and a plugin
-with no approvals has none to lose.
+allowed to do. Grants survive `stacked plugins disable` untouched, so switching
+a plugin off for an afternoon costs nothing to undo. Conflating them would mean
+the price of turning something off is every approval decision you already
+made, and the likely response to that price is leaving a suspect plugin
+enabled. `stacked plugins` lists a disabled plugin's grants beside it, so what
+is kept is visible.
 
 Two states look identical from outside and are not, so Cordial reports them
 differently. A plugin with code that has been granted nothing is not started at
 all, and says `no capabilities granted, not started`; a plugin the user switched
-off says `disabled in Settings, not started`. One is "you have not decided what
+off says `disabled in Settings, not started`, a message older than the CLI. One is "you have not decided what
 to allow", the other is "you switched it off", and a plugin installed, enabled,
 and never granted anything has been reported as broken by somebody looking at
 ADR-003's default deny working exactly as intended.
@@ -1046,7 +1052,8 @@ reading the status.
 **The grants file is authoritative, and it is not intersected with the
 manifest.** `start_all` reads this profile's entry for the plugin id and hands it
 straight to `Broker::grant`; the manifest's request list is used only to compute
-the "not granted" message and to decide which switches Settings draws. A
+the "not granted" message and, under Cordial, to decide which switches Settings
+drew. A
 capability written into the grants file by hand that the manifest never requested
 is therefore granted at runtime. **INFERRED**: that follows from the code path
 rather than from an experiment — no client was run to observe it — but there is
@@ -1104,13 +1111,13 @@ one — absent from the surface rather than disabled, so there is no primitive t
 extract or re-enable in a fork (ADR-001, ADR-003).
 
 There is no general UI surface either: a plugin has no display and no toolkit,
-and one able to draw in Cordial's window could draw something indistinguishable
-from Cordial's own sign-in dialog. What exists instead is `notify.send` for
+and one able to draw in the game window could draw something indistinguishable
+from Roblox's own sign-in screen. What exists instead is `notify.send` for
 notifications, `assets.override` for replacing textures, sounds, fonts and
 models — its consequence sentence is deliberately that wide, and adds that
 replacing a model can change more than appearance and Cordial does not check
-which is which — and the declarative preferences page Cordial draws from your
-manifest (ADR-020).
+which is which — and the declarative preferences Cordial drew a page for from
+your manifest (ADR-020), which Stacked has no page for.
 
 If you grep `docs/adr/` you will find ADR-027, "Plugins describe an overlay;
 Cordial draws it", proposing exactly the surface this section says does not
@@ -1396,7 +1403,8 @@ word `resolve` does appear there, in `crate::flags::resolve` and a local
 `resolve_within`; grep for the module rather than the word.) The dependency
 planner in
 `crates/cordial-plugins/src/resolve.rs` has non-test callers only in
-`marketplace.rs` and the settings window's install-confirmation UI: it decides
+`marketplace.rs` (Cordial's settings window's install confirmation was the
+other, and is gone from Stacked): it decides
 what gets *installed*, never what starts first. Nothing refuses to start a
 plugin whose declared dependency is absent, either, so ADR-006's "must surface
 as a named error to the dependent" is unimplemented as well.
@@ -2087,7 +2095,7 @@ before either:
 | | **settings** | **preferences** |
 |---|---|---|
 | whose answers are they | your plugin's | the user's |
-| who writes them | your plugin, via `settings.set` | Cordial, from its own page |
+| who writes them | your plugin, via `settings.set` | the user: Cordial's page, or by hand in Stacked |
 | can your plugin write them | yes | **no, and there is no method that could** |
 | what defines the shape | nothing; any JSON object | the `preferences` array in your `plugin.json` |
 | where it lives | `<profile>/plugins/<id>/settings.json` | `<profile>/plugins/<id>/preferences.json` |
@@ -2183,10 +2191,16 @@ longest list of afternoons lost to.
 
 ## Preferences: the answers the user owns
 
-You declare fields in `plugin.json`; Cordial builds the page. There is no
+You declare fields in `plugin.json`; Cordial built a page from them. There is no
 capability for declaring and no other manifest key — declaring a field *is* how
-you get a page, so a gear can never appear with nothing behind it, and there is
+you got a page, so a gear could never appear with nothing behind it, and there is
 no second fact to disagree with the first.
+
+**Stacked draws no page.** It has no window of its own and no command for
+preferences yet, so a user sets them by writing
+`<profile>/plugins/<id>/preferences.json` by hand, a flat JSON object keyed by
+your field keys. Everything below about what your plugin reads holds
+unchanged, because the resolution against your declaration happens on read.
 
 ```json
 {
@@ -2206,7 +2220,7 @@ no second fact to disagree with the first.
 }
 ```
 
-| `type` | the row it becomes | its own keys |
+| `type` | the row Cordial made of it | its own keys |
 |---|---|---|
 | `bool` | `AdwSwitchRow` | `default` |
 | `int` | `AdwSpinRow` | `default`, `minimum`, `maximum`, `step` |
@@ -2214,8 +2228,8 @@ no second fact to disagree with the first.
 | `text` | `AdwEntryRow` | `default` |
 
 Every field takes `key` and `title`, and optionally `description` and `group`.
-Fields sharing a `group` become one group on the page, in the order the groups
-first appear; ungrouped fields come first. `value` and `label` are split in a
+Fields sharing a `group` became one group on Cordial's page, in the order the
+groups first appear; ungrouped fields come first. `value` and `label` are split in a
 `choice` because they are not the same thing: `value` is what lands in the
 document and what your code compares against, `label` is prose, and renaming a
 label must not silently reset everybody's choice.
@@ -2278,8 +2292,8 @@ made it. Your own state goes in `settings.json`, which is yours to replace.
 **Why you cannot draw the page yourself.** GNOME Shell extensions can, because
 they run inside the shell's own process. Your plugin does not: it is a separate
 sandboxed process with no display and no toolkit, and a plugin able to draw in
-Cordial's window could draw something indistinguishable from Cordial's own
-sign-in dialog. [ADR-020](adr/ADR-020-declarative-plugin-preferences.md)
+the game window could draw something indistinguishable from Roblox's own
+sign-in screen. [ADR-020](adr/ADR-020-declarative-plugin-preferences.md)
 records what the declarative form gives up in exchange.
 
 ## Asset overlays: `assets.override`
@@ -2467,9 +2481,10 @@ depend on Cordial being correct. This is also why performance is never an
 argument for a hole: if an interaction is too slow across the pipe, the answer is
 a better-shaped call, not a shortcut past the broker.
 
-**No general UI surface.** What exists is `notify.send`, asset overlays, and the
-preferences page Cordial draws from your declaration. That is the list. A plugin
-cannot draw on top of the game and cannot draw inside Cordial's own window. The
+**No general UI surface.** What exists is `notify.send`, asset overlays, and
+declared preferences, which Cordial drew a page for and Stacked does not. That
+is the list. A plugin cannot draw on top of the game and cannot draw inside the
+game window. The
 distinction ADR-009 draws is between reading output and writing into a process:
 capture works today and needs nothing from Cordial, because a recorder receives
 frames the compositor already produced and can observe nothing a screenshot

@@ -92,7 +92,7 @@ One of those fixes was a genuine latent bug rather than a missing branch:
 x86_64, which has no hyphen to get wrong, and would have made this code path never find
 the split archive on a real aarch64 install.
 
-Packaging gates (`ExclusiveArch: x86_64` in `packaging/rpm/cordial.spec`,
+Packaging gates (`ExclusiveArch: x86_64` in what is now `packaging/rpm/stacked.spec`,
 `Architecture: amd64` in `packaging/deb/control.in`, the AppImage's x86_64-linux-gnu
 WebKitGTK discovery) were the same shape of gap and are fixed in the same batch of
 commits, alongside aarch64 legs in `release.yml`/`flatpak.yml`/`test.yml`/`apt.yml`/
