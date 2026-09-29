@@ -947,6 +947,16 @@ jobs:
           # The pacman repository, downloaded above from pacman.yml's latest
           # green run. Same absent-until-secret shape as /rpm/ above -- see
           # docs/design/pacman-repository.md.
+          #
+          # A pacman repository with a file over Pages' 100 MB limit is left
+          # out rather than allowed to fail this job: that is what stopped
+          # every Flatpak update from 2026-09-28, over a package nobody
+          # installing the Flatpak needs.
+          if [ -d pacman-repo ] && [ -n "$(find pacman-repo -type f -size +99M)" ]; then
+            echo "::warning::pacman repository has files over 100 MB; publishing without /arch/"
+            find pacman-repo -type f -size +99M
+            rm -rf pacman-repo
+          fi
           if [ -d pacman-repo ] && [ -n "$(ls -A pacman-repo 2>/dev/null)" ]; then
             mv pacman-repo pages/arch
           else

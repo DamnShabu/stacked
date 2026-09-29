@@ -191,7 +191,12 @@ jobs:
           # yum.yml's equivalent works by luck rather than by being written
           # better: its upload lists a single path, so its artifact is rooted at
           # `dist/rpm` and one level is enough. Do not copy its glob here.
-          mapfile -t pkgs < <(find dist/arch -type f -name '*.pkg.tar.zst' | sort)
+          # **Not the `-debug` split package.** makepkg emits one because
+          # `[profile.release]` keeps symbols, and at over 100 MB it is past
+          # GitHub Pages' per-file limit: 0.19.0's put one in /arch/ and every
+          # Flatpak publish failed at the payload check from 2026-09-28 on, so
+          # `flatpak update` found nothing new. It stays on the release page.
+          mapfile -t pkgs < <(find dist/arch -type f -name '*.pkg.tar.zst' ! -name '*-debug-*' | sort)
           if [ "${#pkgs[@]}" -eq 0 ]; then
             echo "::error::no .pkg.tar.zst found under dist/arch after downloading cordial-arch" >&2
             find dist/arch -type f | head -20 >&2
