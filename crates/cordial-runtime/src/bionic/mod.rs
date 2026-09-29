@@ -940,3 +940,125 @@ mod foreign_alloc_tests {
         assert!(!find("vasprintf").is_null());
     }
 }
+
+#[cfg(test)]
+mod netdb_tests {
+    use super::*;
+
+    /// `struct addrinfo` as Roblox sees it: `ai_canonname` before `ai_addr`,
+    /// the reverse of glibc's.
+    #[repr(C)]
+    struct BionicAddrinfo {
+        ai_flags: c_int,
+        ai_family: c_int,
+        ai_socktype: c_int,
+        ai_protocol: c_int,
+        ai_addrlen: u32,
+        ai_canonname: *mut c_char,
+        ai_addr: *mut u8,
+        ai_next: *mut BionicAddrinfo,
+    }
+
+    type Getaddrinfo = unsafe extern "C" fn(
+        *const c_char,
+        *const c_char,
+        *const BionicAddrinfo,
+        *mut *mut BionicAddrinfo,
+    ) -> c_int;
+    type Freeaddrinfo = unsafe extern "C" fn(*mut BionicAddrinfo);
+
+    fn find(name: &str) -> usize {
+        function_overrides()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is not overridden"))
+            .1 as usize
+    }
+
+    fn gai() -> Getaddrinfo {
+        // SAFETY: the address is `cordial_getaddrinfo`, which has this signature.
+        unsafe { std::mem::transmute::<usize, Getaddrinfo>(find("getaddrinfo")) }
+    }
+
+    fn freeai() -> Freeaddrinfo {
+        // SAFETY: the address is `cordial_freeaddrinfo`, which has this signature.
+        unsafe { std::mem::transmute::<usize, Freeaddrinfo>(find("freeaddrinfo")) }
+    }
+
+    /// bionic's `AI_DEFAULT` (`AI_V4MAPPED_CFG | AI_ADDRCONFIG`), the value that
+    /// made glibc answer `EAI_BADFLAGS` for every lookup before the shim.
+    const BIONIC_AI_DEFAULT: c_int = 0x600;
+    const BIONIC_AI_NUMERICHOST: c_int = 0x4;
+
+    fn lookup_numeric(gai: Getaddrinfo, free: Freeaddrinfo) {
+        let hints = BionicAddrinfo {
+            ai_flags: BIONIC_AI_DEFAULT | BIONIC_AI_NUMERICHOST,
+            ai_family: 0,
+            ai_socktype: 1, // SOCK_STREAM
+            ai_protocol: 0,
+            ai_addrlen: 0,
+            ai_canonname: std::ptr::null_mut(),
+            ai_addr: std::ptr::null_mut(),
+            ai_next: std::ptr::null_mut(),
+        };
+        let mut res: *mut BionicAddrinfo = std::ptr::null_mut();
+        // SAFETY: both strings are NUL-terminated literals, `hints` is a live
+        // bionic-layout struct, and `res` receives the list this frees below.
+        let rc = unsafe { gai(c"127.0.0.1".as_ptr(), c"443".as_ptr(), &hints, &mut res) };
+        assert_eq!(rc, 0);
+        assert!(!res.is_null());
+        // SAFETY: a successful call returns a list of bionic-layout nodes that
+        // this shim allocated and `free` releases.
+        unsafe {
+            let a = &*res;
+            assert_eq!(a.ai_family, 2, "AF_INET");
+            assert_eq!(a.ai_addrlen, 16);
+            assert!(a.ai_canonname.is_null(), "no AI_CANONNAME was asked for");
+            assert!(!a.ai_addr.is_null(), "ai_addr must be the sockaddr, not the name");
+            let sa = std::slice::from_raw_parts(a.ai_addr, 16);
+            assert_eq!(u16::from_ne_bytes([sa[0], sa[1]]), 2, "sa_family");
+            assert_eq!(u16::from_be_bytes([sa[2], sa[3]]), 443, "port");
+            assert_eq!(&sa[4..8], &[127, 0, 0, 1]);
+            free(res);
+        }
+    }
+
+    #[test]
+    fn a_numeric_lookup_returns_the_bionic_layout() {
+        lookup_numeric(gai(), freeai());
+    }
+
+    #[test]
+    fn a_bad_numeric_host_reports_the_bionic_eai_noname() {
+        let gai = gai();
+        let hints = BionicAddrinfo {
+            ai_flags: BIONIC_AI_NUMERICHOST,
+            ai_family: 0,
+            ai_socktype: 1,
+            ai_protocol: 0,
+            ai_addrlen: 0,
+            ai_canonname: std::ptr::null_mut(),
+            ai_addr: std::ptr::null_mut(),
+            ai_next: std::ptr::null_mut(),
+        };
+        let mut res: *mut BionicAddrinfo = std::ptr::dangling_mut();
+        // SAFETY: as above.
+        let rc = unsafe { gai(c"not-an-address".as_ptr(), std::ptr::null(), &hints, &mut res) };
+        assert_eq!(rc, 8, "bionic EAI_NONAME, not glibc's -2");
+        assert!(res.is_null(), "a failed lookup must not leave a stale list behind");
+    }
+
+    /// The engine resolves from several `HttpClient` threads at once. The shim
+    /// keeps no shared state, so this is a check that it stays that way: every
+    /// lookup on every thread must come back whole.
+    #[test]
+    fn concurrent_lookups_each_come_back_whole() {
+        let (gai, free) = (gai(), freeai());
+        let threads: Vec<_> = (0..8)
+            .map(|_| std::thread::spawn(move || (0..300).for_each(|_| lookup_numeric(gai, free))))
+            .collect();
+        for t in threads {
+            t.join().expect("a lookup thread panicked");
+        }
+    }
+}

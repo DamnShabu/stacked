@@ -1018,8 +1018,29 @@ fn libc_einval() -> c_int {
     22 // EINVAL, identical in both libcs
 }
 
+/// `CORDIAL_COND_PASSTHROUGH=1`: leave `pthread_cond_*` to the host on x86_64.
+///
+/// **A diagnostic switch, off by default, and not a fix.** The condition
+/// variable wrappers below put a heap object behind every engine `pthread_cond_t`
+/// and add a lazy-init state machine in front of glibc's. The size table above
+/// says the two libcs agree on the type (48 bytes, all-zero static initialiser),
+/// so the wrapper was never needed on this architecture, only harmless by
+/// argument -- and the startup freeze is a lost-wakeup-shaped wait. This makes
+/// "is the wrapper in the way" a same-binary A/B rather than a theory. `sem_*`
+/// stays wrapped either way: `sem_t` really does differ (16 against 32).
+/// Only meaningful with `--host-libc`, which is what resolves the symbols this
+/// stops overriding; without it they would fall to stubs.
+fn cond_passthrough() -> bool {
+    cfg!(target_arch = "x86_64")
+        && std::env::var_os("CORDIAL_COND_PASSTHROUGH").is_some_and(|v| v == "1")
+}
+
 /// Everything this module replaces.
 pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
+    overrides_with(cond_passthrough())
+}
+
+fn overrides_with(bypass_cond: bool) -> Vec<(&'static str, *mut c_void)> {
     macro_rules! f {
         ($name:literal, $fn:expr) => {
             ($name, $fn as *const () as *mut c_void)
@@ -1074,6 +1095,9 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
         f!("pthread_attr_getstack", attr_getstack),
         f!("pthread_getattr_np", getattr_np),
     ]);
+    if bypass_cond {
+        v.retain(|(name, _)| !name.starts_with("pthread_cond_"));
+    }
     v
 }
 
@@ -1097,6 +1121,23 @@ mod tests {
     }
 
     #[test]
+    fn cond_passthrough_drops_exactly_the_cond_overrides() {
+        let names = |bypass| -> Vec<&'static str> {
+            overrides_with(bypass).into_iter().map(|(n, _)| n).collect()
+        };
+        let wrapped = names(false);
+        let bypassed = names(true);
+        assert!(wrapped.contains(&"pthread_cond_wait"));
+        assert!(wrapped.contains(&"pthread_cond_broadcast"));
+        assert!(!bypassed.iter().any(|n| n.starts_with("pthread_cond_")));
+        // Everything else, sem_* above all, is untouched by the switch.
+        assert!(bypassed.contains(&"sem_wait"));
+        assert!(bypassed.contains(&"pthread_once"));
+        let kept: Vec<_> = wrapped.iter().filter(|n| !n.starts_with("pthread_cond_")).collect();
+        assert_eq!(kept.len(), bypassed.len());
+    }
+
+    #[test]
     fn statically_initialised_cond_works() {
         // bionic's PTHREAD_COND_INITIALIZER is all zeroes; signalling one that
         // was never explicitly initialised must still work.
@@ -1110,6 +1151,94 @@ mod tests {
         assert_eq!(cond_signal(cond), 0);
         assert_eq!(cond_broadcast(cond), 0);
         assert_eq!(cond_destroy(cond), 0);
+    }
+
+    /// The first use of a statically-initialised condition variable is a race
+    /// between whoever waits and whoever signals, and the wrapper's lazy
+    /// initialisation sits exactly there. A lost wakeup on that first use would
+    /// look like a wait that nothing ever ends, so this hammers only the first
+    /// use: a fresh, all-zero cond and mutex per iteration, several threads at
+    /// once, signal issued after the lock is dropped (legal, and the ordering
+    /// that leaves the most room for a wake to land before the wait begins).
+    ///
+    /// x86_64 only: it locks with the host's `pthread_mutex_t`, which is the
+    /// bionic layout there and not on aarch64.
+    #[cfg(target_arch = "x86_64")]
+    #[test]
+    fn first_use_race_never_loses_a_wakeup() {
+        use std::sync::atomic::AtomicU32;
+        use std::sync::mpsc;
+        use std::time::Duration;
+
+        extern "C" {
+            fn pthread_mutex_lock(m: *mut c_void) -> c_int;
+            fn pthread_mutex_unlock(m: *mut c_void) -> c_int;
+        }
+        #[repr(C, align(16))]
+        struct Fresh {
+            cond: [u64; 6],
+            mutex: [u64; 5],
+            flag: AtomicU32,
+        }
+
+        const WORKERS: usize = 4;
+        const ROUNDS: usize = 3000;
+        let (tx, rx) = mpsc::channel::<usize>();
+        for w in 0..WORKERS {
+            let tx = tx.clone();
+            std::thread::spawn(move || {
+                for round in 0..ROUNDS {
+                    let fresh = Box::into_raw(Box::new(Fresh {
+                        cond: [0; 6],
+                        mutex: [0; 5],
+                        flag: AtomicU32::new(0),
+                    }));
+                    let addr = fresh as usize;
+                    let waiter = std::thread::spawn(move || {
+                        let f = addr as *mut Fresh;
+                        // SAFETY: `f` outlives both threads; the join below orders the free.
+                        unsafe {
+                            let m = std::ptr::addr_of_mut!((*f).mutex) as *mut c_void;
+                            let c = std::ptr::addr_of_mut!((*f).cond) as *mut c_void;
+                            pthread_mutex_lock(m);
+                            while (*f).flag.load(Ordering::Acquire) == 0 {
+                                cond_wait(c, m);
+                            }
+                            pthread_mutex_unlock(m);
+                        }
+                    });
+                    // Vary who gets there first, including simultaneously.
+                    for _ in 0..(round % 7) * 40 {
+                        std::hint::spin_loop();
+                    }
+                    // SAFETY: as above.
+                    unsafe {
+                        let m = std::ptr::addr_of_mut!((*fresh).mutex) as *mut c_void;
+                        let c = std::ptr::addr_of_mut!((*fresh).cond) as *mut c_void;
+                        pthread_mutex_lock(m);
+                        (*fresh).flag.store(1, Ordering::Release);
+                        pthread_mutex_unlock(m);
+                        if round % 2 == 0 {
+                            cond_signal(c);
+                        } else {
+                            cond_broadcast(c);
+                        }
+                    }
+                    waiter.join().unwrap();
+                    // SAFETY: both users are done.
+                    unsafe {
+                        cond_destroy(std::ptr::addr_of_mut!((*fresh).cond) as *mut c_void);
+                        drop(Box::from_raw(fresh));
+                    }
+                }
+                tx.send(w).unwrap();
+            });
+        }
+        drop(tx);
+        for _ in 0..WORKERS {
+            rx.recv_timeout(Duration::from_secs(60))
+                .expect("a worker never finished: a wakeup was lost on a cond's first use");
+        }
     }
 
     #[test]
