@@ -423,6 +423,23 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             vk_enumerate_instance_extension_properties as *const () as *mut c_void
         }
         b"vkCreateAndroidSurfaceKHR" => vk_create_android_surface_khr as *const () as *mut c_void,
+        // Counted, not altered — see [`vk_get_physical_device_format_properties`].
+        // This is the measurement TASKS.md's "detex: premise unproven" section
+        // asks for: whether the engine ever queries a compressed format at all,
+        // and what the host driver says back, rather than reading either side
+        // off a binary or a spec and guessing.
+        b"vkGetPhysicalDeviceFormatProperties" => {
+            // SAFETY: `h.get_instance_proc_addr` is the host loader's real
+            // `vkGetInstanceProcAddr`, `instance` is a live `VkInstance` (or
+            // this function would not have been reached — see `vk_create_instance`),
+            // and `name` is the NUL-terminated `bytes` this match already
+            // matched on.
+            HOST_GET_FORMAT_PROPS.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_format_properties as *const () as *mut c_void
+        }
         // Counted, not altered. A Vulkan session leaves every GLES counter at
         // zero, so without this the graphics report cannot tell "Vulkan is
         // presenting frames" from "nothing is drawing at all".
@@ -470,6 +487,23 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
                 std::sync::atomic::Ordering::Relaxed,
             );
             vk_create_swapchain_khr as *const () as *mut c_void
+        }
+        // Counted, not altered — same reasoning as `vkGetPhysicalDeviceFormatProperties`
+        // above: a shader-compile count next to the TM1/TM2 choice is the
+        // cheapest available evidence on whether "TextureManager2" and "how many
+        // shaders got built" move together, without reading either the binary or
+        // mocktail's shader-multithreading deny-list flag and guessing. Peeled off
+        // here for the same reason `vkCreateSwapchainKHR` is: a device command
+        // must be answered through `vkGetInstanceProcAddr` too, and a caller using
+        // that route would otherwise get the host's uncounted entry point.
+        b"vkCreateShaderModule" => {
+            // SAFETY: see the identical call in the `vkGetPhysicalDeviceFormatProperties`
+            // arm above.
+            HOST_CREATE_SHADER_MODULE.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_create_shader_module as *const () as *mut c_void
         }
         // `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`'s result is patched, not
         // just forwarded — see [`vk_get_physical_device_surface_capabilities_khr`]
@@ -519,6 +553,11 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
             HOST_CREATE_SWAPCHAIN
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_swapchain_khr as *const () as *mut c_void
+        }
+        b"vkCreateShaderModule" => {
+            HOST_CREATE_SHADER_MODULE
+                .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_create_shader_module as *const () as *mut c_void
         }
         _ => host(device, name),
     }
@@ -1339,6 +1378,158 @@ fn settle_resize_extent(
     (state.committed, state)
 }
 
+/// The host's real `vkGetPhysicalDeviceFormatProperties`, resolved once.
+static HOST_GET_FORMAT_PROPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1`, read once and cached. See
+/// [`vk_get_physical_device_format_properties`] for what this is for and why
+/// it defaults off.
+fn mask_mobile_texture_formats() -> bool {
+    static MASK: OnceLock<bool> = OnceLock::new();
+    *MASK.get_or_init(|| std::env::var_os("CORDIAL_MASK_MOBILE_TEXTURE_FORMATS").is_some())
+}
+
+/// Laid out exactly as the Vulkan specification defines it — see the module
+/// doc's note on why interposing rather than reimplementing is right for a
+/// struct whose ABI does not differ between Android and desktop Linux.
+#[repr(C)]
+struct VkFormatProperties {
+    linear_tiling_features: u32,
+    optimal_tiling_features: u32,
+    buffer_features: u32,
+}
+
+/// `VkFormat` values for the formats Roblox ships (`strings libroblox.so`
+/// names DXT, ASTC, KTX2, ETC2, ETC1 and BC3/7/1 — see TASKS.md's "detex:
+/// premise unproven" section) that a query might plausibly name. Grouped by
+/// family for the report; the exact member queried does not change what the
+/// answer means for TM2.
+fn format_family(format: u32) -> &'static str {
+    // Ranges read out of this container's own `vulkan_core.h` (core 1.0
+    // enumerants), not recalled from memory: VK_FORMAT_BC1_RGB_UNORM_BLOCK=131
+    // through VK_FORMAT_BC7_SRGB_BLOCK=146; VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK=147
+    // through VK_FORMAT_EAC_R11G11_SNORM_BLOCK=156 (EAC is ETC2's companion
+    // single/two-channel format, grouped with it here); VK_FORMAT_ASTC_4x4_
+    // UNORM_BLOCK=157 through VK_FORMAT_ASTC_12x12_SRGB_BLOCK=184. The
+    // extension-numbered ASTC HDR (SFLOAT) formats at 1000066000+ fall through
+    // to "other" — Roblox's own strings name ASTC and ETC2, not ASTC HDR.
+    match format {
+        131..=146 => "bc",
+        147..=156 => "etc2",
+        157..=184 => "astc",
+        _ => "other",
+    }
+}
+
+/// Observes what Roblox asks the host driver about mobile-shaped compressed
+/// texture formats, and — only with `CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1` —
+/// reports ETC2 and ASTC as unsupported regardless of what the real driver
+/// just said.
+///
+/// **The mask is a test-only substitute for hardware this project does not
+/// have, not a default.** No NVIDIA GPU was available to establish what
+/// `docs/adr/ADR-042-texture-format-query-observability.md` investigates;
+/// this machine's Intel driver reports
+/// `textureCompressionETC2`/`ASTC_LDR` true (measured with `vulkaninfo`,
+/// `docs/analysis/nvidia-texture-manager2.md`), and the one Vulkan device on
+/// this host that genuinely lacks them — Mesa's `llvmpipe` software
+/// rasterizer — is filtered out by the engine's own device selection before
+/// it ever reaches a format query (`[FLog::Graphics] Vulkan: Device llvmpipe
+/// ... is emulated, skipping`, confirmed on every run in that document).
+/// Hiding real support behind an opt-in switch that defaults off is the
+/// documented exception in AGENTS.md's "Testing the user's own application"
+/// sense applied to a driver query rather than a login form: it answers
+/// "what would the engine do if told no", which is the only half of the
+/// NVIDIA question this host can supply real engine behaviour for. The other
+/// half — what real NVIDIA hardware actually reports — remains `INFERRED`.
+///
+/// `CORDIAL_ANDROID_TRACE=1` prints every call; `CORDIAL_COUNT_GL=1` reports
+/// the totals after `--run` alongside the existing graphics-call counts, in
+/// `glcount`.
+extern "C" fn vk_get_physical_device_format_properties(
+    physical_device: *mut c_void,
+    format: u32,
+    out: *mut VkFormatProperties,
+) {
+    let f = HOST_GET_FORMAT_PROPS.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, u32, *mut VkFormatProperties);
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    f(physical_device, format, out);
+
+    let family = format_family(format);
+    if (family == "etc2" || family == "astc") && mask_mobile_texture_formats() {
+        // SAFETY: `out` is the caller's out-parameter; the host call above
+        // has just written a complete `VkFormatProperties` into it, and this
+        // function has exclusive access to it for the remainder of the call.
+        let props = unsafe { &mut *out };
+        props.linear_tiling_features = 0;
+        props.optimal_tiling_features = 0;
+        props.buffer_features = 0;
+        crate::android::trace(format_args!(
+            "vkGetPhysicalDeviceFormatProperties(format={format}, family={family}): \
+             MASKED to unsupported (CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1)"
+        ));
+    }
+    match family {
+        "etc2" => super::glcount::FORMAT_QUERY_ETC2.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        "astc" => super::glcount::FORMAT_QUERY_ASTC.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        "bc" => super::glcount::FORMAT_QUERY_BC.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+        _ => super::glcount::FORMAT_QUERY_OTHER.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+    };
+    // SAFETY: `out` is the caller's out-parameter and the host call above
+    // returns `void` unconditionally per spec (this function cannot fail),
+    // so a complete `VkFormatProperties` is always written by the time
+    // control returns here.
+    let props = unsafe { &*out };
+    let unsupported = props.optimal_tiling_features == 0 && props.linear_tiling_features == 0;
+    if unsupported {
+        super::glcount::FORMAT_QUERY_UNSUPPORTED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    if family != "other" || unsupported {
+        crate::android::trace(format_args!(
+            "vkGetPhysicalDeviceFormatProperties(format={format}, family={family}): \
+             linearTiling=0x{:x} optimalTiling=0x{:x} buffer=0x{:x}{}",
+            props.linear_tiling_features,
+            props.optimal_tiling_features,
+            props.buffer_features,
+            if unsupported { " UNSUPPORTED" } else { "" },
+        ));
+    }
+}
+
+/// The host's real `vkCreateShaderModule`, resolved once. Fetched through
+/// either `vkGetInstanceProcAddr` or `vkGetDeviceProcAddr`, whichever the
+/// engine asks first — see the two call sites above.
+static HOST_CREATE_SHADER_MODULE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// Counted, not altered: see [`vk_get_physical_device_format_properties`] for
+/// why a passthrough counter belongs here rather than a guess read off the
+/// binary or mocktail's shader-multithreading flag.
+extern "C" fn vk_create_shader_module(
+    device: *mut c_void,
+    create_info: *const c_void,
+    allocator: *const c_void,
+    out: *mut u64,
+) -> i32 {
+    let f = HOST_CREATE_SHADER_MODULE.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, *const c_void, *const c_void, *mut u64) -> i32;
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    let rc = f(device, create_info, allocator, out);
+    if rc == VK_SUCCESS {
+        super::glcount::CREATE_SHADER_MODULE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    rc
+}
+
 /// `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`, patched on the Wayland backend
 /// only.
 ///
@@ -1900,5 +2091,48 @@ mod tests {
             start + std::time::Duration::from_millis(10) + RESIZE_SETTLE,
         );
         assert_eq!(reported, (1600, 900));
+    }
+
+    /// Boundary values for each `VkFormat` range `format_family` groups, read
+    /// out of this container's `vulkan_core.h` (see the function's own
+    /// comment) rather than recalled: getting one of these off by one would
+    /// silently mis-bucket a real query in the `CORDIAL_COUNT_GL=1` report,
+    /// which is the entire point of counting rather than reading the binary.
+    #[test]
+    fn format_family_covers_the_ranges_roblox_ships() {
+        assert_eq!(format_family(131), "bc"); // VK_FORMAT_BC1_RGB_UNORM_BLOCK
+        assert_eq!(format_family(146), "bc"); // VK_FORMAT_BC7_SRGB_BLOCK
+        assert_eq!(format_family(147), "etc2"); // VK_FORMAT_ETC2_R8G8B8_UNORM_BLOCK
+        assert_eq!(format_family(153), "etc2"); // VK_FORMAT_EAC_R11_UNORM_BLOCK
+        assert_eq!(format_family(156), "etc2"); // VK_FORMAT_EAC_R11G11_SNORM_BLOCK
+        assert_eq!(format_family(157), "astc"); // VK_FORMAT_ASTC_4x4_UNORM_BLOCK
+        assert_eq!(format_family(184), "astc"); // VK_FORMAT_ASTC_12x12_SRGB_BLOCK
+        assert_eq!(format_family(130), "other"); // VK_FORMAT_D32_SFLOAT_S8_UINT, one below BC
+        assert_eq!(format_family(185), "other"); // one above the ASTC LDR range
+        assert_eq!(format_family(37), "other"); // VK_FORMAT_R8G8B8A8_UNORM, an everyday format
+        assert_eq!(format_family(1_000_066_000), "other"); // ASTC HDR, deliberately not grouped in
+    }
+
+    /// The mask only ever narrows a real answer to "unsupported"; it must
+    /// never touch a format it was not asked to mask, or a BC/other query
+    /// would silently start lying too.
+    #[test]
+    fn mask_only_applies_to_etc2_and_astc_families() {
+        for (format, expect_maskable) in [
+            (131u32, false), // bc
+            (146, false),    // bc
+            (147, true),     // etc2
+            (156, true),     // etc2
+            (157, true),     // astc
+            (184, true),     // astc
+            (37, false),     // other
+        ] {
+            let family = format_family(format);
+            let maskable = family == "etc2" || family == "astc";
+            assert_eq!(
+                maskable, expect_maskable,
+                "format {format} (family {family}) maskability"
+            );
+        }
     }
 }

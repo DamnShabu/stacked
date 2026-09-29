@@ -46,6 +46,18 @@ counters! {
     // Vulkan's counterpart to eglSwapBuffers. Without it the report reads all
     // zeros on a Vulkan session and looks exactly like "nothing rendered".
     QUEUE_PRESENT         => "vkQueuePresentKHR",
+    // The T3/NVIDIA-textures question from TASKS.md ("detex: premise
+    // unproven") and docs/adr/ADR-042: whether the engine ever asks the host
+    // driver about a mobile compressed format at all, and whether any such
+    // query comes back with zero support. Incremented from
+    // `vulkan::vk_get_physical_device_format_properties`, never from a read of
+    // the binary or a guess.
+    FORMAT_QUERY_ETC2        => "vkGetPhysicalDeviceFormatProperties(ETC2)",
+    FORMAT_QUERY_ASTC        => "vkGetPhysicalDeviceFormatProperties(ASTC)",
+    FORMAT_QUERY_BC          => "vkGetPhysicalDeviceFormatProperties(BC)",
+    FORMAT_QUERY_OTHER       => "vkGetPhysicalDeviceFormatProperties(other)",
+    FORMAT_QUERY_UNSUPPORTED => "  ...of which unsupported (both tiling feature masks zero)",
+    CREATE_SHADER_MODULE     => "vkCreateShaderModule",
 }
 
 /// The host implementation behind `sym`, looked up.

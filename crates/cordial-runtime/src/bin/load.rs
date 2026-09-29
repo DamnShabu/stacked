@@ -172,6 +172,15 @@ env:
                                      calls and report them after --run
   CORDIAL_SWAP_TIMES=1               with CORDIAL_COUNT_GL=1, also print how
                                      long each real eglSwapBuffers call blocked
+  CORDIAL_MASK_MOBILE_TEXTURE_FORMATS=1
+                                     report ETC2 and ASTC as unsupported to
+                                     vkGetPhysicalDeviceFormatProperties
+                                     regardless of what the real driver says.
+                                     A test-only substitute for hardware this
+                                     project lacks — see docs/adr/ADR-042-
+                                     texture-format-query-observability.md. Off
+                                     by default; never changes what a shipped
+                                     client tells the engine
 ";
 
 fn parse() -> Result<Options, String> {
