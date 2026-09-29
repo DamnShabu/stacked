@@ -16,8 +16,8 @@ engine underneath is Cordial's. What the fork changes:
   game's window is the only window. A browser's Play button still works.
 - **The cursor stays on the game's screen in fullscreen**, even in menus, so a
   second monitor can't take a click meant for the game. It still moves freely.
-- **Performance defaults like Sober's**: GameMode on, low-latency MAILBOX
-  presentation, and a frame-rate target you can set.
+- **Frame rate follows your screen**, not the engine's built-in 60, with
+  GameMode and low-latency MAILBOX presentation on by default.
 - **Its own look**, or your desktop's if you prefer.
 
 It is experimental. Roblox doesn't support third-party clients and bans
@@ -81,7 +81,7 @@ Stacked ships no part of Roblox; `stacked install` gets it for you.
 ### Settings worth knowing
 
 ```bash
-stacked config set fps_cap 144              # frame-rate target (unset = the engine's own)
+stacked config set fps_cap 90               # fixed frame-rate target (unset = your screen's refresh rate, 0 = the engine's 60)
 stacked config set present_mode fifo        # vsync: uses less power, adds latency
 stacked config set fullscreen_confine false # let the cursor leave a fullscreen window
 stacked config set theme system             # your desktop's colours instead of Stacked's
@@ -125,8 +125,8 @@ has the state of each bug and what to run if you can help.
 
 Two of the fork's own features are untested:
 
-- Raising the frame rate above the engine's default with `fps_cap`. The flag
-  is known to *lower* it.
+- Running above 60 fps on a faster screen. The frame-rate flag Stacked sets is
+  known to *lower* the rate; raising it hasn't been measured.
 - Cursor confinement on a real multi-monitor desktop. So far it has only run
   in a nested compositor.
 
@@ -137,7 +137,7 @@ Wayland is the main target. X11 works but gets less attention.
 **Is it faster than Sober?** It hasn't been measured side by side. Stacked uses
 the same defaults Sober does: GameMode for the performance governor, MAILBOX
 rather than FIFO presentation, and no launcher left running while you play.
-Beyond that, the lever is `fps_cap`.
+Beyond that, it targets your screen's refresh rate rather than 60.
 
 **I used Cordial. What carries over?** Everything: profiles, sign-ins,
 FastFlags, and settings. Stacked reads the same `~/.local/share/cordial` and

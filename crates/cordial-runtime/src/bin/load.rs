@@ -1028,6 +1028,32 @@ fn refresh_outputs() -> Vec<cordial_runtime::refresh::Output> {
 /// confirm it: build, launch with two monitors attached at different rates,
 /// and look for `refresh: nativePassCurrentDisplayRefreshRate` in the log
 /// where before there was only `refresh: nativePassSupportedRefreshRates`.
+/// Read the refresh rate of the display the game will be on and hand it to the
+/// flag layering as the default frame-rate target.
+///
+/// Brings GDK up early to do it -- on the same thread that opens the window
+/// moments later, and `init_wayland` is idempotent. The window does not exist
+/// yet, so with several outputs `refresh::frame_target` takes the fastest.
+/// `INFERRED` that the engine then renders up to that rate: the flag is the one
+/// measured to set its scheduler target, but only ever measured lowering it.
+fn display_frame_target() {
+    if std::env::var_os(cordial_runtime::flags::FPS_CAP_ENV).is_some() {
+        return;
+    }
+    if !matches!(cordial_runtime::android::backend(), cordial_runtime::android::Backend::Wayland) {
+        println!("  refresh: X11 -- no display refresh rate read; the engine keeps its own frame target");
+        return;
+    }
+    if let Err(e) = cordial_shell::host_window::init_wayland() {
+        println!("  refresh: no display to read a refresh rate from ({e})");
+        return;
+    }
+    match cordial_runtime::refresh::frame_target(&refresh_outputs()) {
+        Some(fps) => cordial_runtime::flags::set_display_frame_target(fps),
+        None => println!("  refresh: no plausible refresh rate; the engine keeps its own frame target"),
+    }
+}
+
 fn wire_refresh_rate(lib: linker::Library) {
     let supported_native = lib.symbol(
         "Java_com_roblox_engine_jni_NativeGLInterface_nativePassSupportedRefreshRates",
@@ -2594,6 +2620,12 @@ fn main() -> ExitCode {
                         let bootstrap_installed =
                             std::env::var_os("CORDIAL_NO_BOOTSTRAP").is_none() && !late;
                         if bootstrap_installed {
+                            // The display's refresh rate, before the settings
+                            // document below is built, because that document is
+                            // the one delivery of flags the engine keeps -- see
+                            // `flags::set_display_frame_target`. Wayland only:
+                            // it needs GDK, which the X11 backend never starts.
+                            display_frame_target();
                             const FLAG_NAMES: &str = include_str!("../native-flag-names.txt");
                             // Read once, ahead of the struct literal, because
                             // both `settings` and `settings_source` below come

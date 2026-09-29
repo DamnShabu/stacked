@@ -469,9 +469,9 @@ pub fn spawn(
         command.env("CORDIAL_NO_FULLSCREEN_CONFINE", "1");
     }
 
-    // A frame-rate target, only when one is set. Absent leaves the engine's
-    // own scheduler target alone, which is what every launch before this
-    // setting existed did.
+    // A frame-rate target, only when one is set. Absent is the client reading
+    // the display's refresh rate and targeting that; `0` asks for the engine's
+    // own target.
     if let Some(cap) = config.fps_cap {
         command.env("CORDIAL_FPS_CAP", cap.to_string());
     }

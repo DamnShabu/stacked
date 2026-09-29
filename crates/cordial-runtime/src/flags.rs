@@ -759,18 +759,47 @@ pub const FPS_CAP_FLAG: &str = "DFIntTaskSchedulerTargetFps";
 /// that is not the limit.
 pub fn fps_cap_flags(text: &str) -> Result<Vec<(String, String)>, String> {
     let text = text.trim();
-    if text.is_empty() {
+    // `0` is the user asking for the engine's own target, which is what every
+    // launch before the refresh-rate default did.
+    if text.is_empty() || text == "0" || text.eq_ignore_ascii_case("engine") {
         return Ok(Vec::new());
     }
     match text.parse::<u32>() {
         Ok(n) if (1..=1000).contains(&n) => Ok(vec![(FPS_CAP_FLAG.to_string(), n.to_string())]),
-        _ => Err(format!("{FPS_CAP_ENV}={text:?} is not a frame rate between 1 and 1000")),
+        _ => Err(format!("{FPS_CAP_ENV}={text:?} is not a frame rate between 0 and 1000")),
     }
+}
+
+/// The refresh-rate target read off the display before the engine starts, or
+/// unset when there is none -- X11, or no plausible rate. See
+/// [`set_display_frame_target`].
+static DISPLAY_FRAME_TARGET: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
+
+/// Record the frame-rate target the display implies, for [`fps_cap_layer`] to
+/// use when the user has not set one.
+///
+/// **Why the default is the display and not the engine's own.** The engine,
+/// believing it is a phone, targets 60 whatever it is drawn on, so a 144 Hz
+/// monitor got 60 frames a second with MAILBOX happily able to show more. Set
+/// from `bin/load.rs` before the settings document is built, which is the only
+/// moment a flag reliably reaches the engine: a `DF*` value pushed later is put
+/// back by Roblox's next settings fetch (`client_settings.rs`).
+pub fn set_display_frame_target(fps: u32) {
+    let _ = DISPLAY_FRAME_TARGET.set(fps);
 }
 
 fn fps_cap_layer() -> Layer {
     let values: BTreeMap<String, String> = match std::env::var(FPS_CAP_ENV) {
-        Err(_) => BTreeMap::new(),
+        Err(_) => match DISPLAY_FRAME_TARGET.get() {
+            Some(&fps) => {
+                static SAID: std::sync::Once = std::sync::Once::new();
+                SAID.call_once(|| {
+                    println!("  flags: frame-rate target {fps}, the display's refresh rate");
+                });
+                [(FPS_CAP_FLAG.to_string(), fps.to_string())].into_iter().collect()
+            }
+            None => BTreeMap::new(),
+        },
         Ok(text) => match fps_cap_flags(&text) {
             Ok(flags) => {
                 if let Some((_, n)) = flags.first() {
@@ -1439,11 +1468,13 @@ mod performance_tests {
         );
         assert_eq!(fps_cap_flags(" 60 ").unwrap().len(), 1);
         assert!(fps_cap_flags("").unwrap().is_empty(), "unset is not a target");
+        assert!(fps_cap_flags("0").unwrap().is_empty(), "0 asks for the engine's own target");
+        assert!(fps_cap_flags("engine").unwrap().is_empty());
     }
 
     #[test]
     fn a_frame_rate_target_nobody_could_mean_is_refused_by_name() {
-        for bad in ["0", "-5", "fast", "1001", "60.5"] {
+        for bad in ["-5", "fast", "1001", "60.5"] {
             let why = fps_cap_flags(bad).unwrap_err();
             assert!(why.contains(FPS_CAP_ENV), "{why}");
         }

@@ -556,8 +556,10 @@ pub struct ShellConfig {
     /// release it on alt-tab. `false` becomes `CORDIAL_NO_FULLSCREEN_CONFINE=1`
     /// on the client, which is also the control.
     pub fullscreen_confine: bool,
-    /// A frame-rate target for the engine's task scheduler, or `None` for
-    /// whatever the engine chooses. Passed as `CORDIAL_FPS_CAP`, which the
+    /// A frame-rate target for the engine's task scheduler. `None`, the
+    /// default, is the refresh rate of the display the game is on, which the
+    /// client reads itself; `Some(0)` is the engine's own target (60); any
+    /// other number is that target. Passed as `CORDIAL_FPS_CAP`, which the
     /// client turns into a `DFIntTaskSchedulerTargetFps` layer beneath the
     /// user's own `flags.json` -- see `flags.rs`.
     #[serde(skip_serializing_if = "Option::is_none")]

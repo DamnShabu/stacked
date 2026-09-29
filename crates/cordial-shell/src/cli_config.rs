@@ -19,7 +19,7 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("theme", "stacked | system", "The game window's colours. `system` follows the desktop."),
     ("title_bar", "default | compact | hidden", "The game window's title bar. Hidden in fullscreen either way."),
     ("fullscreen_confine", "true | false", "Keep the cursor on the window in fullscreen."),
-    ("fps_cap", "1-1000", "A frame-rate target for the engine. Unset leaves the engine's own."),
+    ("fps_cap", "0-1000", "Frame-rate target. Unset follows your screen's refresh rate; 0 is the engine's own (60)."),
     ("present_mode", "mailbox | fifo | immediate | automatic", "How frames reach the screen. mailbox: low latency, no tearing. fifo: vsync, least power."),
     ("graphics", "automatic | vulkan | gles", "Which renderer the engine is offered."),
     ("graphics_optimization_mode", "balanced | roblox-app | mobile-tier | more-cores | fewer-cores", "The device the engine is told it is on, and its worker threads. Unmeasured beyond balanced."),

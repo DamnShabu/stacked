@@ -153,6 +153,16 @@ fn smallest_monitor() -> Option<(i32, i32)> {
 /// `xdg_toplevel.app_id` from the program name, which would otherwise be
 /// `cordial-run`. See [`APP_ID`].
 pub fn init_wayland() -> Result<(), String> {
+    // Once per process, and the answer remembered. The launcher reads the
+    // display's refresh rate before the window exists (for the frame-rate
+    // target), which needs GDK up, and `wayland::open` then calls this again;
+    // a second pass would install the log handler twice and re-set a backend
+    // list GDK has already consumed.
+    static DONE: std::sync::OnceLock<Result<(), String>> = std::sync::OnceLock::new();
+    DONE.get_or_init(init_wayland_once).clone()
+}
+
+fn init_wayland_once() -> Result<(), String> {
     if std::env::var("GDK_BACKEND").is_ok_and(|v| v != "wayland") {
         // SAFETY: `g_setenv` is not thread-safe against a concurrent
         // `getenv`, which is why the standard library marks its equivalent

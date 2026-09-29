@@ -51,7 +51,7 @@ values it accepts.
 | `theme` | `stacked` | `stacked` or `system`. The title bar colours. `system` follows your desktop. |
 | `title_bar` | `default` | `default`, `compact` or `hidden`. It is always hidden in fullscreen. |
 | `fullscreen_confine` | `true` | Keep the cursor on the window while it is fullscreen. |
-| `fps_cap` | unset | `1` to `1000`. A frame-rate target for the engine. Unset leaves the engine's own target. |
+| `fps_cap` | unset | Frame-rate target. Unset follows the refresh rate of the screen the game is on. `0` uses the engine's own target, 60. `1` to `1000` sets a fixed target. |
 | `present_mode` | `mailbox` | `mailbox` (low latency), `fifo` (vsync, least power), `immediate` (tears), or `automatic`. |
 | `graphics` | `automatic` | `automatic`, `vulkan` or `gles`. |
 | `graphics_optimization_mode` | `balanced` | `balanced`, `roblox-app`, `mobile-tier`, `more-cores` or `fewer-cores`. None of these is measured to help. |
@@ -68,12 +68,24 @@ values it accepts.
 
 ### About `fps_cap`
 
-`fps_cap` becomes `DFIntTaskSchedulerTargetFps`, layered above plugins and
-below your own `flags.json`, so a value in that file still wins.
+The engine thinks it is running on a phone and targets 60 fps whatever screen
+it is on. So by default, Stacked reads your screen's refresh rate before the
+game starts and sets that as the target instead. A 144 Hz monitor gets a
+target of 144, and a 59.94 Hz one gets 60.
+
+With several screens, the game's window doesn't exist yet when the target is
+chosen, so the fastest screen's rate is used. It's also chosen once, at
+launch: moving the window to a slower screen doesn't lower it. X11 isn't
+covered either; there the engine keeps its own 60.
+
+Setting `fps_cap` to a number replaces the automatic target with that number,
+and `0` gives the engine's own target back. The target becomes
+`DFIntTaskSchedulerTargetFps`, layered above plugins and below your own
+`flags.json`, so a value in that file still wins.
 
 That flag has been measured to **lower** the frame rate. Whether it can
-**raise** the rate above the engine's default has not been measured. It also
-can't take the rate past your monitor's refresh rate under `fifo`.
+**raise** the rate above 60 has not been measured here. It can't take the rate
+past your screen's refresh rate under `fifo`.
 
 ### About `fullscreen_confine`
 
@@ -136,7 +148,7 @@ the rest are for testing and troubleshooting.
 |---|---|
 | `CORDIAL_NO_FULLSCREEN_CONFINE=1` | Don't confine the cursor in fullscreen. |
 | `CORDIAL_NO_POINTER_LOCK=1` | Never capture the cursor, even for first-person or a camera drag. |
-| `CORDIAL_FPS_CAP=N` | The same as `fps_cap`. |
+| `CORDIAL_FPS_CAP=N` | The same as `fps_cap`. `0` is the engine's own target; unset follows the screen. |
 | `CORDIAL_THEME=stacked\|system` | The same as `theme`. |
 | `CORDIAL_PRESENT_MODE=…` | The same as `present_mode`, plus `uncapped` and `fifo-relaxed`. |
 | `CORDIAL_GAMEMODE=0` | Don't ask for GameMode. |

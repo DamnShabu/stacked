@@ -95,6 +95,29 @@ pub fn current_for(outputs: &[Output]) -> Option<f32> {
         .map(|o| o.hz)
 }
 
+/// The frame-rate target to give the engine when the user has not chosen one:
+/// the refresh of the output the game is on, rounded up to a whole frame.
+///
+/// **Rounded up, not to nearest.** The target is a ceiling, and a 59.94 Hz
+/// mode told 59 would leave one frame a second undrawn on a display that can
+/// show it; 60 costs nothing. The twentieth of a hertz taken off first keeps a
+/// mode GDK reports as 60.001 from becoming 61.
+///
+/// Before the window exists nothing is `current`, and then the *fastest*
+/// plausible output is used rather than the first: with a 60 Hz and a 144 Hz
+/// monitor the game may open on either, and a target of 144 on the slower one
+/// only means frames the display drops, where 60 on the faster one would be
+/// the reported bug -- a game held at 60 on a 144 Hz screen.
+pub fn frame_target(outputs: &[Output]) -> Option<u32> {
+    let current = outputs.iter().find(|o| o.current && plausible(o.hz)).map(|o| o.hz);
+    let hz = current.or_else(|| {
+        outputs.iter().map(|o| o.hz).filter(|hz| plausible(*hz)).fold(None, |best: Option<f32>, hz| {
+            Some(best.map_or(hz, |b| b.max(hz)))
+        })
+    })?;
+    Some((hz - 0.05).ceil() as u32)
+}
+
 /// GDK reports refresh in millihertz; the engine wants hertz.
 ///
 /// Its own "unknown" is 0, which [`plausible`] then rejects — so an output whose
@@ -192,5 +215,24 @@ mod tests {
         assert!(worth_announcing(Some(59.94), Some(60.0)));
         // Losing the rate tells the engine nothing it can use.
         assert!(!worth_announcing(Some(60.0), None));
+    }
+
+    #[test]
+    fn the_frame_target_is_the_screen_the_game_is_on_rounded_up() {
+        let on = |hz, current| Output { hz, current };
+        assert_eq!(frame_target(&[on(144.0, true)]), Some(144));
+        assert_eq!(frame_target(&[on(59.94, true)]), Some(60));
+        assert_eq!(frame_target(&[on(60.001, true)]), Some(60));
+        assert_eq!(frame_target(&[on(143.86, true)]), Some(144));
+        // The monitor the game is on wins over a faster one beside it.
+        assert_eq!(frame_target(&[on(144.0, false), on(60.0, true)]), Some(60));
+    }
+
+    #[test]
+    fn before_the_window_exists_the_fastest_screen_sets_the_target() {
+        let on = |hz| Output { hz, current: false };
+        assert_eq!(frame_target(&[on(60.0), on(165.0), on(0.0)]), Some(165));
+        assert_eq!(frame_target(&[on(0.0)]), None, "no plausible rate is no target");
+        assert_eq!(frame_target(&[]), None);
     }
 }
