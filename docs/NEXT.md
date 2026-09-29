@@ -21,6 +21,143 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Open: eight launches, no frozen specimen; the engine's condition variables were Cordial's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
+
+Eight signed-in `CordialTest` launches, 21:01-21:29 local, nested headless sway,
+client pinned to core 0 with one or two busy loops on the same core (the
+amplification the 2026-09-28 entries used), each at least 150 s after the
+last, `tools/freeze-capture.py` run against every one after a 30-100 s hold.
+Every run had `cachedUserId` set, `DID_LOG_IN`, no `DID_LOG_OUT`, and reached
+`HOME_PAGE_INTERACTIVE`. **0 of 8 frozen** -- the same all-healthy stretch
+the 2026-09-29 entry below had (0 of 8), now 0 of 16 across two sessions -- the trough
+the earlier entries describe -- and this round did not photograph the thing it
+was built to.
+
+| run | env | presents at 20/26/32 s |
+|---|---|---|
+| C1 | control, 1 busy loop | 79 / 85 / 91 |
+| T1 | `CORDIAL_COND_PASSTHROUGH=1`, 1 loop | 102 / 108 / 114 |
+| C2, T2 | control, passthrough; 2 loops | 91 / 97 / 103, both |
+| C3, C4 | control, 2 loops | 88 / 94 / 100, 90 / 96 / 102 |
+| C5, C6 | control, 2 loops | 103 / 110 / 116, 100 / 106 / 112 |
+
+Two runs is not an A/B for the passthrough switch and nothing here claims it is.
+That makes 26 signed-in launches today, counting the 18 before this session.
+
+**What Cordial owns on the HTTP path.** The earlier entries treated everything
+but `getaddrinfo` as the host's libc. Read from the override tables and the
+engine's import list (`readelf --dyn-syms`), the Cordial-answered pieces are:
+
+- **`pthread_cond_*` (all six the engine imports).** `bionic/pthread.rs` puts a
+  128-byte heap glibc condition variable behind every engine `pthread_cond_t`
+  with a lazy-init state machine in front. Every `HttpClient`, `HttpThreadPool`
+  and `RBX Worker` wait passes through it. **The 2026-09-29 "waker" -- an
+  `HttpClient` thread's `pthread_cond_broadcast` at `libroblox.so+0x241a6d8` --
+  is this wrapper tail-calling glibc** (a `jmp` in the built binary, which is why
+  the frame above glibc's was libroblox), so it was Cordial's code on that path
+  and not "the host's libcurl/TCP stack". `sem_*` likewise (`sem_t` is 16 bytes in
+  bionic and 32 in glibc). `pthread_mutex_*` and `pthread_attr_*` are not
+  wrapped on x86_64.
+- **`getaddrinfo`/`freeaddrinfo`** (`native/netdb_compat.cpp`): translates bionic's
+  `AI_*` bits and `EAI_*` numbers, swaps the two pointers in `struct addrinfo`,
+  copies the list. No shared state, no lock. One A record (128.116.51.3) on this
+  host, IPv4 only.
+- **Path calls** (`native/system_paths.cpp`): `/system` remap, and
+  `realpath(path, NULL)` refused with `ENOTSUP` (the CA-bundle path, once per
+  connection on an `HttpClient` thread). Deterministic.
+- **The trust store**: `exe/cacert.pem` symlinked to the extracted APK asset in
+  `load.rs::enter_run_dir`.
+- **Cookies**: the engine calls `OnSetCookieHandler::onSetCookie` (jnivm, then a
+  mutex and an atomic in `cookies.rs`) from its HTTP thread; the restore
+  (`nativeSetMultipleCookies`) and the first jar read-back run on Cordial's main
+  thread, the read-back at the first pump iteration of every run.
+- **Small ones**: `__system_property_get`, `sysconf`, `__errno`, the FORTIFY
+  forwards (`__poll_chk` and friends), signal-mask translation, the
+  `vasprintf`/`getcwd(NULL)` refusals. No `[alloc]` refusal fired in eight
+  runs, and the only stubs called were the two ZSTD ones.
+- **Not Cordial's**: `socket`, `connect`, `poll`, `epoll_*`, `select`,
+  `eventfd`, `fcntl`, `ioctl`, `getsockopt`, `send*`/`recv*` go to glibc.
+  `__FD_SET_chk`/`__FD_CLR_chk`/`__FD_ISSET_chk` are stubs returning 0 and were
+  not called in any of the eight runs.
+
+**Checks made on those, all passing, none finding a defect.** `cargo test`
+now has (a) `first_use_race_never_loses_a_wakeup`: 12,000 rounds of a fresh
+all-zero cond and mutex, four workers, waiter and signaller racing the wrapper's
+lazy init; a control that makes `pthread_cond_broadcast` a no-op fails it at the
+60 s watchdog, so it can see a lost wakeup; (b) three `netdb_tests` through the
+override table (bionic layout, `EAI_NONAME` as 8, 2,400 lookups on eight
+threads). In the six control clients `tools/freeze-capture.py` decoded 92-94 live
+wrappers each (none in the two passthrough clients, as it should be): none
+referenced twice, none with waiters beside pending `g_signals`. That is the baseline a frozen client should be compared with.
+
+**Two frozen-state signatures are healthy too, and one earlier claim needs
+retracting.**
+
+- *The looper census.* `devctl loopers` on all eight healthy clients reads
+  `fds=1 [31:1:-]`, `events=9` (seven) or `6` (one), `since_event` equal to the
+  process age, 315-484 million polls. The "spinning thread that has only seen
+  nine events" in `docs/analysis/startup-freeze-capture.md` and in the
+  2026-09-28 entries is what a healthy client looks like a minute in. Corrected
+  in that file.
+- *`CLOSE-WAIT`.* A healthy client's connection pool decays from 50 to 9
+  `ESTAB` over three minutes and reaps what the server closes (`C4`, sampled
+  every 30 s: one transient `CLOSE-WAIT` at 212 s, gone by 242 s). Sockets sitting
+  in `CLOSE-WAIT` in a frozen client are ones nobody reaped; that says its network
+  thread was not doing housekeeping, or was occupied, and is weaker than the
+  2026-09-29 entry's "evidence of an actual stuck network completion".
+  `INFERRED`: how long the frozen client's had sat there was not recorded.
+
+**A new observation from the two old frozen captures that is not in any entry.**
+In both `ctrl2` and `ctrl7` an `HttpClient` thread is inside `poll(nfds=2,
+timeout=1)`: one syscall record each, and in `ctrl2` the same thread in `poll`
+at both gdb samples 83 s apart, having used about 1% of a core (0.57 s of CPU
+in the first minute, a 1 ms loop rather than a spin). In the six healthy clients held 100 s or more an idle `HttpClient`
+sits in `poll(1 eventfd, 28-69 s)`, and the 1 ms form appears only while
+transfers are running (`h2/F1` at 26 s: three fds; `C5` and `C6` at 60 s: three
+and seven).
+So in a frozen client curl believes **one transfer is still in flight, for
+minutes**. Which socket, and its state, is exactly what nobody recorded;
+`freeze-capture.py` now takes the fd array (many snapshots, because the loop
+rewrites it every millisecond) and the `tcp_info` row beside it.
+
+**What the healthy logs say about the wait, and what they refute.** In every
+healthy run `Forcing finalize` to `~UgcExperienceController` takes 48-104 ms
+(eight runs), with the finalize thread's log silent in between; in two of the eight it resumes 0.4 and
+3.3 ms after a `PerformanceControlIXP` line on another thread, in the other six
+there is no such line near it. A model that
+the wait is teardown of the first Lua app's aborted HTTP requests does **not**
+survive: `Http request aborted` warnings fall inside that window in four runs
+and outside it in four, with the same wait either way. Nothing here says what
+that thread is waiting for. The frozen `ctrl7` has the `PerformanceControlIXP`
+line and no thread ever ends the wait.
+
+**A discrepancy between the two kinds of specimen, not yet explained.** The
+2026-09-28 reading of the `syscall()` futex wait as a generic pool primitive
+stands, but the finalize thread in a *healthy* gdb-launched run (`rootcause4/F1`)
+was seen in a glibc condition wait (`op 0x189`, an address in a
+glibc thread arena, i.e. one of Cordial's backing objects), while in both frozen
+specimens it is in the engine's own `syscall(SYS_futex)` park (`op 0x89`, a
+128-byte-stride array). Those are different waits, and no run has yet shown
+which one precedes which.
+
+**Cookie read-back timing, checked and dropped.** The first read-back on Cordial's
+main thread lands in the same 40 ms as the engine's `sync cookies from engine`
+line, and in one frozen run (`ctrl7`) inside it. Across the runs with both
+timestamps it overlaps in 1 of 3 frozen and 1 of 17 healthy (`T2`), and `ctrl2`
+and `B` froze with the engine's line 230-430 ms *after* the read-back. It is
+neither required nor sufficient. It was not tested with a switch, and there is
+not one.
+
+**Not done, and how to finish it.** `CORDIAL_COND_PASSTHROUGH=1` (x86_64,
+`--host-libc`) removes the condition-variable wrapper for a same-binary A/B; a
+freeze *with* it on would settle that the wrapper is not necessary, and only a
+freeze will. `tools/freeze-capture.py PID OUTDIR` is written and has been run on
+eight healthy clients and a dummy process, never on a frozen one. After
+photographing a frozen client the useful poke, untested and not in the
+repository, is `shutdown(fd, SHUT_RDWR)` from gdb on the socket the `HttpClient`
+poll names: if startup resumes, the finalize thread was waiting on that
+transfer. Spend a launch on it only with a specimen already captured.
+
 ## Open: the double Lua-app cycle is not a Cordial-side call, and a stale comment said otherwise for a month, 2026-09-29
 
 Tasked with H1 ("does Cordial order or answer something differently from real

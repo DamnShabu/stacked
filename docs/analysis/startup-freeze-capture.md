@@ -124,6 +124,22 @@ engine's own glue inside `libroblox.so`, not to anything this project wrote.
 And Cordial's main thread is starved too: its Wayland display socket has
 produced no event for twenty-five seconds.
 
+**Correction, 2026-09-29: this census does not separate a frozen client from a
+healthy one, and the reading above ("waiting for something that never arrives")
+should not be used as evidence of the freeze.** Eight healthy signed-in clients
+sampled at 60-400 s, `devctl loopers`: the engine's looper is `fds=1 [31:1:-]`
+with `events=9` in seven of them and `events=6` in the eighth, `since_event`
+equal to the age of the process, and 315-484 million polls. A healthy client
+delivers those nine events during start-up and then never another on that
+descriptor; it is simply not a channel that carries traffic afterwards. What
+probably differs is that the poll count stops growing once presents pass 120
+and the idle back-off engages, which a frozen client never reaches. `INFERRED`:
+the counts at 66-107 s (315-484 million) and at 406 s (445 million, one run) are
+in the same range, but no healthy client was sampled twice. The spin is a
+consequence of the stall, as the 2026-09-28 entry in `docs/NEXT.md` already said
+of the back-off gate, and the thread is not evidence of what the stall is
+waiting for.
+
 ## Input does not recover a frozen client. Measured, and it refutes the obvious theory
 
 The shape above suggests a starvation cycle -- the engine waits for a command,
