@@ -1,8 +1,7 @@
-# Flatpak manifest for Cordial.
+# Flatpak manifest for Stacked.
 #
 # Flatpak is the primary distribution target (spec §11), which is why the plugin
-# directory is `~/.var/app/io.github.luohoa97.Cordial/data/plugins/` and drag-and-drop
-# is the install path rather than a convenience.
+# directory is `~/.var/app/io.github.damnshabu.Stacked/data/plugins/`.
 #
 # Build:
 #     packaging/build-flatpak.sh
@@ -14,7 +13,7 @@
 #     would hand every plugin the sandbox escape the capability model exists to
 #     prevent — below the level any broker can see. See ADR-002 §2.
 #   * `--device=dri` and the display sockets are the whole of what the runtime
-#     needs. Camera, screenshot and filesystem access are never held by Cordial
+#     needs. Camera, screenshot and filesystem access are never held by Stacked
 #     on a plugin's behalf; they are granted per-plugin at runtime through
 #     portals, revocably (spec §7).
 #   * The two `--filesystem=xdg-run/...` entries below exist only for the
@@ -23,9 +22,11 @@
 #     nowhere near `--filesystem=host`. notify.send and url.open needed no
 #     manifest entry at all; see the comment beside them.
 
-app-id: io.github.luohoa97.Cordial
-# The GNOME runtime, not the freedesktop one, because the shell is GTK4 and
-# libadwaita (ADR-011) and org.freedesktop.Sdk has neither. This was wrong from
+# A new id rather than Cordial's, because this is a fork and two applications
+# exporting one id overwrite each other's desktop entry and icon.
+app-id: io.github.damnshabu.Stacked
+# The GNOME runtime, not the freedesktop one, because the game window is hosted
+# in GTK4 and libadwaita (ADR-011) and org.freedesktop.Sdk has neither. This was wrong from
 # the first commit of this file and every CI run failed the same way for it:
 #
 #     Package 'gtk4' not found
@@ -47,12 +48,13 @@ sdk: org.gnome.Sdk
 sdk-extensions:
   - org.freedesktop.Sdk.Extension.rust-stable
   - org.freedesktop.Sdk.Extension.llvm20
-# The shell, not the loader. The shell is what a user starts: it finds a Roblox
-# build, explains itself when there is not one, and launches `cordial-run`
-# beside itself. This said `cordial-load` until now, which was the loader's name
-# before 312451e renamed it to `cordial-run` — so the manifest named a binary
-# that no longer exists, `install` failed, and nothing here had been built since.
-command: cordial-shell
+# The launcher, not the loader. `stacked` is what a user starts: it finds a
+# Roblox build, says so on stderr when there is not one, and launches
+# `cordial-run` beside itself. This once said `cordial-load`, the loader's name
+# before 312451e renamed it, so the manifest named a binary that no longer
+# existed and `install` failed; the same thing happens if this and the
+# `install` line below ever disagree.
+command: stacked
 
 build-options:
   append-path: /usr/lib/sdk/rust-stable/bin:/usr/lib/sdk/llvm20/bin
@@ -82,7 +84,7 @@ finish-args:
   # **A USB FIDO2 security key is deliberately NOT reachable, and this is the
   # reasoning rather than an oversight.**
   #
-  # An account with a passkey enrolled cannot finish sign-in in Cordial's web
+  # An account with a passkey enrolled cannot finish sign-in in Stacked's web
   # window, because the window has no WebAuthn to offer it. Measured, not
   # assumed: `PublicKeyCredential` and `navigator.credentials` are both
   # `undefined` in a secure context, in `webview::open`'s own view, on both
@@ -134,12 +136,12 @@ finish-args:
   # The other half of Discord's own socket search (see presence.rs): when
   # Discord is itself a Flatpak, its IPC socket lives nested under its own
   # app-id directory rather than directly in $XDG_RUNTIME_DIR. Read-only,
-  # since Cordial only ever connects out to it.
+  # since Stacked only ever connects out to it.
   - --filesystem=xdg-run/app/com.discordapp.Discord:ro
   # Sober's unpacked copy of the official Android build, read-only.
   #
-  # Without this the Flatpak's "No Roblox build found" dialog tells the user to
-  # install Sober, names the exact path it looked in, and then cannot see that
+  # Without this the Flatpak's "no Roblox build found" message tells the user
+  # Sober's copy will be used, names the exact path it looked in, and then cannot see that
   # path even once the file is sitting there — 97 MB of base.apk on the host and
   # `No such file or directory` inside the sandbox, because `~/.var/app/` in
   # here contains this application's own directory and nothing else. It is the
@@ -148,14 +150,18 @@ finish-args:
   #
   # Narrowed to `packages` rather than the whole of Sober's data, because the
   # rest of that tree is Sober's configuration and Roblox's own storage under
-  # Sober — an account's session included — and Cordial has no business reading
-  # any of it. Read-only for the same reason: Cordial copies the engine out and
+  # Sober — an account's session included — and Stacked has no business reading
+  # any of it. Read-only for the same reason: Stacked copies the engine out and
   # never writes back. The path is `install::sober_apk_under`'s, and a test
   # pins it; if that moves, this moves in the same edit.
   #
-  # A user-picked APK needs no entry here and does not get one: settings.rs uses
-  # `GtkFileDialog`, which is the portal inside a sandbox, and the portal hands
-  # over the chosen file itself.
+  # A user-chosen APK gets no entry here either, and that now has a cost. The
+  # GTK launcher picked one through `GtkFileDialog`, which is the portal inside
+  # a sandbox and hands over the file itself; `stacked config set roblox.apk
+  # PATH` is a bare path, and inside the sandbox it resolves only if it is
+  # somewhere the sandbox can already see, such as this app's own directory
+  # under ~/.var/app. INFERRED from the permission set, not measured in an
+  # installed Flatpak.
   - --filesystem=~/.var/app/org.vinegarhq.Sober/data/sober/packages:ro
   # NetworkManager's `Metered` property, read-only, so the updater can ask the
   # same question inside the sandbox that it asks outside it.
@@ -275,13 +281,12 @@ modules:
       # `readelf -d /app/bin/cordial-run | grep -i webkit` is the check that it
       # actually linked.
       - cargo build --release --offline --features cordial-shell/webview,cordial-runtime/webview
-      # Both binaries, side by side. `launch.rs` looks for the loader as the
-      # sibling of `current_exe` and nowhere else — there is no baked-in
-      # /app/bin and no configurable path — so shipping the shell without
-      # `cordial-run` beside it gives a launcher whose Launch button cannot
-      # find anything to launch.
-      # First-party plugins, read-only beside the binary.
-      # Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+      # First-party plugins, read-only beside the binary. Until the native
+      # packages existed nothing installed these anywhere, so no built-in
+      # plugin was listed for anybody -- including Flatpak users, whose
+      # /app/share/cordial/plugins the code has looked in from the start and
+      # which had never existed. The path keeps Cordial's name because the
+      # code that reads it does.
       - |
         for plugin in plugins/*/; do
           id=$(basename "$plugin")
@@ -289,59 +294,51 @@ modules:
           install -Dm644 "$plugin/plugin.json" "/app/share/cordial/plugins/$id/plugin.json"
           install -Dm644 "$plugin/main.ts" "/app/share/cordial/plugins/$id/main.ts"
         done
-      - install -Dm755 target/release/cordial-shell /app/bin/cordial-shell
-      # See packaging/deb/build-deb.sh for why this is a symlink and why
-      # cordial-run gets none. `flatpak run ...` still starts the shell
-      # through `command:` above; this is for `flatpak run --command=cordial`.
-      - ln -sf cordial-shell /app/bin/cordial
+      # Both binaries, side by side. `launch.rs` looks for the loader as the
+      # sibling of `current_exe` and nowhere else — there is no baked-in
+      # /app/bin and no configurable path — so shipping `stacked` without
+      # `cordial-run` beside it gives a launcher with nothing to launch.
+      - install -Dm755 target/release/stacked /app/bin/stacked
       - install -Dm755 target/release/cordial-run /app/bin/cordial-run
       # flatpak-validate-icon rejects a non-square icon and the export fails
-      # rather than warns. The 680x480 README banners used to sit in this same
-      # directory under these same two filenames, which is how PR #22 came to
-      # disable the Frostbite icon to fix an export failure that had already
-      # been fixed; they are packaging/banner*.svg now.
-      - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
-          /app/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
-      # Frostbite, the twice-a-year joke in `crates/cordial-shell/src/branding.rs`.
-      # Installed unconditionally because the alternative is a name that resolves
-      # to nothing on the one day nobody is watching for it, and because Flatpak
-      # exports only files whose names begin with the application id -- which is
-      # exactly why this is a suffix of `io.github.luohoa97.Cordial` rather than
-      # an id of its own. The app id itself does not change on either day.
-      - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg
-          /app/share/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg
-      - install -Dm644 packaging/io.github.luohoa97.Cordial.desktop
-          /app/share/applications/io.github.luohoa97.Cordial.desktop
+      # rather than warns. The 680x480 README banner used to sit in this same
+      # directory under the icon's filename; it is packaging/banner.svg now,
+      # and a test in `crates/cordial-shell/src/branding.rs` asserts the icon
+      # is square.
+      - install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
+          /app/share/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
+      - install -Dm644 packaging/io.github.damnshabu.Stacked.desktop
+          /app/share/applications/io.github.damnshabu.Stacked.desktop
       # Without this the hosted remote installs but does not browse: a software
       # centre lists the remote and finds nothing in it. See the file.
-      - install -Dm644 packaging/io.github.luohoa97.Cordial.metainfo.xml
-          /app/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml
+      - install -Dm644 packaging/io.github.damnshabu.Stacked.metainfo.xml
+          /app/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml
       # Licence and attribution. MIT requires its notice in "all copies or
       # substantial portions", and Apache-2.0 section 4(d) requires the NOTICE
       # file to travel with derivative works — both apply to a binary build, not
       # just to the source tree.
-      - install -Dm644 LICENSE /app/share/licenses/cordial/LICENSE
+      - install -Dm644 LICENSE /app/share/licenses/stacked/LICENSE
       - install -Dm644 THIRD-PARTY-NOTICES.md
-          /app/share/licenses/cordial/THIRD-PARTY-NOTICES.md
+          /app/share/licenses/stacked/THIRD-PARTY-NOTICES.md
       - install -Dm644 third_party/libbadcpu/LICENSE.upstream
-          /app/share/licenses/cordial/libbadcpu-MIT.txt
+          /app/share/licenses/stacked/libbadcpu-MIT.txt
       - install -Dm644 third_party/mcpelauncher-linker/LICENSE
-          /app/share/licenses/cordial/mcpelauncher-linker-MIT.txt
+          /app/share/licenses/stacked/mcpelauncher-linker-MIT.txt
       - install -Dm644 third_party/mcpelauncher-linker/core/NOTICE
-          /app/share/licenses/cordial/aosp-NOTICE.txt
+          /app/share/licenses/stacked/aosp-NOTICE.txt
       - install -Dm644 third_party/libjnivm/LICENSE
-          /app/share/licenses/cordial/libjnivm-MIT.txt
+          /app/share/licenses/stacked/libjnivm-MIT.txt
       # The comment above already named this obligation; these two lines were
       # the ones missing to meet it. third_party/mocktail-webview/ is Apache-2.0
       # material — mocktail's implementation of Roblox's in-experience web
       # window, taken as the basis for Cordial's own — and NOTICE at the
       # repository root is the section 4(d) attribution for it. Found while
       # giving three new package formats a licence list to copy from this one;
-      # packaging/rpm/cordial.spec and packaging/aur/cordial-git/PKGBUILD had
+      # packaging/rpm/stacked.spec and packaging/aur/stacked-git/PKGBUILD had
       # the same gap and are fixed alongside this.
-      - install -Dm644 NOTICE /app/share/licenses/cordial/NOTICE
+      - install -Dm644 NOTICE /app/share/licenses/stacked/NOTICE
       - install -Dm644 third_party/mocktail-webview/LICENSE
-          /app/share/licenses/cordial/mocktail-webview-Apache-2.0.txt
+          /app/share/licenses/stacked/mocktail-webview-Apache-2.0.txt
     sources:
       # The working tree, minus the three directories that must not come from
       # it. `target` is tens of gigabytes on a developer's machine and every

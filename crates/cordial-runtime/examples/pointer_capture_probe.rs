@@ -69,7 +69,7 @@ fn main() {
          and the compositor say to each other."
     );
 
-    let window = match cordial_runtime::android::wayland::open(960, 540, "Cordial pointer probe") {
+    let window = match cordial_runtime::android::wayland::open(960, 540, "Stacked pointer probe") {
         Ok(w) => w,
         Err(e) => {
             eprintln!("no Wayland window: {e}");

@@ -49,9 +49,10 @@ pub const GIT_SHA: Option<&str> = option_env!("CORDIAL_GIT_SHA");
 /// here to be read, including by somebody who has forked this and is deciding
 /// what they owe.
 pub const NOTICE: &str = concat!(
-    "Cordial ",
+    "Stacked ",
     env!("CARGO_PKG_VERSION"),
-    " — GPL-3.0-or-later — https://github.com/luohoa97/cordial"
+    " — GPL-3.0-or-later — https://github.com/DamnShabu/stacked\n",
+    "A modified version of Cordial — https://github.com/luohoa97/cordial"
 );
 
 /// Version and provenance together, for a title bar or a bug report.
@@ -99,8 +100,14 @@ mod tests {
         assert!(NOTICE.contains(VERSION), "{NOTICE} does not name this build");
         assert!(NOTICE.contains("GPL-3.0-or-later"), "{NOTICE} does not state the licence");
         assert!(
-            NOTICE.contains("https://github.com/luohoa97/cordial"),
+            NOTICE.contains("https://github.com/DamnShabu/stacked"),
             "{NOTICE} does not say where this came from"
+        );
+        // A fork carries the notice of what it was forked from forward, which
+        // is the whole reason this constant exists.
+        assert!(
+            NOTICE.contains("https://github.com/luohoa97/cordial"),
+            "{NOTICE} does not credit the upstream project"
         );
     }
 

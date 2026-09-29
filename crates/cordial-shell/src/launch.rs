@@ -28,11 +28,11 @@ use crate::shell_config;
 
 /// The binary this shell starts.
 ///
-/// The Flatpak is a split app: `cordial-shell` is what a user starts and
+/// The Flatpak is a split app: `stacked` is what a user starts and
 /// `cordial-run` is what runs Roblox. Cargo's standard output layout is kept
-/// deliberately for that reason — `target/release/cordial-shell` beside
+/// deliberately for that reason — `target/release/stacked` beside
 /// `target/release/cordial-run` in a checkout is the same arrangement as
-/// `/app/bin/cordial-shell` beside `/app/bin/cordial-run` in the package.
+/// `/app/bin/stacked` beside `/app/bin/cordial-run` in the package.
 const LOADER: &str = "cordial-run";
 
 /// How long the client is allowed to run. **Zero means no timer.**
@@ -90,7 +90,7 @@ pub fn loader_path() -> Result<PathBuf, String> {
         }
     }
     Err(format!(
-        "Cordial could not find {LOADER}, which should be installed beside the launcher. \
+        "Stacked could not find {LOADER}, which should be installed beside the launcher. \
          This is a broken installation rather than a setting."
     ))
 }
@@ -167,6 +167,14 @@ impl Instance {
     /// even if this `Instance` outlives its watch or dies before it.
     pub fn pid(&self) -> u32 {
         self.child.id()
+    }
+
+    /// Block until the client exits. The launcher has nothing else to do
+    /// while a game runs, and waiting rather than exiting keeps the timestamped
+    /// log flowing to the terminal and lets a crash be reported with the tail
+    /// of what led to it.
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait()
     }
 
     /// The last lines the client printed, oldest first, redacted.
@@ -372,12 +380,10 @@ pub fn spawn(
     // its header bar and its monitor fitting are all bypassed -- is now the
     // runtime's own default rather than something this call site enforces.
 
-    // Read from disk here rather than handed in, and that is a compromise
-    // worth naming: the caller in `window.rs` already holds a live
-    // `ShellConfig`, so this is a second read of the same thing. It is correct
-    // today only because the settings window persists every toggle the moment
-    // it is made, so the file is what the user last chose. Give this function a
-    // `&ShellConfig` the next time `window.rs` is open for editing.
+    // Read from disk here rather than handed in. `stacked config set` writes
+    // the file and exits, so the file is always what the user last chose, and
+    // a launch cannot run on a copy that a concurrent `config set` has
+    // already made stale.
     let config = shell_config::load(&shell_config::path());
 
     // Feral GameMode: performance governor, raised priority, GPU performance
@@ -425,9 +431,9 @@ pub fn spawn(
     // unreachable from the shell for everybody while the row still said
     // Automatic was available.
     //
-    // Note that this is not the same as "the default sends nothing": FIFO is
-    // the default *selection*, so a fresh install does send `fifo` and does
-    // outrank a plugin. That is deliberate. The power cost of MAILBOX is paid
+    // Note that this is not the same as "the default sends nothing": MAILBOX
+    // is the default *selection*, so a fresh install does send `mailbox` and
+    // does outrank a plugin. That is deliberate. The power cost of MAILBOX is paid
     // by the person holding the machine, and a plugin should not be able to
     // spend it on somebody who never opened this page.
     if let Some(mode) = config.present_mode.as_env() {
@@ -449,6 +455,25 @@ pub fn spawn(
     // absent case and the off case agree without this having to spell either.
     if config.close_on_leave {
         command.env("CORDIAL_CLOSE_ON_LEAVE", "1");
+    }
+
+    // The window's colours, always sent: the client's own default is the
+    // brand theme too, so this only ever matters for `system`, but a variable
+    // that is present in every launch is one less thing to guess about from a
+    // bug report's environment dump.
+    command.env(cordial_shell::theme::THEME_ENV, config.theme.as_str());
+
+    // Fullscreen confinement is on in the client unless told otherwise, so the
+    // only thing to send is the refusal -- the same shape as GameMode.
+    if !config.fullscreen_confine {
+        command.env("CORDIAL_NO_FULLSCREEN_CONFINE", "1");
+    }
+
+    // A frame-rate target, only when one is set. Absent leaves the engine's
+    // own scheduler target alone, which is what every launch before this
+    // setting existed did.
+    if let Some(cap) = config.fps_cap {
+        command.env("CORDIAL_FPS_CAP", cap.to_string());
     }
 
     // Plugin folders being worked on, in the shape of `PATH`. Only when there
@@ -1083,6 +1108,69 @@ mod tests {
         let _ = std::fs::remove_dir_all(&root);
     }
 
+    /// Launch through `spawn` with `config` saved as the shell config and a
+    /// stub `cordial-run` on `PATH` that writes its environment out, and
+    /// return what it wrote. The vkBasalt test above does the same thing
+    /// inline; this is that, reusable.
+    fn environment_a_launch_hands_over(tag: &str, config: &crate::shell_config::ShellConfig) -> String {
+        let _env_guard = ENV.lock().unwrap_or_else(|e| e.into_inner());
+        let _root_guard = crate::PROFILE_ROOT_ENV.lock().unwrap_or_else(|e| e.into_inner());
+
+        let root = std::env::temp_dir().join(format!("stacked-launch-env-{tag}"));
+        let _ = std::fs::remove_dir_all(&root);
+        let bin_dir = root.join("bin");
+        std::fs::create_dir_all(&bin_dir).unwrap();
+        let capture = root.join("captured-env");
+        std::fs::write(bin_dir.join(LOADER), format!("#!/bin/sh\nenv > {}\n", capture.display())).unwrap();
+        std::fs::set_permissions(bin_dir.join(LOADER), std::os::unix::fs::PermissionsExt::from_mode(0o755))
+            .unwrap();
+
+        let profile_root = root.join("profiles");
+        std::fs::create_dir_all(&profile_root).unwrap();
+        std::env::set_var("CORDIAL_PROFILE_ROOT", &profile_root);
+        let shell_config_path = root.join("shell.json");
+        std::env::set_var("CORDIAL_SHELL_CONFIG", &shell_config_path);
+        shell_config::save(&shell_config_path, config).unwrap();
+        let old_path = std::env::var_os("PATH").unwrap_or_default();
+        let mut dirs = vec![bin_dir.clone()];
+        dirs.extend(std::env::split_paths(&old_path));
+        std::env::set_var("PATH", std::env::join_paths(dirs).unwrap());
+
+        let claim = cordial_shell::profile::acquire(tag).expect("a fresh profile is free");
+        let build = Build { apk: PathBuf::from("/nonexistent.apk"), lib_dir: PathBuf::from("/nonexistent") };
+        let result = spawn(&build, claim, LaunchRequest { run_seconds: Some(1), join_url: None, secret_store: None });
+        let waited = result.map(|mut instance| instance.wait());
+
+        std::env::set_var("PATH", &old_path);
+        std::env::remove_var("CORDIAL_PROFILE_ROOT");
+        std::env::remove_var("CORDIAL_SHELL_CONFIG");
+        waited.expect("the stub loader must be found and spawned").expect("and waited for");
+        let captured = std::fs::read_to_string(&capture).expect("the stub wrote its environment");
+        let _ = std::fs::remove_dir_all(&root);
+        captured
+    }
+
+    #[test]
+    fn theme_confinement_and_frame_rate_settings_reach_the_client() {
+        use crate::shell_config::{ShellConfig, Theme};
+        // The defaults: the brand theme is named, confinement is on so its
+        // refusal is absent, and no frame-rate target is sent at all -- absent
+        // is what leaves the engine's own scheduler target alone.
+        let defaults = environment_a_launch_hands_over("env-defaults", &ShellConfig::default());
+        assert!(defaults.lines().any(|l| l == "CORDIAL_THEME=stacked"), "{defaults}");
+        assert!(!defaults.contains("CORDIAL_NO_FULLSCREEN_CONFINE"), "{defaults}");
+        assert!(!defaults.contains("CORDIAL_FPS_CAP"), "{defaults}");
+
+        // And every one of them changed, in the same session: the control.
+        let changed = environment_a_launch_hands_over(
+            "env-changed",
+            &ShellConfig { theme: Theme::System, fullscreen_confine: false, fps_cap: Some(144), ..Default::default() },
+        );
+        assert!(changed.lines().any(|l| l == "CORDIAL_THEME=system"), "{changed}");
+        assert!(changed.lines().any(|l| l == "CORDIAL_NO_FULLSCREEN_CONFINE=1"), "{changed}");
+        assert!(changed.lines().any(|l| l == "CORDIAL_FPS_CAP=144"), "{changed}");
+    }
+
     #[test]
     fn the_loader_is_looked_for_beside_the_launcher_first() {
         // Under `cargo test` the test binary lives in target/debug/deps, so
@@ -1295,7 +1383,7 @@ mod tests {
     /// what it was measured with — so the measurable part is written down and
     /// runnable rather than described.
     ///
-    ///     cargo test --release --bin cordial-shell -- --ignored --nocapture
+    ///     cargo test --release --bin stacked -- --ignored --nocapture
     ///
     /// Skips rather than fails when there is no build, and says so: a machine
     /// without one has nothing to disprove.

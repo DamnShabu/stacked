@@ -1,7 +1,8 @@
 //! What the shell has that is not only the shell's.
 //!
-//! `cordial-shell` is a binary — see `main.rs` — and everything about the
-//! chooser, settings and shell configuration stays inside it. The one part
+//! `cordial-shell` builds the `stacked` command-line launcher — see
+//! `main.rs` — and everything about launching, profiles and configuration
+//! stays inside it. The one part
 //! that had to become a library is [`host_window`]: ADR-011 says the shell's
 //! window and the engine's host window are the same window, and there is no
 //! way to honour that sentence with two crates each building their own.
@@ -39,10 +40,9 @@
 
 pub mod branding;
 pub mod host_window;
-pub mod json_highlight;
 pub mod network;
-pub mod plugin_preferences;
 pub mod profile;
+pub mod theme;
 pub mod title_bar;
 // Not pulled in by `host_window` or `network` -- registered here on its own
 // so `cordial-runtime` can reach it as `cordial_shell::refresh_watch`, which

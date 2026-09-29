@@ -25,12 +25,12 @@ use std::time::{Duration, Instant};
 
 /// The `xdg_toplevel` app_id this window carries, and X11's `WM_CLASS` before
 /// it. Must keep matching `StartupWMClass` in
-/// `packaging/io.github.luohoa97.Cordial.desktop` for the reasons in ADR-009 — GNOME
+/// `packaging/io.github.damnshabu.Stacked.desktop` for the reasons in ADR-009 — GNOME
 /// Shell, the screen-cast portal's window picker and every capture tool match a
 /// window to its desktop entry through this string, and a drift shows up as a
 /// missing icon rather than as an error. Pinned by
 /// `tests::app_id_matches_the_desktop_entry`.
-pub const APP_ID: &str = "Cordial";
+pub const APP_ID: &str = "Stacked";
 
 /// What the header bar says.
 ///
@@ -50,10 +50,7 @@ pub const APP_ID: &str = "Cordial";
 /// were editing looked exactly like a committed one, and an afternoon went into
 /// a regression nobody could attribute to a tree.
 pub fn title() -> String {
-    // The name rather than a literal, so the twice-a-year joke reaches the one
-    // place a user actually reads it. See `branding`: decided once, never
-    // polled, and never applied to anything in the repository.
-    format!("{} {}", crate::branding::current().name(), crate::version::full())
+    format!("{} {}", crate::branding::NAME, crate::version::full())
 }
 
 /// How much of a monitor to leave for whatever else is on it.
@@ -168,6 +165,12 @@ pub fn init_wayland() -> Result<(), String> {
     gtk::gdk::set_allowed_backends("wayland");
     glib::set_prgname(Some(APP_ID));
     adw::init().map_err(|e| format!("libadwaita would not initialise: {e}"))?;
+    // Before the window exists, so the first frame is already the right
+    // scheme rather than a light flash corrected a frame later -- the flash
+    // ADR-011 chose libadwaita to avoid.
+    if crate::theme::Theme::from_env().forces_dark() {
+        adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+    }
     unmute_waylands_own_errors();
     Ok(())
 }
@@ -791,6 +794,12 @@ impl HostWindow {
                  }",
             );
         }
+        // The theme last, so its rules win over the structural ones above at
+        // equal specificity. It only ever changes colours; everything above
+        // that decides what is transparent and when stays in force, because
+        // the see-through class carries more specificity than the theme's
+        // plain window rule.
+        sheet.push_str(&crate::theme::Theme::from_env().css());
         let css = gtk::CssProvider::new();
         css.load_from_string(&sheet);
         gtk::style_context_add_provider_for_display(
@@ -2440,7 +2449,7 @@ mod tests {
         // the toplevel now, so this constant is what reaches the wire, and the
         // test has to live beside it or it pins nothing. ADR-009 is why the
         // two must agree.
-        let desktop = include_str!("../../../packaging/io.github.luohoa97.Cordial.desktop");
+        let desktop = include_str!("../../../packaging/io.github.damnshabu.Stacked.desktop");
         let declared = desktop
             .lines()
             .find_map(|l| l.strip_prefix("StartupWMClass="))
@@ -2455,9 +2464,7 @@ mod tests {
         // is worse than one that reports none, and this is here so that a
         // future suffix has to be justified rather than pasted back.
         let t = title();
-        // Whichever face today wears -- the version has to follow the name
-        // either way, and on two days a year the name is not "Cordial".
-        let name = crate::branding::current().name();
+        let name = crate::branding::NAME;
         assert!(t.starts_with(&format!("{name} ")), "{t}");
         for backend in ["OpenGL", "GLES", "Vulkan"] {
             assert!(!t.contains(backend), "{t} names a graphics backend");

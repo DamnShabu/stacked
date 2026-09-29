@@ -3,9 +3,9 @@
   AppStream metadata, which exists so the hosted remote is browsable rather than
   only installable. `flatpak build-update-repo` builds an `appstream2/<arch>`
   branch out of whatever metainfo the refs carry; with no metainfo at all it
-  prints "No appstream data for app/io.github.luohoa97.Cordial/x86_64/master" and
+  prints "No appstream data for app/io.github.damnshabu.Stacked/x86_64/master" and
   writes an empty branch, and GNOME Software and Discover then show a remote
-  with nothing in it. Someone who has added the remote and cannot find Cordial
+  with nothing in it. Someone who has added the remote and cannot find Stacked
   in their software centre has no way to tell that from a broken remote.
 
   Keep <releases> in step with the workspace version in Cargo.toml. Nothing
@@ -13,17 +13,24 @@
   is exactly where nobody building the package is looking.
 -->
 <component type="desktop-application">
-  <id>io.github.luohoa97.Cordial</id>
+  <id>io.github.damnshabu.Stacked</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>GPL-3.0-or-later</project_license>
-  <name>Cordial</name>
+  <name>Stacked</name>
   <summary>Run Roblox on Linux natively</summary>
   <description>
     <p>
-      Cordial loads Roblox's official Android x86-64 engine directly on Linux
-      through a purpose-built runtime: the AOSP bionic linker, a bionic/glibc
-      shim, a JNI VM in place of Android's, and a framework layer that answers
-      the client's calls. No emulator, no container, no virtual machine.
+      Stacked loads Roblox's official Android engine directly on Linux through
+      a purpose-built runtime: the AOSP bionic linker, a bionic/glibc shim, a
+      JNI VM in place of Android's, and a framework layer that answers the
+      client's calls. No emulator, no container, no virtual machine. It is a
+      fork of Cordial.
+    </p>
+    <p>
+      It is started from the command line or the application list, and the only
+      window it opens is the game's own. `stacked` on its own starts Roblox;
+      profiles, settings, Roblox versions and plugins are subcommands, and
+      `stacked help` lists them.
     </p>
     <p>
       Plugins are ordinary programs in their own processes, and they are granted
@@ -32,32 +39,34 @@
       disabled, so there is no primitive to re-enable in a fork.
     </p>
     <p>
-      Cordial ships no Roblox code, APK or assets. You supply the Android client
-      yourself.
+      Stacked ships no Roblox code, APK or assets. `stacked install` uses the
+      copy Sober downloaded if there is one, or fetches a build and installs it
+      only if Roblox's own signing certificate signed it.
     </p>
     <p>
-      It is experimental. Signing in, loading an experience and playing it with keyboard
-      and mouse all work, text fields draw what you type, and sound plays. Voice
-      chat does not, and on roughly one launch in three a signed-in client
-      reaches the home screen and freezes; reopening usually works. Install it
-      expecting rough edges.
+      It is experimental. Signing in, loading an experience and playing it with
+      keyboard and mouse all work, text fields draw what you type, and sound
+      plays. Voice chat does not, and on roughly one launch in three a signed-in
+      client reaches the home screen and freezes; reopening usually works.
+      Errors are printed to the terminal it was started from and nowhere else.
+      Install it expecting rough edges.
     </p>
   </description>
-  <launchable type="desktop-id">io.github.luohoa97.Cordial.desktop</launchable>
-  <url type="homepage">https://luohoa97.github.io/cordial/</url>
-  <url type="bugtracker">https://github.com/luohoa97/cordial/issues</url>
-  <url type="vcs-browser">https://github.com/luohoa97/cordial</url>
-  <developer id="io.github.luohoa97">
-    <name>luohoa97</name>
+  <launchable type="desktop-id">io.github.damnshabu.Stacked.desktop</launchable>
+  <url type="homepage">https://github.com/DamnShabu/stacked</url>
+  <url type="bugtracker">https://github.com/DamnShabu/stacked/issues</url>
+  <url type="vcs-browser">https://github.com/DamnShabu/stacked</url>
+  <developer id="io.github.damnshabu">
+    <name>DamnShabu</name>
   </developer>
   <categories>
     <category>Game</category>
   </categories>
   <!--
-    Rated for what connecting to Roblox exposes you to, not for anything Cordial
+    Rated for what connecting to Roblox exposes you to, not for anything Stacked
     itself contains: it is a client for a service with in-game chat and a signed-in
     account. Omitting the block entirely would have a software centre report
-    Cordial as unrated, which is a weaker statement than the true one.
+    Stacked as unrated, which is a weaker statement than the true one.
   -->
   <content_rating type="oars-1.1">
     <content_attribute id="social-chat">intense</content_attribute>
@@ -71,6 +80,13 @@
     first version this project gave itself was 0.2.0.
   -->
   <releases>
+    <!--
+      Everything below is Cordial's, the project Stacked is forked from: the
+      version numbers carry on from it, and each link goes to the release page
+      where that version actually shipped. The notes describe Cordial as it was,
+      GTK launcher and Settings window included. Stacked's own releases go on
+      top, and none has been cut yet.
+    -->
     <!--
       **This list is eight releases stale below, and 0.13.0 was the first entry
       added since 0.5.2.** The comment above asks for it to be kept in step and

@@ -1,6 +1,6 @@
 # ADR-002: Core shell, UI handoff, and the cold-start ordering
 
-**Status:** Accepted
+**Status:** Superseded by [ADR-043](ADR-043-the-launcher-is-a-command-line.md). The core shell is now a command line with no windows of its own; this record stays for why it was shaped as it was.
 **Date:** 2026-07-31
 **Amends:** architecture spec §5 (bootstrap shell exception), §9b (feature parity), §15
 **Related:** ADR-001, spec §13 principle 7

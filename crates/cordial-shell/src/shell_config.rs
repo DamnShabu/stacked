@@ -1,162 +1,26 @@
-//! Cordial's own shell preferences.
-//!
-//! Distinct from `flags_file.rs`, which speaks to the engine, and from
-//! `cordial_plugins::grants`, which speaks to what a plugin may do. This is
-//! the shell's own state, and for now that is exactly one thing: which
-//! appearance the user asked Cordial itself to use.
+//! The launcher's preferences: which profile and Roblox build to run, and
+//! the settings it turns into the client's environment at launch.
 //!
 //! `$XDG_CONFIG_HOME/cordial/shell.json`, falling back to `$HOME/.config` —
 //! the same layout `cordial_plugins::grants::path` and
 //! `cordial_plugins::manifest::plugin_root` use — and the same
 //! default-on-anything-wrong behaviour as `grants::load`: a missing or
 //! malformed file means "use the defaults", not "refuse to start". Nobody
-//! but this shell ever writes this file, so a malformed one is far likelier
+//! but the launcher ever writes this file, so a malformed one is far likelier
 //! to be an interrupted write than anything adversarial, and refusing to
 //! start over that would be a worse failure than quietly falling back.
+//!
+//! `stacked config` reads and writes it. Fields that only the old GTK
+//! launcher's own windows used -- its colour scheme, the update timer, the
+//! marketplace directory, the dialog it showed once -- were removed with that
+//! launcher; an older file that still carries them loads, and the next save
+//! drops them.
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
+pub use cordial_shell::theme::Theme;
 pub use cordial_shell::title_bar::TitleBar;
-
-/// What appearance Cordial itself should use.
-///
-/// Not a desktop-wide setting — `AdwStyleManager::set_color_scheme` applies
-/// this to this application only. `System` means *follow*
-/// `org.freedesktop.appearance color-scheme`, live, the way ADR-011 already
-/// relies on for the canvas background; it must never mean *write* that
-/// setting. Cordial has no business changing the desktop's theme to satisfy
-/// its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum AppearanceScheme {
-    Light,
-    Dark,
-    System,
-}
-
-impl AppearanceScheme {
-    /// Order matches the `AdwComboRow` model in `settings.rs` — `index` and
-    /// `from_index` are the seam between the two, kept as plain position
-    /// rather than a second name-keyed lookup that could drift from the
-    /// model's actual contents.
-    pub fn index(self) -> u32 {
-        match self {
-            AppearanceScheme::Light => 0,
-            AppearanceScheme::Dark => 1,
-            AppearanceScheme::System => 2,
-        }
-    }
-
-    pub fn from_index(index: u32) -> Self {
-        match index {
-            0 => AppearanceScheme::Light,
-            1 => AppearanceScheme::Dark,
-            _ => AppearanceScheme::System,
-        }
-    }
-
-    /// Applies to this process only. `ColorScheme::Default` is what makes
-    /// `System` live — libadwaita keeps tracking the portal itself once the
-    /// override is lifted, nothing here has to poll or resubscribe.
-    pub fn apply(self) {
-        let scheme = match self {
-            AppearanceScheme::Light => libadwaita::ColorScheme::ForceLight,
-            AppearanceScheme::Dark => libadwaita::ColorScheme::ForceDark,
-            AppearanceScheme::System => system_scheme(portal_colour_scheme()),
-        };
-        libadwaita::StyleManager::default().set_color_scheme(scheme);
-    }
-}
-
-impl Default for AppearanceScheme {
-    fn default() -> Self {
-        AppearanceScheme::System
-    }
-}
-
-/// How long to wait for the settings portal before deciding nobody is there.
-///
-/// ADR-002 budgets the shell's first paint in milliseconds and this call sits in
-/// front of it, so the number is a compromise rather than a safety margin: on a
-/// session with a portal the reply comes back in about a millisecond and this is
-/// never reached, and on one without it the bus refuses immediately rather than
-/// hanging. What it actually bounds is the case in between — a portal that is
-/// starting, or wedged — where half a second of default theming is a better
-/// outcome than a launcher that appears to have failed to start.
-const PORTAL_TIMEOUT_MS: i32 = 500;
-
-/// What `System` has to resolve to right now, given what the desktop said.
-///
-/// **A preference, not a correctness fix, and the branch looks wrong until you
-/// know why.** `ColorScheme::Default` is the value that means "follow the
-/// desktop", and it is what `System` should be whenever the desktop can be
-/// asked — someone on a light desktop must still get light, and `Default` is
-/// also what keeps the window tracking a change made while it is open, which is
-/// worth more than any startup decision taken once.
-///
-/// The single source libadwaita consults for that is the settings portal's
-/// `org.freedesktop.appearance color-scheme`. When nothing answers it, there is
-/// no preference to follow — but `Default` does not mean "unknown", it renders
-/// light, so an unreachable portal presents as a deliberate light theme. That is
-/// how the owner's launcher kept appearing in light on a `prefer-dark` desktop:
-/// a process without the session bus in its environment has no portal to ask,
-/// and light is what falls out. A game launcher guessing light when it has not
-/// been told is the worse guess, so the unknown case is dark.
-///
-/// The cost is stated rather than hidden: if the portal is unreachable *and*
-/// libadwaita's non-sandboxed GSettings fallback would have found a genuine
-/// light preference, this overrides it. That is accepted — the owner asked for
-/// dark as the answer to "we do not know", and the portal is what defines
-/// knowing here.
-fn system_scheme(portal: Option<u32>) -> libadwaita::ColorScheme {
-    match portal {
-        Some(_) => libadwaita::ColorScheme::Default,
-        None => libadwaita::ColorScheme::ForceDark,
-    }
-}
-
-/// The desktop's `org.freedesktop.appearance color-scheme`, asked for directly.
-///
-/// Only the *presence* of an answer is used — see [`system_scheme`] — so this
-/// deliberately does not interpret the value it returns. `ReadOne` first because
-/// it is what current portals implement, then `Read`, which older ones offer and
-/// which boxes the value one variant deeper; either shape is unwrapped by
-/// following `v` down until something that is not a variant comes out.
-///
-/// Through `gio`: the shell already holds a GDBus connection through GTK, so
-/// this portal query reuses it. The shared secret backend uses `zbus` separately.
-fn portal_colour_scheme() -> Option<u32> {
-    use libadwaita::gtk::gio;
-    use libadwaita::gtk::glib::prelude::*;
-
-    let bus = gio::bus_get_sync(gio::BusType::Session, gio::Cancellable::NONE).ok()?;
-    let arguments = ("org.freedesktop.appearance", "color-scheme").to_variant();
-
-    for method in ["ReadOne", "Read"] {
-        let Ok(reply) = bus.call_sync(
-            Some("org.freedesktop.portal.Desktop"),
-            "/org/freedesktop/portal/desktop",
-            "org.freedesktop.portal.Settings",
-            method,
-            Some(&arguments),
-            None,
-            gio::DBusCallFlags::NONE,
-            PORTAL_TIMEOUT_MS,
-            gio::Cancellable::NONE,
-        ) else {
-            continue;
-        };
-        let mut value = reply.child_value(0);
-        while let Some(inner) = value.as_variant() {
-            value = inner;
-        }
-        if let Some(scheme) = value.get::<u32>() {
-            return Some(scheme);
-        }
-    }
-    None
-}
 
 /// When Cordial stops holding the engine at full rate.
 ///
@@ -203,25 +67,6 @@ impl Default for ThrottleWhen {
 }
 
 impl ThrottleWhen {
-    /// Order matches the `AdwComboRow` model in `settings.rs`, on the same
-    /// footing as [`AppearanceScheme::index`] — see that comment for why the
-    /// seam is a position rather than a name.
-    pub fn index(self) -> u32 {
-        match self {
-            ThrottleWhen::Visible => 0,
-            ThrottleWhen::Unfocused => 1,
-            ThrottleWhen::Off => 2,
-        }
-    }
-
-    pub fn from_index(index: u32) -> Self {
-        match index {
-            0 => ThrottleWhen::Visible,
-            1 => ThrottleWhen::Unfocused,
-            _ => ThrottleWhen::Off,
-        }
-    }
-
     /// The word the client parses out of `CORDIAL_THROTTLE`. Passed through the
     /// environment rather than read from `shell.json` for the same reason
     /// `graphics` is: the client is a separate process with its own idea of
@@ -288,22 +133,6 @@ impl Default for PointerAcceleration {
 }
 
 impl PointerAcceleration {
-    /// Order matches the `AdwComboRow` model in `settings.rs`, as
-    /// [`ThrottleWhen::index`] does.
-    pub fn index(self) -> u32 {
-        match self {
-            PointerAcceleration::UnlockedCursor => 0,
-            PointerAcceleration::Always => 1,
-        }
-    }
-
-    pub fn from_index(index: u32) -> Self {
-        match index {
-            0 => PointerAcceleration::UnlockedCursor,
-            _ => PointerAcceleration::Always,
-        }
-    }
-
     /// The word the client parses out of `CORDIAL_POINTER_ACCEL`.
     pub fn as_str(self) -> &'static str {
         match self {
@@ -344,7 +173,8 @@ impl PointerAcceleration {
 /// this row would have quietly made a documented plugin capability
 /// unreachable for everybody, which is the kind of silent contradiction
 /// AGENTS.md asks to be argued in an ADR rather than introduced in a widget.
-/// Choosing Automatic still lands on FIFO when no plugin says otherwise.
+/// Choosing Automatic lands on the runtime's own `auto`, which is MAILBOX
+/// (`vulkan.rs`), when no plugin says otherwise.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentMode {
@@ -356,7 +186,8 @@ pub enum PresentMode {
     Mailbox,
     /// Uncapped, unsynchronised, tears. The lowest latency there is.
     Immediate,
-    /// No opinion, so a plugin may have one. Falls back to FIFO.
+    /// No opinion, so a plugin may have one. Falls back to the runtime's
+    /// `auto`, which is MAILBOX.
     Automatic,
 }
 
@@ -367,27 +198,6 @@ impl Default for PresentMode {
 }
 
 impl PresentMode {
-    /// Order matches the `AdwComboRow` model in `settings.rs`, as
-    /// [`ThrottleWhen::index`] does.
-    /// Mailbox is 0 because it is the default and the row lists it first.
-    pub fn index(self) -> u32 {
-        match self {
-            PresentMode::Mailbox => 0,
-            PresentMode::Fifo => 1,
-            PresentMode::Immediate => 2,
-            PresentMode::Automatic => 3,
-        }
-    }
-
-    pub fn from_index(index: u32) -> Self {
-        match index {
-            0 => PresentMode::Mailbox,
-            1 => PresentMode::Fifo,
-            2 => PresentMode::Immediate,
-            _ => PresentMode::Automatic,
-        }
-    }
-
     /// The word `cordial_runtime::android::vulkan::parse_present_mode` takes
     /// out of `CORDIAL_PRESENT_MODE`, or `None` for Automatic.
     ///
@@ -464,42 +274,6 @@ impl AudioOutput {
         if self.is_system_default() { None } else { Some(self.0.trim()) }
     }
 
-    /// Which row of a picker listing `sinks` after a leading "System default"
-    /// entry this selects.
-    ///
-    /// Zero when nothing is chosen, and **zero when the chosen sink is not in
-    /// the list**, which is the case worth being careful about: a device that
-    /// has been unplugged since the choice was made must not silently read as
-    /// "System default" in a window the user is about to press a button in.
-    /// `settings.rs` handles it by adding the missing device to the list
-    /// before calling this, so that the row shows the choice and says it is
-    /// not connected; this function's job is only to be correct about a name
-    /// that genuinely is not there.
-    pub fn index_in(&self, sinks: &[String]) -> u32 {
-        if self.is_system_default() {
-            return 0;
-        }
-        sinks
-            .iter()
-            .position(|name| name == self.0.trim())
-            .map(|i| i as u32 + 1)
-            .unwrap_or(0)
-    }
-
-    /// The inverse: what row `index` of that same picker means.
-    pub fn from_index(index: u32, sinks: &[String]) -> Self {
-        if index == 0 {
-            return AudioOutput::default();
-        }
-        match sinks.get(index as usize - 1) {
-            Some(name) => AudioOutput(name.clone()),
-            // Out of range can only happen if the model changed under the
-            // row. Falling back to the system default loses the choice, which
-            // is the recoverable direction; storing an index-shaped guess
-            // would send audio to an arbitrary device.
-            None => AudioOutput::default(),
-        }
-    }
 }
 
 /// One choice that settles both of the things Cordial can ask the engine to do
@@ -520,8 +294,8 @@ impl AudioOutput {
 /// for each. It is **not** established that Roblox tiers graphics defaults off
 /// any of it; `isTablet` is the only field here the engine has been seen to
 /// read, and only [`GraphicsOptimization::MobileTier`] sets it. Anyone
-/// choosing a mode expecting a frame rate to move should measure it, and the
-/// row's subtitle says so rather than implying an effect nothing has shown.
+/// choosing a mode expecting a frame rate to move should measure it, and
+/// `stacked config` says so rather than implying an effect nothing has shown.
 ///
 /// **The CPU modes are unmeasured too**, and that is `cordial_runtime::flags`'s
 /// own admission about `Performance`: its tables are adapted from mocktail's
@@ -570,28 +344,6 @@ pub enum GraphicsOptimization {
 }
 
 impl GraphicsOptimization {
-    /// Order matches the `AdwComboRow` model in `settings.rs`, on the same
-    /// footing as [`ThrottleWhen::index`].
-    pub fn index(self) -> u32 {
-        match self {
-            GraphicsOptimization::Balanced => 0,
-            GraphicsOptimization::RobloxApp => 1,
-            GraphicsOptimization::MobileTier => 2,
-            GraphicsOptimization::MoreCores => 3,
-            GraphicsOptimization::FewerCores => 4,
-        }
-    }
-
-    pub fn from_index(index: u32) -> Self {
-        match index {
-            0 => GraphicsOptimization::Balanced,
-            1 => GraphicsOptimization::RobloxApp,
-            2 => GraphicsOptimization::MobileTier,
-            3 => GraphicsOptimization::MoreCores,
-            _ => GraphicsOptimization::FewerCores,
-        }
-    }
-
     /// The `CORDIAL_DEVICE_PROFILE` value this mode wants, or `None` when it
     /// wants the client's own default.
     ///
@@ -634,7 +386,6 @@ pub const DEFAULT_PROFILE: &str = "default";
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ShellConfig {
-    pub appearance: AppearanceScheme,
     /// How tall the game window's header bar is. See [`TitleBar`].
     pub title_bar: TitleBar,
     /// Where the Roblox build is, when the user has pinned it. Empty is the
@@ -665,22 +416,6 @@ pub struct ShellConfig {
     /// there is no "never".
     #[serde(default)]
     pub pointer_acceleration: PointerAcceleration,
-    /// What Cordial does about a new Roblox build without being asked, and over
-    /// which connections it may fetch one.
-    ///
-    /// Two fields rather than one `UpdateSettings`, because they are two rows in
-    /// two places: the dropdown and the pair of switches sit in the same group
-    /// but nothing else in this file nests, and a settings document is read by
-    /// people as often as by serde. `updater::update_settings` puts them back
-    /// together for `cordial_update::settings::UpdateSettings::plan`, which is
-    /// the only thing that wants them as a pair.
-    ///
-    /// Neither governs anything today and the settings page says so: Roblox
-    /// publishes no Android build to download, so there is nothing for the plan
-    /// to act on. They are stored anyway, because the choice is the user's to
-    /// make before the day it matters rather than after it.
-    pub automatic_updates: cordial_update::settings::Automatic,
-    pub download_on: cordial_update::settings::DownloadOn,
     /// Show MangoHUD's frame rate and frame time overlay over the client.
     ///
     /// Default off, unlike `gamemode`, and for a reason that is not timidity:
@@ -711,7 +446,7 @@ pub struct ShellConfig {
     #[serde(default)]
     pub graphics_optimization_mode: GraphicsOptimization,
     /// Which present mode the client asks the driver for. See [`PresentMode`],
-    /// which carries the reasoning and the reason FIFO is the default.
+    /// which carries the reasoning and the reason MAILBOX is the default.
     ///
     /// `#[serde(default)]`, so a `shell.json` written by an older Cordial --
     /// which had no such key at all -- loads rather than failing to parse, and
@@ -812,82 +547,29 @@ pub struct ShellConfig {
     /// `node.name` and why the default must stay "follow the system".
     #[serde(default)]
     pub audio_output: AudioOutput,
-    /// The accelerator that toggles fullscreen, in GTK's own syntax.
-    ///
-    /// Configurable rather than hardcoded because F11 is not reachable on every
-    /// keyboard. A laptop whose function row defaults to media keys needs Fn held
-    /// to produce F11 at all, and on some of those the keypress never reaches the
-    /// application — so a client that only listens for F11 cannot be
-    /// fullscreened on that machine by any amount of pressing.
-    ///
-    /// GTK binds nothing here by default, deliberately: it offers
-    /// `gtk_window_fullscreen()` and leaves the key to the application, because
-    /// F11 means other things elsewhere. Apps that appear to have it "for free"
-    /// — Nautilus, Eye of GNOME — each bound it themselves.
-    ///
-    /// GNOME does carry a compositor-level `toggle-fullscreen` in
-    /// `org.gnome.desktop.wm.keybindings`, and ships it **unbound**. Setting it
-    /// there works for every window and is the better answer for somebody who
-    /// wants one key across their whole desktop; this setting is for the window
-    /// rather than the desktop, and the two do not conflict.
-    ///
-    /// Empty disables the binding entirely, for exactly that case.
-    #[serde(default = "default_fullscreen_accel")]
-    pub fullscreen_accel: String,
-    /// A directory the Marketplace section of the Plugins page reads as a
-    /// [`cordial_plugins::source::LocalFileSource`] — `index.json`, an
-    /// optional `index.json.minisig`, and an `archives/` directory beside it.
-    ///
-    /// Never set by anything but the user, and never defaulted to a real
-    /// path: ADR-014 declines to name who hosts an index, so there is no
-    /// index for Cordial to point at until somebody supplies a directory of
-    /// their own. Machine-wide rather than per profile, on the same footing
-    /// as `roblox` above — which build to run, and which index to browse, are
-    /// both about the machine's software, not about an account (ADR-013).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marketplace_index_dir: Option<PathBuf>,
-    /// The base64 minisign public key the Marketplace section checks
-    /// `marketplace_index_dir`'s signature against.
-    ///
-    /// Absent by default and not filled in with anything Cordial ships,
-    /// because Cordial ships no key — see `cordial_plugins::sign` for why. An
-    /// index opened with this unset still lists what it offers; installing
-    /// from it is refused until a key is set here and actually verifies,
-    /// which is `cordial_plugins::marketplace::install`'s doing, not this
-    /// field's.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub marketplace_public_key: Option<String>,
-    /// Whether `multi_instance_warning` has already been shown and accepted.
-    ///
-    /// Per-user rather than per-profile, deliberately: the warning is about
-    /// running two *different* profiles at once, and putting the flag inside
-    /// one profile's own directory — the way `plugin-consent-seen.json` sits
-    /// inside it — would mean it resets for every profile somebody creates,
-    /// so the very act of setting up the second profile the warning is about
-    /// would make it fire again. `shell.json` is this shell's one piece of
-    /// state that already lives above every profile, which is the shape this
-    /// flag needs.
-    ///
-    /// **Remembered on purpose, unlike `root_warning`, which is not.** See
-    /// `multi_instance_warning.rs`'s module comment for the distinction and
-    /// why each warning landed on a different answer.
-    #[serde(default)]
-    pub multi_instance_warning_seen: bool,
-}
-
-fn default_fullscreen_accel() -> String {
-    "F11".to_string()
+    /// The game window's colours. See [`Theme`]; passed as `CORDIAL_THEME`.
+    pub theme: Theme,
+    /// Keep the cursor inside the window while it is fullscreen and the game
+    /// has not locked it. Default on: the case it exists for is a second
+    /// monitor taking a click meant for a fullscreen game's menu, and somebody
+    /// who wants the cursor free again has this and a compositor that will
+    /// release it on alt-tab. `false` becomes `CORDIAL_NO_FULLSCREEN_CONFINE=1`
+    /// on the client, which is also the control.
+    pub fullscreen_confine: bool,
+    /// A frame-rate target for the engine's task scheduler, or `None` for
+    /// whatever the engine chooses. Passed as `CORDIAL_FPS_CAP`, which the
+    /// client turns into a `DFIntTaskSchedulerTargetFps` layer beneath the
+    /// user's own `flags.json` -- see `flags.rs`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fps_cap: Option<u32>,
 }
 
 impl Default for ShellConfig {
     fn default() -> Self {
         Self {
-            appearance: AppearanceScheme::default(),
             title_bar: TitleBar::default(),
             roblox: crate::install::RobloxInstall::default(),
             profile: DEFAULT_PROFILE.to_string(),
-            automatic_updates: cordial_update::settings::Automatic::default(),
-            download_on: cordial_update::settings::DownloadOn::default(),
             gamemode: true,
             throttle: ThrottleWhen::default(),
             pointer_acceleration: PointerAcceleration::default(),
@@ -901,10 +583,9 @@ impl Default for ShellConfig {
             audio_output: AudioOutput::default(),
             mangohud: false,
             vkbasalt: false,
-            fullscreen_accel: default_fullscreen_accel(),
-            marketplace_index_dir: None,
-            marketplace_public_key: None,
-            multi_instance_warning_seen: false,
+            theme: Theme::default(),
+            fullscreen_confine: true,
+            fps_cap: None,
         }
     }
 }
@@ -958,13 +639,9 @@ mod tests {
     }
 
     #[test]
-    fn the_throttle_row_and_the_stored_word_agree() {
-        // The `AdwComboRow` seam, and the word the client parses, checked
-        // together — they are two encodings of the same three states and
-        // nothing else would notice them drifting apart.
-        for w in [ThrottleWhen::Visible, ThrottleWhen::Unfocused, ThrottleWhen::Off] {
-            assert_eq!(ThrottleWhen::from_index(w.index()), w);
-        }
+    fn the_throttle_setting_and_the_stored_word_agree() {
+        // The word the file stores and the word the client parses are the
+        // same word; nothing else would notice them drifting apart.
         assert_eq!(ThrottleWhen::default(), ThrottleWhen::Visible);
         assert_eq!(ThrottleWhen::Visible.as_str(), "visible");
         assert_eq!(ThrottleWhen::Unfocused.as_str(), "unfocused");
@@ -982,24 +659,57 @@ mod tests {
     }
 
     #[test]
-    fn a_missing_file_defaults_to_system() {
+    fn a_missing_file_defaults_to_the_brand_theme() {
         let p = scratch("missing.json");
         let _ = std::fs::remove_file(&p);
-        assert_eq!(load(&p).appearance, AppearanceScheme::System);
+        assert_eq!(load(&p).theme, Theme::Stacked);
     }
 
     #[test]
     fn a_malformed_file_falls_back_to_defaults_rather_than_refusing_to_start() {
         let p = scratch("malformed.json");
         std::fs::write(&p, "{not json").unwrap();
-        assert_eq!(load(&p).appearance, AppearanceScheme::System);
+        let config = load(&p);
+        assert_eq!(config.theme, Theme::Stacked);
+        assert!(config.fullscreen_confine);
+        assert_eq!(config.fps_cap, None);
     }
 
     #[test]
     fn a_saved_choice_round_trips() {
         let p = scratch("roundtrip.json");
-        save(&p, &ShellConfig { appearance: AppearanceScheme::Dark, ..Default::default() }).unwrap();
-        assert_eq!(load(&p).appearance, AppearanceScheme::Dark);
+        save(
+            &p,
+            &ShellConfig {
+                theme: Theme::System,
+                fullscreen_confine: false,
+                fps_cap: Some(144),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let back = load(&p);
+        assert_eq!(back.theme, Theme::System);
+        assert!(!back.fullscreen_confine);
+        assert_eq!(back.fps_cap, Some(144));
+    }
+
+    #[test]
+    fn a_file_from_the_gtk_launcher_still_loads_and_keeps_what_still_means_something() {
+        // Every existing shell.json was written by the launcher this CLI
+        // replaced, and carries fields that no longer exist. Unknown fields are
+        // ignored rather than refused, so the profile and the performance
+        // choices in the same file survive the upgrade.
+        let p = scratch("gtk-era.json");
+        std::fs::write(
+            &p,
+            r#"{"appearance":"dark","automatic_updates":"manual","fullscreen_accel":"F11",
+                "multi_instance_warning_seen":true,"profile":"alt","gamemode":false}"#,
+        )
+        .unwrap();
+        let config = load(&p);
+        assert_eq!(config.profile, "alt");
+        assert!(!config.gamemode);
     }
 
     #[test]
@@ -1012,7 +722,6 @@ mod tests {
         let p = scratch("older-schema.json");
         std::fs::write(&p, r#"{"appearance":"dark"}"#).unwrap();
         let config = load(&p);
-        assert_eq!(config.appearance, AppearanceScheme::Dark);
         assert_eq!(config.profile, DEFAULT_PROFILE);
         assert_eq!(config.roblox, crate::install::RobloxInstall::default());
         // The performance fields are newer still, and the same argument
@@ -1020,40 +729,6 @@ mod tests {
         assert!(config.gamemode, "an older config must still get GameMode's default");
         assert!(!config.mangohud);
         assert!(!config.vkbasalt, "vkbasalt is newer still and every existing shell.json predates it");
-    }
-
-    #[test]
-    fn the_update_settings_round_trip() {
-        // Same shape as `a_saved_choice_round_trips`, for the same reason: a
-        // control that accepts a choice and does not keep it is worse than one
-        // that refuses, because the user finds out a launch later.
-        use cordial_update::settings::{Automatic, DownloadOn};
-        let p = scratch("updates.json");
-        save(
-            &p,
-            &ShellConfig {
-                automatic_updates: Automatic::Manual,
-                download_on: DownloadOn { metered: true },
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let back = load(&p);
-        assert_eq!(back.automatic_updates, Automatic::Manual);
-        assert!(back.download_on.metered);
-    }
-
-    #[test]
-    fn a_config_written_before_the_update_settings_existed_gets_their_defaults() {
-        // Everybody's shell.json predates these three controls, and a launcher
-        // that refuses to start over a field it has just invented is a worse
-        // failure than any it exists to report.
-        use cordial_update::settings::Automatic;
-        let p = scratch("pre-updates.json");
-        std::fs::write(&p, r#"{"appearance":"dark","profile":"default"}"#).unwrap();
-        let config = load(&p);
-        assert_eq!(config.automatic_updates, Automatic::Background);
-        assert!(!config.download_on.metered, "a data allowance is not the default to spend");
     }
 
     #[test]
@@ -1087,27 +762,6 @@ mod tests {
         assert_eq!(back.profile, "alt_account");
     }
 
-    #[test]
-    fn an_unanswered_portal_is_dark_rather_than_light() {
-        // The owner's report, in one assertion: their launcher kept opening in
-        // light on a `prefer-dark` desktop, because `ColorScheme::Default`
-        // renders light when nothing told it otherwise and a process without
-        // the session bus has nothing to ask. Unknown is dark now.
-        assert_eq!(system_scheme(None), libadwaita::ColorScheme::ForceDark);
-    }
-
-    #[test]
-    fn a_desktop_that_answers_is_still_followed_live() {
-        // The half that must not be lost in fixing the other one. `Default` is
-        // the only value that keeps tracking a change made while the window is
-        // open, and forcing dark on an answering desktop would take light away
-        // from somebody who chose it. The value itself is not inspected on
-        // purpose, so every answer maps the same way.
-        for reported in [0, 1, 2] {
-            assert_eq!(system_scheme(Some(reported)), libadwaita::ColorScheme::Default);
-        }
-    }
-
     fn sinks() -> Vec<String> {
         // The names on the machine this was written on, abbreviated only where
         // the abbreviation cannot change the answer. Two of them share a long
@@ -1129,50 +783,24 @@ mod tests {
         let out = AudioOutput::default();
         assert!(out.is_system_default());
         assert_eq!(out.env_value(), None);
-        assert_eq!(out.index_in(&sinks()), 0);
     }
 
     #[test]
-    fn a_chosen_sink_round_trips_through_the_picker_and_the_environment() {
+    fn a_chosen_sink_round_trips_through_the_environment() {
         let list = sinks();
         let out = AudioOutput(list[1].clone());
         assert!(!out.is_system_default());
         assert_eq!(out.env_value(), Some(list[1].as_str()));
-        assert_eq!(out.index_in(&list), 2);
-        assert_eq!(AudioOutput::from_index(2, &list), out);
-    }
-
-    #[test]
-    fn every_row_of_the_picker_maps_back_to_itself() {
-        // The `AdwComboRow` seam, on the same footing as `ThrottleWhen`'s: two
-        // encodings of one state, and nothing but a test would notice them
-        // drifting apart.
-        let list = sinks();
-        for index in 0..=list.len() as u32 {
-            let chosen = AudioOutput::from_index(index, &list);
-            assert_eq!(chosen.index_in(&list), index, "row {index} did not survive the trip");
-        }
     }
 
     #[test]
     fn a_sink_that_is_no_longer_present_does_not_read_as_the_system_default() {
-        // The unplugged-headset case. `index_in` has to answer *something* for
-        // a name that is not in the list, and it answers 0 — but the value
-        // itself must still say a device was chosen, because that is what
-        // `settings.rs` keys the "not connected" row off and what stops the
-        // choice being thrown away by merely opening the window.
+        // The unplugged-headset case: the value must still say a device was
+        // chosen, so the choice is not thrown away by the device being
+        // absent for one launch.
         let gone = AudioOutput("bluez_output.AC_12_2F_9E_00_11.1".into());
         assert!(!gone.is_system_default(), "the choice must survive the device going away");
         assert_eq!(gone.env_value(), Some("bluez_output.AC_12_2F_9E_00_11.1"));
-        assert_eq!(gone.index_in(&sinks()), 0);
-    }
-
-    #[test]
-    fn an_out_of_range_row_falls_back_to_the_system_default() {
-        // Only reachable if the model changed under the row. Losing the choice
-        // is recoverable; guessing at a device is not.
-        assert_eq!(AudioOutput::from_index(99, &sinks()), AudioOutput::default());
-        assert_eq!(AudioOutput::from_index(1, &[]), AudioOutput::default());
     }
 
     #[test]
@@ -1204,13 +832,6 @@ mod tests {
         let p = scratch("pre-audio.json");
         std::fs::write(&p, r#"{"appearance":"dark","profile":"default"}"#).unwrap();
         assert!(load(&p).audio_output.is_system_default());
-    }
-
-    #[test]
-    fn index_and_from_index_agree_with_each_other() {
-        for scheme in [AppearanceScheme::Light, AppearanceScheme::Dark, AppearanceScheme::System] {
-            assert_eq!(AppearanceScheme::from_index(scheme.index()), scheme);
-        }
     }
 
     /// Controllers work out of the box, and the switch that turns them off
@@ -1247,7 +868,8 @@ mod tests {
 
     /// Automatic must send nothing, or ADR-020's plugin path is unreachable.
     ///
-    /// The runtime's precedence is environment, then flag layers, then FIFO.
+    /// The runtime's precedence is environment, then flag layers, then its
+    /// own `auto` (MAILBOX).
     /// An empty string or the word "auto" would both also fall through today,
     /// but only sending nothing keeps the launcher out of a decision it was
     /// not asked to make -- and only `None` is checked by the `if let` in
@@ -1260,49 +882,12 @@ mod tests {
         }
     }
 
-    /// The combo model's positions and the enum must not drift apart.
-    ///
-    /// Every other enum on this page has the same round trip for the same
-    /// reason: `settings.rs` builds a `gtk::StringList` whose order is the
-    /// only thing tying a row to a value, and nothing in the type system
-    /// notices when somebody inserts an entry in the middle of it.
-    #[test]
-    fn present_mode_survives_the_combo_row_round_trip() {
-        for mode in [
-            PresentMode::Fifo,
-            PresentMode::Mailbox,
-            PresentMode::Immediate,
-            PresentMode::Automatic,
-        ] {
-            assert_eq!(PresentMode::from_index(mode.index()), mode);
-        }
-    }
-
     /// A `shell.json` from a Cordial that predates this key must still load,
-    /// and must read as FIFO rather than refusing to parse.
+    /// and must read as the default, MAILBOX, rather than refusing to parse.
     #[test]
     fn an_older_config_without_the_key_keeps_the_feel_it_had() {
         let older = r#"{"gamemode":true,"graphics":"automatic","mangohud":false}"#;
         let parsed: ShellConfig = serde_json::from_str(older).expect("an older shell.json must load");
         assert_eq!(parsed.present_mode, PresentMode::Mailbox);
-    }
-
-    /// Everybody's `shell.json` predates the multi-instance warning, and a
-    /// launcher that refused to start over a field it has just invented would
-    /// be a worse failure than the warning itself. It must also default to
-    /// unseen, not seen — an install that never asked must not silently skip
-    /// the one warning this feature exists to show.
-    #[test]
-    fn an_older_config_without_the_multi_instance_flag_has_not_seen_the_warning() {
-        let older = r#"{"gamemode":true,"profile":"default"}"#;
-        let parsed: ShellConfig = serde_json::from_str(older).expect("an older shell.json must load");
-        assert!(!parsed.multi_instance_warning_seen);
-    }
-
-    #[test]
-    fn accepting_the_multi_instance_warning_round_trips() {
-        let p = scratch("multi-instance.json");
-        save(&p, &ShellConfig { multi_instance_warning_seen: true, ..Default::default() }).unwrap();
-        assert!(load(&p).multi_instance_warning_seen);
     }
 }

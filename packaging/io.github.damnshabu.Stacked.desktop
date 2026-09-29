@@ -1,0 +1,22 @@
+[Desktop Entry]
+Type=Application
+Name=Stacked
+GenericName=Roblox Client
+Comment=Run Roblox on Linux
+# `stacked` with no arguments starts Roblox on the current profile, and a bare
+# roblox-player: or roblox: argument joins that link, so %u is all this needs.
+# It is the command-line launcher; the only window is the game's own.
+Exec=stacked %u
+Icon=io.github.damnshabu.Stacked
+Terminal=false
+Categories=Game;
+# Stacked handles Roblox's own links, which is how a Play button on the website
+# reaches a client at all -- the same registration Sober carries, so a machine
+# switching from one to the other keeps working. `stacked` checks the scheme
+# itself before passing anything on; see deep_link.rs, whose SCHEMES has to
+# stay in step with this line. %u above is not optional: without it the
+# desktop file declares a handler that is never given the URL it was invoked
+# for.
+MimeType=x-scheme-handler/roblox-player;x-scheme-handler/roblox;
+StartupNotify=true
+StartupWMClass=Stacked
