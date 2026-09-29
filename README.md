@@ -29,8 +29,8 @@ account you care about.**
 ## Install
 
 There are no prebuilt packages for Stacked yet, so build it from source. You
-need Rust, Clang (bionic won't build with GCC), and the GTK4 >= 4.10 and
-libadwaita >= 1.4 development packages. PipeWire and WebKitGTK-6.0 headers are
+need Rust, Clang (bionic won't build with GCC), and the GTK4 >= 4.12 and
+libadwaita >= 1.5 development packages. PipeWire and WebKitGTK-6.0 headers are
 optional.
 
 ```bash
@@ -72,7 +72,7 @@ certificate.
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
 | `stacked config` | List every setting with its current value. |
 | `stacked update` | Download the newest Roblox build. |
-| `stacked plugins install x.tar.zst` | Install a plugin. It starts switched off, with no permissions granted. |
+| `stacked plugins install x.tar.zst` | Install a plugin. One that runs code starts switched off, and nothing is granted until you grant it. |
 | `stacked diagnostics` | Print what a bug report needs. |
 
 F11 toggles fullscreen. [`docs/usage.md`](docs/usage.md) lists every command

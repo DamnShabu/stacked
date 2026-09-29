@@ -1,8 +1,9 @@
 # How Stacked works
 
 A map of the tree as it stands, not a specification. Nearly all of it is
-upstream Cordial's, which is why most names in it still say `cordial`. Where this and an ADR
-disagree, the ADR is the decision and this is out of date — say so and fix it.
+upstream Cordial's, which is why most names in it still say `cordial`. Where
+this and an ADR disagree, the ADR is the decision and this is out of date — say
+so and fix it.
 
 ```mermaid
 flowchart TB

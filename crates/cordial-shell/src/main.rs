@@ -99,6 +99,8 @@ Plugins
   plugins remove ID       Uninstall a plugin.
   plugins enable|disable ID [--profile NAME]
   plugins grant|revoke ID CAPABILITY [--profile NAME]
+                          Grant only what the plugin asks for; `plugins` lists it.
+  plugins deno            Install Deno, which plugins with code run on.
 
 Other
   diagnostics             Print the build, distribution and install method,

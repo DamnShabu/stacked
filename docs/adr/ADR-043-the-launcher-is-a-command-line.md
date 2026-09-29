@@ -70,6 +70,16 @@ the choice as `CORDIAL_THEME`, the same way it passes `CORDIAL_TITLE_BAR`.
   `stacked update` is manual, and so are the `automatic_updates` and
   `download_on` keys, which were removed from `shell.json`. An older file that
   still contains them loads normally, and the next save drops them.
+- **Plugin preferences.** The Settings page drew a form from each plugin's
+  declared preferences. There is no command for them, so they are edited by
+  hand in the plugin's `preferences.json`, and three of the four shipped
+  plugins declare some. A `stacked plugins prefs` is the obvious follow-up.
+- **The Deno download** is `stacked plugins deno` now, which was a button
+  before.
+- **Consent.** The page only offered to grant capabilities a plugin
+  requested. `stacked plugins grant` refuses anything else for the same
+  reason: a grant the manifest never asked for is consent to something nobody
+  was shown.
 - **The marketplace browser.** Plugins install from a local `.tar.zst`. The
   registry and marketplace code in `cordial_plugins` still exists, but no
   command drives it.

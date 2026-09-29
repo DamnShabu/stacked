@@ -14,7 +14,7 @@
 //! within a second or two (ADR-038) -- it watches the same files.
 
 use cordial_plugins::capability::Capability;
-use cordial_plugins::{consent, enablement, grants, manifest, unpack};
+use cordial_plugins::{consent, enablement, grants, manifest, sandbox, unpack};
 use cordial_shell::profile;
 
 pub fn run(args: &[String]) -> u8 {
@@ -36,9 +36,7 @@ pub fn run(args: &[String]) -> u8 {
     let arg = |i: usize| rest.get(i).map(String::as_str);
     match arg(0) {
         None | Some("list") => {
-            let mut plugins = manifest::discover(&manifest::system_plugin_root());
-            plugins.extend(manifest::discover(&manifest::plugin_root()));
-            plugins.extend(manifest::discover_unpacked());
+            let plugins = installed();
             if plugins.is_empty() {
                 println!("no plugins installed. `stacked plugins install FILE.tar.zst` adds one.");
                 return 0;
@@ -80,6 +78,9 @@ pub fn run(args: &[String]) -> u8 {
             };
             let id = plugin.manifest.id.clone();
             println!("installed {id} into {}", dir.display());
+            if plugin.has_code() && !sandbox::interpreter_present() {
+                println!("it needs Deno to run, and there is none. `stacked plugins deno` installs it.");
+            }
             if consent::starts_disabled(&plugin) {
                 if let Err(e) = enablement::set_enabled(&profile_dir, &id, false) {
                     eprintln!("stacked: could not leave {id} switched off: {e}");
@@ -140,6 +141,24 @@ pub fn run(args: &[String]) -> u8 {
                 return 2;
             };
             let on = verb == "grant";
+            // Only what the plugin asked for, which is all the Settings page
+            // ever offered: a grant the manifest does not request is consent to
+            // something nobody was shown. Revoking is always allowed, so a
+            // grant left over from an older version of a plugin can be
+            // removed after that version stops asking for it.
+            if on {
+                match installed().into_iter().find(|p| p.manifest.id == id) {
+                    None => {
+                        eprintln!("stacked: no plugin {id:?} is installed");
+                        return 1;
+                    }
+                    Some(p) if !p.requested.contains(&cap) => {
+                        eprintln!("stacked: {id} does not ask for {}, so it cannot be granted", cap.name());
+                        return 1;
+                    }
+                    Some(_) => {}
+                }
+            }
             match grants::set(&grants::path_in(&profile_dir), id, cap, on) {
                 Ok(()) => {
                     if on {
@@ -155,9 +174,50 @@ pub fn run(args: &[String]) -> u8 {
                 }
             }
         }
+        Some("deno") => {
+            // What the Plugins page's download button did: plugins with code
+            // run on Deno, and a machine without one on `PATH` gets a pinned,
+            // hash-checked copy in Stacked's own data directory.
+            if sandbox::interpreter_present() {
+                println!("Deno is already available; plugins with code can run.");
+                return 0;
+            }
+            let Some(dir) = sandbox::managed_deno_dir() else {
+                eprintln!("stacked: neither XDG_DATA_HOME nor HOME is set, so there is nowhere to put Deno");
+                return 1;
+            };
+            let mut progress = |done: u64, total: Option<u64>| {
+                const MB: u64 = 1024 * 1024;
+                match total {
+                    Some(t) if t > 0 => eprint!("\rdownloading Deno: {} of {} MB", done / MB, t / MB),
+                    _ => eprint!("\rdownloading Deno: {} MB", done / MB),
+                }
+            };
+            let result = cordial_update::deno::install(&dir, &mut progress);
+            eprintln!();
+            match result {
+                Ok(path) => {
+                    println!("installed {}. Plugins start with the client, so this takes effect at the next launch.", path.display());
+                    0
+                }
+                Err(why) => {
+                    eprintln!("stacked: could not install Deno: {why}");
+                    1
+                }
+            }
+        }
         Some(other) => {
             eprintln!("stacked: unknown plugins command {other:?}. Try `stacked help`.");
             2
         }
     }
+}
+
+/// Every installed plugin: first-party, the user's, and unpacked ones being
+/// developed. The same three roots the runtime reads.
+fn installed() -> Vec<manifest::Plugin> {
+    let mut plugins = manifest::discover(&manifest::system_plugin_root());
+    plugins.extend(manifest::discover(&manifest::plugin_root()));
+    plugins.extend(manifest::discover_unpacked());
+    plugins
 }

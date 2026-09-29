@@ -62,6 +62,8 @@ values it accepts.
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
 | `close_on_leave` | `false` | Close Roblox when you leave an experience. |
 | `mangohud` / `vkbasalt` | `false` | Overlays, if they're installed. See [shaders.md](shaders.md) for vkBasalt. |
+| `carry_launch_ticket` | `false` | Hand a website Play button's one-use login ticket to the engine as well. |
+| `unpacked_plugins` | `[]` | Plugin folders loaded in place, for developing a plugin. |
 | `roblox.apk`, `roblox.lib_dir` | unset | Run a specific APK or extracted engine instead of the one Stacked finds. |
 
 ### About `fps_cap`
@@ -106,6 +108,7 @@ default-deny, and grants are per profile. See [plugins.md](plugins.md).
 
 ```bash
 stacked plugins                       # what is installed, on or off, and what is granted
+stacked plugins deno                  # plugins with code run on Deno; this installs it if it is missing
 stacked plugins install thing.tar.zst # a plugin with code starts switched off
 stacked plugins grant thing presence.set
 stacked plugins enable thing
@@ -113,6 +116,10 @@ stacked plugins disable thing
 stacked plugins revoke thing presence.set
 stacked plugins remove thing
 ```
+
+`grant` accepts only the capabilities the plugin's manifest asks for;
+`stacked plugins` lists them. Plugin preferences have no command and are edited
+in the plugin's `preferences.json` ([plugins.md](plugins.md)).
 
 `enable`, `disable`, `grant` and `revoke` take `--profile NAME`. A client that
 is already running picks up the change within a second or two.
