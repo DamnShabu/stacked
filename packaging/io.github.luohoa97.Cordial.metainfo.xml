@@ -78,6 +78,15 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.20.1" date="2026-09-29">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.20.1</url>
+      <description>
+        <p>
+          Flatpak updates work again: the repository had stopped publishing
+          new versions after 0.18.0.
+        </p>
+      </description>
+    </release>
     <release version="0.20.0" date="2026-09-29">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.20.0</url>
       <description>
