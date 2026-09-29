@@ -85,6 +85,9 @@ the compositor controls that and not the game.
 It is dropped when one of Stacked's own dialogs or the text editor is in
 front, so the cursor can still reach them.
 
+On Hyprland it goes on the window's main surface, because Hyprland keeps
+pointer focus there. That path hasn't been run on Hyprland itself.
+
 It has been checked against sway, which accepted the request and confined the
 pointer. It has not been tried on a real multi-monitor desktop, or on X11. If
 it misbehaves, run `stacked config set fullscreen_confine false`.
@@ -138,6 +141,7 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_PRESENT_MODE=…` | The same as `present_mode`, plus `uncapped` and `fifo-relaxed`. |
 | `CORDIAL_GAMEMODE=0` | Don't ask for GameMode. |
 | `CORDIAL_POLL_COALESCE_US=N` | How long the engine's main loop sleeps when it has nothing to do, in microseconds. The default is 250. `0` turns it off, which costs a whole CPU core. |
+| `CORDIAL_TEARDOWN_TIMEOUT_S=N` | How long the engine gets to shut down before the client exits without it. The default is 10. |
 | `CORDIAL_APK=PATH` | Run this APK for this launch only. |
 | `XDG_DATA_HOME=DIR` | Move every profile and all client data somewhere else. |
 
