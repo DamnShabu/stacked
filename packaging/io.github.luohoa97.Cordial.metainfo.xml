@@ -78,6 +78,19 @@
       and is not this change. AppStream shows the newest entry as "what's new",
       so the important one is the top.
     -->
+    <release version="0.20.0" date="2026-09-29">
+      <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.20.0</url>
+      <description>
+        <p>
+          An optional Shaders switch adds sharpening and anti-aliasing through
+          vkBasalt, once it is installed.
+        </p>
+        <p>
+          Multi-line text boxes get a proper multi-line editor, and typing
+          stays in place when the window is resized or goes fullscreen.
+        </p>
+      </description>
+    </release>
     <release version="0.19.0" date="2026-09-25">
       <url type="details">https://github.com/luohoa97/cordial/releases/tag/v0.19.0</url>
       <description>
