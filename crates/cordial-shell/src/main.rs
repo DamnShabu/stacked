@@ -208,7 +208,7 @@ fn play(args: &[String]) -> u8 {
     let (named, rest) = match take_profile(args) {
         Ok(v) => v,
         Err(e) => {
-            eprintln!("stacked: {e}");
+            report(&e.to_string());
             return 2;
         }
     };
@@ -246,7 +246,7 @@ fn play(args: &[String]) -> u8 {
         let url = match deep_link::accept(&raw) {
             Ok(url) => url,
             Err(why) => {
-                eprintln!("stacked: ignoring the link: {why}");
+                report(&format!("ignoring the link: {why}"));
                 return 2;
             }
         };
@@ -281,14 +281,14 @@ fn play(args: &[String]) -> u8 {
     let build = match install::locate(&config.roblox) {
         Ok(build) => build,
         Err(install::NotFound::NoBuild) => {
-            eprintln!(
-                "stacked: no Roblox build found. `stacked install` downloads one, or uses the \
-                 copy Sober downloaded if Sober is installed."
+            report(
+                "no Roblox build found. `stacked install` downloads one, or uses the copy \
+                 Sober downloaded if Sober is installed.",
             );
             return 1;
         }
         Err(install::NotFound::Unusable(message)) => {
-            eprintln!("stacked: {message}");
+            report(&message);
             return 1;
         }
     };
@@ -301,12 +301,14 @@ fn play(args: &[String]) -> u8 {
     {
         Ok(build) => build,
         Err(install::NotFound::NoBuild) => {
-            eprintln!("stacked: profile {profile_name:?} is pinned to a build that is not on disk. \
-                       `stacked versions get VERSION` fetches it, or `stacked unpin` clears the pin.");
+            report(&format!(
+                "profile {profile_name:?} is pinned to a build that is not on disk. \
+                 `stacked versions get VERSION` fetches it, or `stacked unpin` clears the pin."
+            ));
             return 1;
         }
         Err(install::NotFound::Unusable(message)) => {
-            eprintln!("stacked: {message}");
+            report(&message);
             return 1;
         }
     };
@@ -317,14 +319,14 @@ fn play(args: &[String]) -> u8 {
     let claim = match profile::acquire(&profile_name) {
         Ok(claim) => claim,
         Err(e @ profile::Error::Busy(..)) => {
-            eprintln!(
-                "stacked: {e}\nTo run a second client alongside it, give it a profile of its \
-                 own: `stacked profiles new NAME`, then `stacked play --profile NAME`."
-            );
+            report(&format!(
+                "{e}\nTo run a second client alongside it, give it a profile of its own: \
+                 `stacked profiles new NAME`, then `stacked play --profile NAME`."
+            ));
             return 3;
         }
         Err(e) => {
-            eprintln!("stacked: {e}");
+            report(&e.to_string());
             return 1;
         }
     };
@@ -351,7 +353,7 @@ fn play(args: &[String]) -> u8 {
     ) {
         Ok(instance) => instance,
         Err(message) => {
-            eprintln!("stacked: {message}");
+            report(&message);
             return 1;
         }
     };
@@ -372,20 +374,41 @@ fn play(args: &[String]) -> u8 {
     let status = match instance.wait() {
         Ok(status) => status,
         Err(e) => {
-            eprintln!("stacked: lost track of the client: {e}");
+            report(&format!("lost track of the client: {e}"));
             return 1;
         }
     };
     if crash::is_crash(&status, &instance.recent_output()) {
-        eprintln!(
-            "\nstacked: {} The output above is what it printed. `stacked diagnostics` \
-             prints what a bug report needs alongside it.\nIt was started with:\n{}",
+        eprintln!();
+        report(&format!(
+            "{} Its output is above, or in the journal if it was started from the desktop. \
+             `stacked diagnostics` prints what a bug report needs alongside it.",
             crash::describe(&status),
-            instance.command_line,
-        );
+        ));
+        eprintln!("It was started with:\n{}", instance.command_line);
         return 1;
     }
     0
+}
+
+/// A launch that could not happen, said where the person who asked for it
+/// will see it.
+///
+/// On a terminal that is stderr. Launched from the desktop entry or a browser's
+/// Play button there is no terminal (`Terminal=false`), and a message on a
+/// stderr nobody reads is a Play button that silently does nothing. So when
+/// stderr is not a terminal the same sentence also goes out as a desktop
+/// notification, through the portal `cordial_plugins::notify` already uses,
+/// which reaches the desktop from inside the Flatpak too.
+fn report(message: &str) {
+    let message = message.trim();
+    eprintln!("stacked: {message}");
+    // SAFETY: `isatty` reads nothing but its argument.
+    if unsafe { libc::isatty(2) } != 1 {
+        if let Err(e) = cordial_plugins::notify::send("Stacked could not start Roblox", message) {
+            eprintln!("stacked: the desktop notification failed too: {e}");
+        }
+    }
 }
 
 fn status(args: &[String]) -> u8 {

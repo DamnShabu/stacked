@@ -2,10 +2,12 @@
 #
 # **Why a second repository exists at all.** Both the AUR and Chaotic-AUR want a
 # git repository whose *root* is the package directory -- `PKGBUILD` and
-# `.SRCINFO` at the top level. Cordial keeps its packaging under
-# `packaging/aur/cordial/`, so neither can consume this repository directly.
-# `luohoa97/cordial-pkgbuild` is that root-level mirror, and it is generated:
-# its README says so and says not to send pull requests there.
+# `.SRCINFO` at the top level. Stacked keeps its packaging under
+# `packaging/aur/stacked/`, so neither can consume this repository directly.
+# `DamnShabu/stacked-pkgbuild` is meant to be that root-level mirror, generated
+# and not for pull requests. It does not exist yet, which is harmless: without
+# PACKAGING_REPO_TOKEN the push step below says so and stops. Cordial's own
+# mirror was `luohoa97/cordial-pkgbuild`, which is not ours to push to.
 #
 # **Why this must be automated rather than left to a maintainer.**
 # `packaging/aur/PUBLISHING.md` documents bumping `pkgver` and regenerating
@@ -79,9 +81,9 @@ jobs:
         run: |
           set -euo pipefail
           want="${{ steps.tag.outputs.version }}"
-          got=$(sed -n 's/^pkgver=//p' packaging/aur/cordial/PKGBUILD | head -1)
+          got=$(sed -n 's/^pkgver=//p' packaging/aur/stacked/PKGBUILD | head -1)
           if [ "$got" != "$want" ]; then
-            echo "::error::packaging/aur/cordial/PKGBUILD says pkgver=$got but the tag is v$want."
+            echo "::error::packaging/aur/stacked/PKGBUILD says pkgver=$got but the tag is v$want."
             echo "::error::Its source= pins #tag=v\$pkgver, so Chaotic-AUR would build v$got."
             echo "::error::Bump it and regenerate .SRCINFO -- see packaging/aur/PUBLISHING.md."
             exit 1
@@ -94,7 +96,7 @@ jobs:
           set -euo pipefail
           useradd --create-home builder
           chown -R builder:builder "$GITHUB_WORKSPACE"
-          for p in cordial cordial-git; do
+          for p in stacked stacked-git; do
             d="$GITHUB_WORKSPACE/packaging/aur/$p"
             if ! runuser -u builder -- sh -c "cd '$d' && makepkg --printsrcinfo" > /tmp/$p.srcinfo; then
               echo "::error::makepkg could not parse $p/PKGBUILD"; exit 1
@@ -123,13 +125,13 @@ jobs:
             exit 0
           fi
           tag="${{ steps.tag.outputs.tag }}"
-          git config --global user.name  "cordial-ci"
+          git config --global user.name  "stacked-ci"
           git config --global user.email "ci@users.noreply.github.com"
           git clone --depth=1 \
-            "https://x-access-token:${TOKEN}@github.com/luohoa97/cordial-pkgbuild.git" /tmp/pkgrepo
-          cp packaging/aur/cordial/PKGBUILD \
-             packaging/aur/cordial/.SRCINFO \
-             packaging/aur/cordial/cordial.install /tmp/pkgrepo/
+            "https://x-access-token:${TOKEN}@github.com/DamnShabu/stacked-pkgbuild.git" /tmp/pkgrepo
+          cp packaging/aur/stacked/PKGBUILD \
+             packaging/aur/stacked/.SRCINFO \
+             packaging/aur/stacked/stacked.install /tmp/pkgrepo/
           cd /tmp/pkgrepo
           if git diff --quiet; then
             echo "packaging is already current for $tag; nothing to push"
@@ -137,7 +139,7 @@ jobs:
           fi
           git add -A
           git commit \
-            -m "Cordial ${tag#v} packaging" \
-            -m "Generated from packaging/aur/cordial/ in luohoa97/cordial at $tag. .SRCINFO verified in step with its PKGBUILD by makepkg --printsrcinfo."
+            -m "Stacked ${tag#v} packaging" \
+            -m "Generated from packaging/aur/stacked/ in DamnShabu/stacked at $tag. .SRCINFO verified in step with its PKGBUILD by makepkg --printsrcinfo."
           git push origin HEAD:main
           echo "pushed packaging for $tag"

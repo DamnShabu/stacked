@@ -19,7 +19,7 @@
 # That is exactly the class of thing worth a check rather than a habit.
 set -euo pipefail
 
-# The oldest glibc Cordial claims to run on. Raise this deliberately, in a
+# The oldest glibc Stacked claims to run on. Raise this deliberately, in a
 # commit that says which distribution it drops, never to make this script pass.
 FLOOR="${CORDIAL_GLIBC_FLOOR:-2.39}"
 

@@ -1,12 +1,13 @@
-# Cordial's own dnf/yum repository -- not a package in Fedora's own repos.
+# Stacked's own dnf/yum repository -- not a package in Fedora's own repos.
 # See docs/design/rpm-repository.md for why those are two different things
 # and where this one currently stands.
 #
-# Drop this file straight into /etc/yum.repos.d/, or let dnf fetch it:
+# Drop this file straight into /etc/yum.repos.d/, or let dnf fetch it once
+# the fork's Pages site is deployed, which it is not yet:
 #
-#     sudo curl -fsSL https://luohoa97.github.io/cordial/cordial.repo \
-#         -o /etc/yum.repos.d/cordial.repo
-#     sudo dnf install cordial
+#     sudo curl -fsSL https://damnshabu.github.io/stacked/stacked.repo \
+#         -o /etc/yum.repos.d/stacked.repo
+#     sudo dnf install stacked
 #
 # $releasever, not a fixed directory: release.yml builds one Fedora release
 # at a time (Fedora 44 as of this writing -- see packaging/rpm/build-rpm.sh's
@@ -17,8 +18,8 @@
 # a $releasever with nothing built for it yet, this baseurl 404s.** That is
 # the correct failure and a clean one to diagnose -- see
 # docs/design/rpm-repository.md for the fuller argument, and check
-# https://luohoa97.github.io/cordial/rpm/ for which releases actually have a
-# directory before assuming Cordial does not support your release at all.
+# https://damnshabu.github.io/stacked/rpm/ for which releases actually have a
+# directory before assuming Stacked does not support your release at all.
 #
 # gpgcheck=0 is permanent, not a placeholder for a future 1. This repository
 # never re-signs the individual .rpm the way gpgcheck=1 on a package would
@@ -40,10 +41,10 @@
 # Until RPM_GPG_KEY_ID and RPM_GPG_PRIVATE_KEY exist, .github/workflows/yum.yml
 # publishes nothing and every URL below 404s -- the README says so plainly.
 
-[cordial]
-name=Cordial
-baseurl=https://luohoa97.github.io/cordial/rpm/$releasever/$basearch
+[stacked]
+name=Stacked
+baseurl=https://damnshabu.github.io/stacked/rpm/$releasever/$basearch
 enabled=1
 gpgcheck=0
 repo_gpgcheck=1
-gpgkey=https://luohoa97.github.io/cordial/rpm/RPM-GPG-KEY-cordial
+gpgkey=https://damnshabu.github.io/stacked/rpm/RPM-GPG-KEY-stacked

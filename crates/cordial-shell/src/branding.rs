@@ -13,9 +13,10 @@
 /// name, the icon's name, the metainfo id and the Flatpak ref all use it, and
 /// they must agree or the icon silently fails to resolve.
 ///
-/// A new id rather than Cordial's, because this is a fork that can be
-/// installed beside Cordial, and two applications exporting one id overwrite
-/// each other's desktop entry and icon.
+/// A new id rather than Cordial's, so the two Flatpaks can be installed side
+/// by side: two applications exporting one id overwrite each other's desktop
+/// entry and icon. Native packages still conflict, because both ship
+/// `/usr/bin/cordial-run`, and the deb, rpm and AUR packages say so.
 pub const APP_ID: &str = "io.github.damnshabu.Stacked";
 
 /// The name the window, the task switcher and the launcher's output use.

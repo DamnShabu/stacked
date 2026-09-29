@@ -1,7 +1,7 @@
-# Maintainer: luohoa97 <luohoa97@users.noreply.github.com>
+# Maintainer: DamnShabu <damnshabu@users.noreply.github.com>
 #
-# Cordial vendors no Roblox code. The engine is Roblox's official Android
-# x86-64 build; Cordial fetches it on first run from a third-party mirror and
+# Stacked vendors no Roblox code. The engine is Roblox's official Android
+# x86-64 build; `stacked install` fetches it from a third-party mirror and
 # installs it only if Roblox's own signing certificate signed it, or reads a
 # copy Sober unpacked, or one the user points it at. It has been able to fetch
 # since v0.9.0, and this comment said it could not until 2026-08-28. The
@@ -16,7 +16,7 @@
 # it was on course to be the first sentence about Cordial an Arch user read.
 # A comment asserting a correction is not a correction. See README section 1.
 #
-# The release counterpart to packaging/aur/cordial-git/PKGBUILD, which builds
+# The release counterpart to packaging/aur/stacked-git/PKGBUILD, which builds
 # whatever commit is at the tip of main. This one tracks tagged releases
 # instead, which is what the pkgname (no -git suffix) means on the AUR --
 # see packaging/aur/PUBLISHING.md for the account-and-key steps neither
@@ -31,12 +31,12 @@
 # test this file gets, and a CI failure here is a real failure of the
 # submittable package, not a simulation of one.
 
-pkgname=cordial
+pkgname=stacked
 pkgver=0.20.1
 pkgrel=1
-pkgdesc="Roblox's official Android build, run natively on Linux -- Cordial ships no Roblox code and fetches a signature-verified one"
+pkgdesc="Roblox's official Android build, run natively on Linux -- Stacked ships no Roblox code and fetches a signature-verified one"
 arch=('x86_64')
-url="https://github.com/luohoa97/cordial"
+url="https://github.com/DamnShabu/stacked"
 license=('GPL-3.0-or-later')
 depends=(
   # Linked, via the -sys crates' pkg-config probes.
@@ -47,7 +47,7 @@ depends=(
   # WebKit at all and account settings silently do nothing.
   'webkitgtk-6.0'
   'zlib'
-  # Named because namcap named them, for cordial-git: these are the libraries
+  # Named because namcap named them, for the -git package: these are the libraries
   # the two binaries actually record in DT_NEEDED, and every one of them is
   # reachable today only through gtk4 or webkitgtk-6.0. Listing them means a
   # transitive dependency dropped upstream turns into a resolvable version
@@ -76,7 +76,7 @@ depends=(
   # there is no sound and nothing says so.
   'pipewire'
   'hicolor-icon-theme'
-  # Plugins are Deno programs (ADR-008) and Cordial bundles no runtime -- it
+  # Plugins are Deno programs (ADR-008) and Stacked bundles no runtime -- it
   # execs `deno` off PATH. Without it every plugin fails to spawn: the system
   # installs, lists in Settings, grants permissions and cannot run a line,
   # which is what an Arch user reported on 2026-09-02.
@@ -109,28 +109,31 @@ makedepends=(
 )
 optdepends=(
   # `bwrap` is genuinely optional: sandbox.rs only ever *subtracts* from what
-  # Cordial already holds, so without it a plugin still runs with zero Deno
+  # Stacked already holds, so without it a plugin still runs with zero Deno
   # permissions and the broker still mediates every effect. Recommended, not
   # required.
   'bubblewrap: kernel sandbox under the plugin runtime'
-  # ADR-011 makes Wayland the backend Cordial targets. The X11 path still
+  # ADR-011 makes Wayland the backend Stacked targets. The X11 path still
   # starts and window.rs dlopens these for it; CORDIAL_MONITOR needs Xinerama.
   'libx11: X11 session fallback'
   'libxinerama: CORDIAL_MONITOR monitor selection under X11'
-  # Roblox's own Android build, unpacked by Sober, is the copy Cordial looks
+  # Roblox's own Android build, unpacked by Sober, is the copy Stacked looks
   # for first. It is a suggestion and not a dependency because a user-supplied
   # APK works just as well and neither one comes from this package.
-  'sober: a Roblox build for Cordial to run (Cordial ships none)'
+  'sober: a Roblox build for Stacked to run (Stacked ships none)'
 )
-conflicts=('cordial-git' 'cordial-bin')
+# Cordial's packages install /usr/bin/cordial-run and /usr/share/cordial too,
+# because both names are still the code's, so this cannot sit beside any of
+# them. The Flatpaks can coexist: their ids differ.
+conflicts=('stacked-git' 'cordial' 'cordial-git' 'cordial-bin')
 install="$pkgname.install"
 options=('!lto')
 source=(
   # #tag=v$pkgver, not a bare clone: this is what makes the package a release
-  # rather than a second copy of cordial-git. The maintainer bumps $pkgver by
+  # rather than a second copy of stacked-git. The maintainer bumps $pkgver by
   # hand at each release, the same hand-maintenance PUBLISHING.md already
   # documents for .SRCINFO, and for the same stated reason -- there is no
-  # `makepkg`/`namcap` on the machine Cordial is developed on, so this is kept
+  # `makepkg`/`namcap` on the machine Cordial was developed on, so this is kept
   # in step deliberately rather than generated.
   #
   # CORDIAL_PKGBUILD_TAG overrides the tag without editing this file, and
@@ -140,7 +143,7 @@ source=(
   # bumping $pkgver here by hand. Unset -- the ordinary case, on an AUR
   # user's own machine -- it falls back to v$pkgver, which is what a plain
   # `makepkg` or `makepkg -si` against this committed file builds.
-  "$pkgname::git+https://github.com/luohoa97/cordial.git#tag=${CORDIAL_PKGBUILD_TAG:-v$pkgver}"
+  "$pkgname::git+https://github.com/DamnShabu/stacked.git#tag=${CORDIAL_PKGBUILD_TAG:-v$pkgver}"
   # The two submodules, and mcpelauncher-linker's own two, declared here
   # rather than fetched by `git submodule update --init --recursive` in
   # prepare(). A release tag's tarball from GitHub's own archive endpoint
@@ -187,7 +190,7 @@ pkgver() {
   # anywhere else would disagree with the string the running client prints.
   # At an exact release tag, which is what the pinned source above checks
   # out, this reduces to the tag itself and reproduces $pkgver above; it is
-  # written the same way as cordial-git's rather than as a bare literal so
+  # written the same way as stacked-git's rather than as a bare literal so
   # the two stay comparable and so a source pinned to the wrong ref (a
   # branch, a moved tag) is visible as a version that does not match rather
   # than silently accepted.
@@ -215,7 +218,7 @@ check() {
   export CARGO_TARGET_DIR=target
   export CC=clang CXX=clang++
   # The same --features as build(), the same three skips, for the same
-  # reasons packaging/aur/cordial-git/PKGBUILD's check() already documents at
+  # reasons packaging/aur/stacked-git/PKGBUILD's check() already documents at
   # length: two talk to whatever org.freedesktop.secrets is on the session
   # bus and are flaky under load rather than broken, the third is a tripwire
   # on gvfs rather than GLib and needs a session bus a clean build has none
@@ -243,18 +246,15 @@ package() {
 
   # Both binaries, side by side. launch.rs looks for the loader as the sibling
   # of current_exe and nowhere else -- there is no baked-in path and nothing to
-  # configure -- so a shell installed without cordial-run beside it is a
-  # launcher whose Launch button cannot find anything to launch.
-  install -Dm755 target/release/cordial-shell "$pkgdir/usr/bin/cordial-shell"
-  # **`cordial` is the command; `cordial-shell` is the file.** Asked for on
-  # 2026-08-28: nobody wants to type the second word, and every other launcher
-  # on a desktop answers to its own name. A symlink rather than a rename so
-  # anything already invoking `cordial-shell` keeps working, and `cordial-run`
-  # deliberately gets no alias -- it is the loader the shell launches and is not
-  # what anyone should run by hand.
-  ln -sf cordial-shell "$pkgdir/usr/bin/cordial"
-  # First-party plugins, read-only beside the binary.
-  # Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+  # configure -- so `stacked` installed without cordial-run beside it is a
+  # launcher with nothing to launch. `cordial-run` deliberately gets no alias:
+  # it is the loader `stacked` starts and is not what anyone should run by hand.
+  install -Dm755 target/release/stacked "$pkgdir/usr/bin/stacked"
+  # First-party plugins, read-only beside the binary. Until the native
+  # packages existed nothing installed these anywhere, so no built-in plugin
+  # was listed for anybody -- including Flatpak users, whose
+  # /app/share/cordial/plugins the code has looked in from the start and which
+  # had never existed. The path keeps Cordial's name because the code does.
   for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
@@ -264,23 +264,19 @@ package() {
 
   install -Dm755 target/release/cordial-run "$pkgdir/usr/bin/cordial-run"
 
-  # The square icons under packaging/icons/hicolor/. Both of them: Frostbite is
-  # the twice-a-year name in crates/cordial-shell/src/branding.rs, and a
-  # missing one is a blank icon in the task switcher on the one day nobody is
-  # watching for it. A test in that file asserts both exist and are square.
+  # The square icon under packaging/icons/hicolor/. A test in
+  # crates/cordial-shell/src/branding.rs asserts it exists and is square.
   local _icons="usr/share/icons/hicolor/scalable/apps"
-  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg" \
-    "$pkgdir/$_icons/io.github.luohoa97.Cordial.svg"
-  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg" \
-    "$pkgdir/$_icons/io.github.luohoa97.Cordial.Frostbite.svg"
+  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg" \
+    "$pkgdir/$_icons/io.github.damnshabu.Stacked.svg"
 
-  # Exec=cordial-shell %u, and the %u is not decorative: the entry registers
+  # Exec=stacked %u, and the %u is not decorative: the entry registers
   # x-scheme-handler/roblox-player, which is how a Play button on the website
   # reaches a client at all.
-  install -Dm644 "packaging/io.github.luohoa97.Cordial.desktop" \
-    "$pkgdir/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-  install -Dm644 "packaging/io.github.luohoa97.Cordial.metainfo.xml" \
-    "$pkgdir/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+  install -Dm644 "packaging/io.github.damnshabu.Stacked.desktop" \
+    "$pkgdir/usr/share/applications/io.github.damnshabu.Stacked.desktop"
+  install -Dm644 "packaging/io.github.damnshabu.Stacked.metainfo.xml" \
+    "$pkgdir/usr/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
 
   # MIT requires its notice in "all copies or substantial portions",
   # Apache-2.0 section 4(d) requires NOTICE to travel with derivative works,
@@ -288,7 +284,7 @@ package() {
   # mocktail-webview's licence and the root NOTICE are Apache-2.0 material --
   # mocktail's implementation of Roblox's in-experience web window, taken as
   # the basis for Cordial's own -- installed here from the day this package
-  # was added rather than found missing later, the way cordial-git's was.
+  # was added rather than found missing later, the way the -git package's was.
   install -Dm644 LICENSE "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
   install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
   install -Dm644 THIRD-PARTY-NOTICES.md \

@@ -16,8 +16,8 @@
 # one.
 #
 # None of the four jobs below fetch, embed or reference any Roblox material.
-# Every one of them builds Cordial's own source (plus the same third-party OSS
-# Cordial always depends on -- libbadcpu, mcpelauncher-linker, libjnivm,
+# Every one of them builds Stacked's own source (plus the same third-party OSS
+# it always depends on -- libbadcpu, mcpelauncher-linker, libjnivm,
 # mocktail-webview) and nothing else; the resulting packages start, find no
 # Roblox build, and say so, exactly like every other packaging format already
 # does. See AGENTS.md, "Permanently out of scope".
@@ -78,11 +78,11 @@ on:
       - 'packaging/appimage/**'
       - 'packaging/deb/**'
       - 'packaging/rpm/**'
-      - 'packaging/aur/cordial/**'
+      - 'packaging/aur/stacked/**'
       - 'packaging/version.sh'
       - 'packaging/icons/**'
-      - 'packaging/io.github.luohoa97.Cordial.desktop'
-      - 'packaging/io.github.luohoa97.Cordial.metainfo.xml'
+      - 'packaging/io.github.damnshabu.Stacked.desktop'
+      - 'packaging/io.github.damnshabu.Stacked.metainfo.xml'
       - '.github/workflows/release.yml'
   pull_request:
     paths:
@@ -94,11 +94,11 @@ on:
       - 'packaging/appimage/**'
       - 'packaging/deb/**'
       - 'packaging/rpm/**'
-      - 'packaging/aur/cordial/**'
+      - 'packaging/aur/stacked/**'
       - 'packaging/version.sh'
       - 'packaging/icons/**'
-      - 'packaging/io.github.luohoa97.Cordial.desktop'
-      - 'packaging/io.github.luohoa97.Cordial.metainfo.xml'
+      - 'packaging/io.github.damnshabu.Stacked.desktop'
+      - 'packaging/io.github.damnshabu.Stacked.metainfo.xml'
       - '.github/workflows/release.yml'
   # **The way to start a release build by hand, and it is needed.** `paths`
   # above applies to tag pushes as well as branch pushes, and a tag pointing at
@@ -257,7 +257,7 @@ jobs:
         # machine is newer than every user. A container's glibc moving forward
         # changes no line in this repository, so it needs a check rather than a
         # habit.
-        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/cordial-shell
+        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/stacked
       - name: Upload the AppImage
         uses: actions/upload-artifact@v4
         with:
@@ -297,7 +297,7 @@ jobs:
     steps:
       - name: Install build dependencies
         # The same package names README.md §3 already documents for building
-        # Cordial on Debian/Ubuntu from source, plus the audio backends'
+        # Stacked on Debian/Ubuntu from source, plus the audio backends'
         # headers and the packaging tools this job needs on top of that.
         # rustup rather than apt's own rustc/cargo: Ubuntu's packaged Rust
         # trails upstream stable and this workspace pins rust-version = 1.75
@@ -336,7 +336,7 @@ jobs:
         # the one validation this job is confident is installed, rather than
         # guess a package name and risk failing the whole job on tooling that
         # was never the point.
-        run: desktop-file-validate packaging/io.github.luohoa97.Cordial.desktop
+        run: desktop-file-validate packaging/io.github.damnshabu.Stacked.desktop
       - name: Build the .deb
         run: packaging/deb/build-deb.sh --outdir dist/deb
       - name: Refuse a binary that needs a newer glibc than the floor
@@ -347,7 +347,7 @@ jobs:
         # machine is newer than every user. A container's glibc moving forward
         # changes no line in this repository, so it needs a check rather than a
         # habit.
-        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/cordial-shell
+        run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/stacked
       - name: Upload the .deb
         uses: actions/upload-artifact@v4
         with:
@@ -368,14 +368,14 @@ jobs:
     runs-on: ${{ matrix.runner }}
     container: registry.fedoraproject.org/fedora:44
     # %check runs the workspace's test suite once inside this job (with the
-    # same three session-bus-dependent skips packaging/rpm/cordial.spec
+    # same three session-bus-dependent skips packaging/rpm/stacked.spec
     # documents), on top of %build's own compile -- more than the deb and
     # arch jobs, close to what the arch job's check() also repeats.
     timeout-minutes: 75
     steps:
       - name: Install the tools make-srpm.sh itself needs
         # Not the project's own build dependencies -- those are declared once,
-        # in packaging/rpm/cordial.spec's BuildRequires, and installed below
+        # in packaging/rpm/stacked.spec's BuildRequires, and installed below
         # via `dnf builddep` against the SRPM once it exists. This step only
         # has to get as far as running make-srpm.sh, which needs git, cargo
         # (for `cargo vendor`), rpmbuild and zstd -- see that script's header.
@@ -404,7 +404,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           # rpmbuild names the file after the host's own %{_arch} already
-          # (e.g. cordial-0.17.0-1.fc44.aarch64.rpm), so the *filename* needed
+          # (e.g. stacked-0.17.0-1.fc44.aarch64.rpm), so the *filename* needed
           # no change for this -- packaging/rpm/build-repo.sh already sorts by
           # the arch it reads out of that name. Only the artifact name needs
           # it, for the same upload-artifact@v4 collision reason the appimage
@@ -435,19 +435,19 @@ jobs:
           fetch-depth: 1
           submodules: false
       - name: Install the PKGBUILD's own depends() and makedepends()
-        # Read out of packaging/aur/cordial/PKGBUILD by sourcing it rather
+        # Read out of packaging/aur/stacked/PKGBUILD by sourcing it rather
         # than copied into this file, for the same reason the .rpm job uses
         # `dnf builddep` instead of a hand-written package list: one place to
         # keep in step rather than two that can silently drift apart. Sourcing
         # a PKGBUILD to read its arrays is the ordinary way to do this without
         # a full makepkg run; it does execute the file's top-level code, which
-        # is accepted here because this is Cordial's own first-party file, not
+        # is accepted here because this is Stacked's own first-party file, not
         # one fetched from elsewhere.
         shell: bash
         run: |
           set -euo pipefail
           mapfile -t pkgs < <(
-            bash -c 'source packaging/aur/cordial/PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"' \
+            bash -c 'source packaging/aur/stacked/PKGBUILD; printf "%s\n" "${depends[@]}" "${makedepends[@]}"' \
               | sed -E 's/[<>=].*$//'
           )
           pacman -Syu --needed --noconfirm git "${pkgs[@]}"
@@ -457,7 +457,7 @@ jobs:
         # and works around the same way.
         env:
           # CI always builds the tag actually being released, or, off a tag,
-          # HEAD of main -- see packaging/aur/cordial/PKGBUILD's own comment
+          # HEAD of main -- see packaging/aur/stacked/PKGBUILD's own comment
           # on why this variable exists: the committed PKGBUILD's pkgver is
           # bumped by hand at each release the way PUBLISHING.md already
           # documents for .SRCINFO, and CI should not depend on that having
@@ -472,10 +472,10 @@ jobs:
           # the container job happens to mount it at.
           chown -R builder:builder "$GITHUB_WORKSPACE"
           runuser -u builder -- env CORDIAL_PKGBUILD_TAG="$CORDIAL_PKGBUILD_TAG" \
-            makepkg --dir "$GITHUB_WORKSPACE/packaging/aur/cordial" \
+            makepkg --dir "$GITHUB_WORKSPACE/packaging/aur/stacked" \
               --noconfirm --cleanbuild --force
           install -d dist/arch
-          cp packaging/aur/cordial/*.pkg.tar.zst dist/arch/
+          cp packaging/aur/stacked/*.pkg.tar.zst dist/arch/
           pacman -Qp dist/arch/*.pkg.tar.zst >/dev/null
       - name: Upload the Arch package
         uses: actions/upload-artifact@v4
@@ -483,7 +483,7 @@ jobs:
           name: cordial-arch
           path: |
             dist/arch/*.pkg.tar.zst
-            packaging/aur/cordial/PKGBUILD
+            packaging/aur/stacked/PKGBUILD
           if-no-files-found: error
 
   publish:

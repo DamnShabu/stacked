@@ -1,10 +1,10 @@
 name: A Roblox feature does not work
-description: Something the client does on Android that does nothing, or does the wrong thing, on Cordial
+description: Something the client does on Android that does nothing, or does the wrong thing, on Stacked
 body:
   - type: markdown
     attributes:
       value: |
-        Roblox expects Android underneath it. Cordial answers those expectations one at a time, and everything not yet answered is a feature that silently does nothing. Audio is the current example — `slCreateEngine` reports `SL_RESULT_FEATURE_UNSUPPORTED`, honestly and on purpose, so there is no sound.
+        Roblox expects Android underneath it. Stacked answers those expectations one at a time, and everything not yet answered is a feature that silently does nothing. Audio is the current example — `slCreateEngine` reports `SL_RESULT_FEATURE_UNSUPPORTED`, honestly and on purpose, so there is no sound.
 
         This is the project's main body of work, not a defect queue.
 
@@ -21,11 +21,12 @@ body:
     attributes:
       label: Diagnostics
       description: |
-        Required. Get it from the **Copy diagnostics** button at **Settings → Report a Problem**, or from a terminal — `cordial --diagnostics` (.deb/.rpm/Arch), `flatpak run io.github.luohoa97.Cordial --diagnostics` (Flatpak), `./Cordial-*.AppImage --diagnostics` (AppImage), or `cordial-shell --diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
+        Required. Run `stacked diagnostics` in a terminal (.deb/.rpm/Arch), `flatpak run io.github.damnshabu.Stacked diagnostics` (Flatpak), `./Stacked-*.AppImage diagnostics` (AppImage), or `target/release/stacked diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
 
-        Six rows, looking like this:
+        Seven rows, looking like this:
         ```
-        Cordial   0.11.0 (0fdbb4425)
+        Stacked   0.11.0 (0fdbb4425)
+        Licence   GPL-3.0-or-later
         Install   rpm
         Roblox    2.736.1408 (fetched by Cordial)
         System    Linux host 7.1.8-200.fc44.x86_64 ... x86_64 GNU/Linux
@@ -35,7 +36,7 @@ body:
 
         It carries your hostname and your distribution's name, and no account name, session token, or profile name. You are about to paste this in public — edit the hostname out first if you would rather it not travel.
       render: text
-      placeholder: Paste the output of `cordial --diagnostics` here.
+      placeholder: Paste the output of `stacked diagnostics` here.
     validations:
       required: true
 
@@ -44,7 +45,7 @@ body:
       value: |
         ### What the engine asked for
 
-        Cordial records what Roblox reached for. Please include whichever of these applies below — a name here is most of the work.
+        Stacked records what Roblox reached for. Please include whichever of these applies below — a name here is most of the work.
 
         **A Java class or method nobody implemented.** libjnivm prints these as it goes:
 
@@ -62,7 +63,7 @@ body:
         === stubs called: N distinct of TOTAL ===
         ```
 
-        TOTAL is however many stubs this build of Cordial compiles in, which grows whenever `docs/analysis/undefined-symbols.tsv` gains an entry — it will not match this example, and that is not a sign anything is wrong.
+        TOTAL is however many stubs this build of Stacked compiles in, which grows whenever `docs/analysis/undefined-symbols.tsv` gains an entry — it will not match this example, and that is not a sign anything is wrong.
 
         **Neither, but it still does nothing.** Say that in the field above. A feature can be broken because a call is answered with a plausible lie rather than not answered at all, and those are the expensive ones.
 
@@ -83,7 +84,7 @@ body:
         Three shapes, and picking the wrong one is the main way this goes wrong:
 
         - **Stub honestly.** The platform genuinely is not there and the engine must be told so. `slCreateEngine` returns failure rather than handing back a dead engine object; `native/opensles.cpp` explains why at length.
-        - **Answer with real data.** Cordial knows the truth and just has to say it — the locale, the display metrics, the storage directories.
+        - **Answer with real data.** Stacked knows the truth and just has to say it — the locale, the display metrics, the storage directories.
         - **Translate to the host's equivalent.** Android API in, freedesktop or Linux facility out. Audio is OpenSL ES in and PipeWire out. Notifications are Android's in and the portal's out.
 
         If you do not know which, pick "Not sure" below and describe the feature above — choosing between them is usually the actual design question.
@@ -94,7 +95,7 @@ body:
       label: Which shape is the right answer
       options:
         - "Stub honestly — the platform is not there and the engine must be told so"
-        - "Answer with real data — Cordial already knows the truth"
+        - "Answer with real data — Stacked already knows the truth"
         - "Translate to the host's equivalent — an Android API in, a Linux facility out"
         - "Not sure"
     validations:
@@ -111,7 +112,7 @@ body:
 
         A translation is a real design decision and deserves an issue of its own before code. Two things worth stating up front:
 
-        **It changes what Cordial needs from the sandbox.** A host facility means a Flatpak permission, and Cordial's manifest is meant to stay narrow enough that a person can read it and know the whole story ([ADR-007](../../docs/adr/ADR-007-host-resources-are-brokered.md)).
+        **It changes what Stacked needs from the sandbox.** A host facility means a Flatpak permission, and Stacked's manifest is meant to stay narrow enough that a person can read it and know the whole story ([ADR-007](../../docs/adr/ADR-007-host-resources-are-brokered.md)).
 
         **Some have no clean equivalent yet, and saying so is a valid outcome.** Passkeys are the honest example: Android routes them through Credential Manager and FIDO2, and the desktop has no settled portal for the same thing. A partial translation that half-works during sign-in is worse than a documented gap.
 

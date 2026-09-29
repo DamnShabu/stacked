@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 # Build a signed dnf/yum repository from one or more already-built .rpm files.
 #
-# This is Cordial's own repository -- the analogue of packaging/apt/build-repo.sh
-# for `dnf install` rather than `apt install`, and of packaging/cordial.flatpakrepo
+# This is Stacked's own repository -- the analogue of packaging/apt/build-repo.sh
+# for `dnf install` rather than `apt install`, and of packaging/stacked.flatpakrepo
 # for a channel with no single downloadable remote definition that embeds the
-# key itself. It does not build Cordial and does not build an .rpm;
+# key itself. It does not build Stacked and does not build an .rpm;
 # packaging/rpm/build-rpm.sh already does that (by way of make-srpm.sh), and
 # this script's whole job starts after that one's is finished. See
 # docs/design/rpm-repository.md for what this is, what it deliberately is
@@ -119,7 +119,7 @@ outdir=$(cd "$outdir" && pwd)
 # invoked against the package with `rpm` -- there is no `rpm` binary on this
 # repository's own apt-based development host either, and release.yml's own
 # naming convention (packaging/rpm/make-srpm.sh's %dist tag, e.g.
-# cordial-0.12.1-1.fc44.x86_64.rpm) already carries the answer in the name a
+# stacked-0.12.1-1.fc44.x86_64.rpm) already carries the answer in the name a
 # real rpmbuild wrote, so parsing it here needs nothing this script does not
 # already have.
 echo "==> sorting ${#rpms[@]} package(s) by Fedora release"
@@ -165,7 +165,7 @@ else
     # the one release.yml built and release.yml's own cosign step already
     # signed on the release page, for no security this design does not
     # already get from signing repomd.xml. gpgcheck therefore stays 0 in
-    # packaging/cordial.repo permanently, not as a placeholder for later --
+    # packaging/stacked.repo permanently, not as a placeholder for later --
     # see that file's own comment.
     for d in "${!dirs_seen[@]}"; do
         gpg --batch --yes --local-user "$RPM_GPG_KEY_ID" \
@@ -179,7 +179,7 @@ else
     # apt's `signed-by=`, which wants the binary form) -- `pacman-key --add`
     # and `rpm --import` both read the armoured form directly, and it is
     # readable in a browser if anyone opens the URL out of curiosity.
-    gpg --batch --yes --armor --export "$RPM_GPG_KEY_ID" > "$outdir/RPM-GPG-KEY-cordial"
+    gpg --batch --yes --armor --export "$RPM_GPG_KEY_ID" > "$outdir/RPM-GPG-KEY-stacked"
 fi
 
 echo "==> built: $outdir"

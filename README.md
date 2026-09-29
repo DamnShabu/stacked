@@ -135,9 +135,11 @@ settings file is the same `~/.config/cordial/shell.json` as before. Profiles,
 sign-ins and FastFlags carry over from Cordial unchanged, because the data
 paths haven't moved.
 
-**Can I run it beside Cordial?** Yes. Stacked has its own application id,
-desktop entry and icon. The two share profiles, though, and a profile open in
-one is locked against the other.
+**Can I run it beside Cordial?** A source build in `~/.local/bin` can sit
+beside Cordial's Flatpak. It has its own application id, desktop entry and
+icon. Native packages can't be installed together, because both ship
+`cordial-run`. The two share profiles, and a profile open in one is locked
+against the other.
 
 **Is it a cheat or a mod injector?** No. There is no script execution, no
 hooking and no access to the Roblox process's memory. Those capabilities are

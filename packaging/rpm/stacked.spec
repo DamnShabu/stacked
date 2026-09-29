@@ -1,13 +1,13 @@
-# Cordial, for Fedora Copr.
+# Stacked, for Fedora Copr.
 #
-# Cordial vendors no Roblox code. Roblox publishes no Android binary of its own
+# Stacked vendors no Roblox code. Roblox publishes no Android binary of its own
 # -- its endpoint answers `supportsAndroidBinaries: false` -- so the engine
 # comes from a third-party mirror, signature-checked against Roblox's own
 # certificate, or from the copy Sober unpacked, or from an APK the user points
 # it at. That is said in the summary, in %%description and again in the
 # post-install note, because a package registry is where a false promise costs
 # most -- and this file made exactly that promise in the wrong direction until
-# 2026-08-28, telling users Cordial could not fetch a build when it has since
+# 2026-08-28, telling users Cordial could not fetch a build when it had since
 # v0.9.0.
 #
 # Build an SRPM with packaging/rpm/make-srpm.sh, which is what fills in the
@@ -31,7 +31,7 @@
 
 # The exact `git describe` string, passed to the build so the title bar agrees
 # with `rpm -q`. Without it the tarball has no .git, crates/cordial-shell/build.rs
-# falls back to the bare Cargo version, and the client calls itself "Cordial
+# falls back to the bare Cargo version, and the client called itself "Cordial
 # 0.6.0" while the package it came from is 0.6.0-1.108.20260822git9d9c980. It
 # also stops git walking up out of an unpacked tarball and stamping the tag of
 # whatever unrelated repository happens to sit above it, which is the same bug
@@ -40,7 +40,7 @@
 
 %global archivename %{name}-%{version}-%{snapinfo}
 
-Name:           cordial
+Name:           stacked
 Version:        0.6.0
 # The distance from the tag leads, so snapshots sort: 1.108.<date>git<hash>
 # then 1.112.<date>git<hash>. rpmvercmp compares 108 and 112 numerically.
@@ -50,7 +50,7 @@ Summary:        Run Roblox natively on Linux -- you supply the Roblox build, non
 # The workspace is GPL-3.0-or-later; the vendored subtrees that end up in the
 # binary carry their own notices, installed alongside it.
 License:        GPL-3.0-or-later AND MIT AND Apache-2.0
-URL:            https://github.com/luohoa97/cordial
+URL:            https://github.com/DamnShabu/stacked
 
 # Both produced by packaging/rpm/make-srpm.sh. Source0 carries the working tree
 # *including* third_party/mcpelauncher-linker (and its own bionic and core
@@ -125,9 +125,13 @@ Requires:       libGLESv2.so.2()(64bit)
 # no sound and nothing says so.
 Requires:       libpipewire-0.3.so.0()(64bit)
 Requires:       hicolor-icon-theme
+# Cordial's package installs %%{_bindir}/cordial-run and %%{_datadir}/cordial
+# too, because both names are still the code's, so the two cannot be installed
+# side by side as native packages. The Flatpaks can: their ids differ.
+Conflicts:      cordial
 
 # **No `deno` dependency, and that is not an oversight.** Plugins are Deno
-# programs (ADR-008) and Cordial bundles no runtime, so without `deno` on PATH
+# programs (ADR-008) and Stacked bundles no runtime, so without `deno` on PATH
 # every plugin fails to spawn. There is no `deno` package to require:
 # `dnf5 list deno` on Fedora 44 returns nothing, and Debian ships none either,
 # so naming one would make this package uninstallable -- strictly worse than
@@ -136,7 +140,7 @@ Requires:       hicolor-icon-theme
 # done yet; see docs/NEXT.md.
 
 
-# Roblox's own build, unpacked by Sober, is the first place Cordial looks.
+# Roblox's own build, unpacked by Sober, is the first place Stacked looks.
 # A suggestion rather than a dependency, because a user-supplied APK does just
 # as well and neither one comes from this package. Sober is a Flatpak and has
 # no RPM, so this cannot be a Recommends that resolves.
@@ -156,23 +160,25 @@ Requires:       hicolor-icon-theme
 %global sober_hint ~/.var/app/org.vinegarhq.Sober/data/sober/packages/%{sober_abi}/com.roblox.client/
 
 %description
-Cordial loads Roblox's official Android libroblox.so natively on Linux, for
+Stacked loads Roblox's official Android libroblox.so natively on Linux, for
 whichever architecture this package was built for (x86-64 or aarch64): a
 ported AOSP bionic linker, a bionic/glibc shim, libjnivm in place of Android's
 ART, and a framework layer that answers the calls the client makes into the
 platform. There is no emulation and no CPU translation -- this package can
-only load a Roblox build for its own architecture.
+only load a Roblox build for its own architecture. It is a fork of Cordial,
+started from the command line or the application list, and the only window it
+opens is the game's own.
 
-CORDIAL SHIPS NO ROBLOX BUILD. On first run it offers to fetch one and installs
-it only if Roblox's own signing certificate signed it. Roblox publishes no
+STACKED SHIPS NO ROBLOX BUILD. `stacked install` fetches one and installs it
+only if Roblox's own signing certificate signed it. Roblox publishes no
 Android binary of its own -- its own endpoint answers supportsAndroidBinaries:
 false -- so the build comes from a third-party mirror, from a copy Sober has
 already unpacked, or from an APK you supply yourself. A local copy is preferred
 when there is one, and gets the same signature check either way.
 
-Run it by typing `cordial`.
+Run it by typing `stacked`; `stacked help` lists the other commands.
 
-Cordial is early. You can sign in, load an experience, play with a keyboard and
+Stacked is early. You can sign in, load an experience, play with a keyboard and
 mouse, type into text fields and hear sound. Voice chat does not work, and on
 roughly one launch in three a signed-in client reaches the home screen and
 freezes; reopening usually works. The project's README says which claims were
@@ -217,43 +223,32 @@ export CORDIAL_GIT_SHA=$(printf %s %{describe} | sed "s/.*-g//")
 #
 # Both of them, side by side. launch.rs looks for the loader as the sibling of
 # current_exe and nowhere else -- there is no baked-in path and nothing to
-# configure -- so a shell installed without cordial-run beside it is a launcher
-# whose Launch button cannot find anything to launch.
-install -Dpm 0755 target/release/cordial-shell %{buildroot}%{_bindir}/cordial-shell
-# **`cordial` is the command; `cordial-shell` is the file.** Asked for on
-# 2026-08-28: nobody wants to type the second word. A symlink rather than a
-# rename so anything already invoking `cordial-shell` keeps working.
-# `cordial-run` deliberately gets no alias -- it is the loader the shell
-# launches and is not what anyone should run by hand. Note the doubled percent
-# signs above and below are not needed here, but a bare %%name in a comment is
-# expanded by rpm before the script runs, which has broken this file before.
-ln -sf cordial-shell %{buildroot}%{_bindir}/cordial
-install -Dpm 0755 target/release/cordial-run   %{buildroot}%{_bindir}/cordial-run
+# configure -- so `stacked` installed without cordial-run beside it is a
+# launcher with nothing to launch. `cordial-run` deliberately gets no alias --
+# it is the loader `stacked` starts and is not what anyone should run by hand.
+install -Dpm 0755 target/release/stacked     %{buildroot}%{_bindir}/stacked
+install -Dpm 0755 target/release/cordial-run %{buildroot}%{_bindir}/cordial-run
 
-# The square icons under packaging/icons/hicolor/. Both of them: Frostbite is the
-# twice-a-year name in crates/cordial-shell/src/branding.rs, and a missing one
-# is a blank icon in the task switcher on the one day nobody is watching for it.
-# A test in that file asserts both exist and are square.
-install -Dpm 0644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg \
-    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
-install -Dpm 0644 packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg \
-    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg
+# The square icon under packaging/icons/hicolor/. A test in
+# crates/cordial-shell/src/branding.rs asserts it exists and is square.
+install -Dpm 0644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
+    %{buildroot}%{_datadir}/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
 
 # The first-party plugins, read-only beside the binary. `system_plugin_root()`
 # derives this path from the running executable, so `%{_datadir}` is what it
 # finds -- and until the native packages existed it returned Flatpak's `/app`
-# unconditionally, which meant a deb or rpm user's settings window listed no
-# built-in plugins at all.
+# unconditionally, which meant a deb or rpm user had no built-in plugins at
+# all. The directory keeps Cordial's name because the code that reads it does.
 for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
     install -Dpm 0644 "$plugin/plugin.json" %{buildroot}%{_datadir}/cordial/plugins/$id/plugin.json
     install -Dpm 0644 "$plugin/main.ts"     %{buildroot}%{_datadir}/cordial/plugins/$id/main.ts
 done
-install -Dpm 0644 packaging/io.github.luohoa97.Cordial.desktop \
-    %{buildroot}%{_datadir}/applications/io.github.luohoa97.Cordial.desktop
-install -Dpm 0644 packaging/io.github.luohoa97.Cordial.metainfo.xml \
-    %{buildroot}%{_datadir}/metainfo/io.github.luohoa97.Cordial.metainfo.xml
+install -Dpm 0644 packaging/io.github.damnshabu.Stacked.desktop \
+    %{buildroot}%{_datadir}/applications/io.github.damnshabu.Stacked.desktop
+install -Dpm 0644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
+    %{buildroot}%{_datadir}/metainfo/io.github.damnshabu.Stacked.metainfo.xml
 
 # MIT requires its notice in "all copies or substantial portions" and
 # Apache-2.0 section 4(d) requires NOTICE to travel with derivative works. Both
@@ -263,11 +258,11 @@ install -Dpm 0644 third_party/mcpelauncher-linker/LICENSE           mcpelauncher
 install -Dpm 0644 third_party/mcpelauncher-linker/core/NOTICE       aosp-NOTICE.txt
 install -Dpm 0644 third_party/libjnivm/LICENSE                      libjnivm-MIT.txt
 # Apache-2.0 section 4(d): the NOTICE for mocktail-webview, the basis for
-# Cordial's own in-experience web window, has to travel with a binary
+# the in-experience web window, has to travel with a binary
 # distribution and not only with the source tree -- see NOTICE at the
 # repository root. Missing from this spec until the packaging pass that added
 # .deb, AppImage and a release Arch package noticed the same gap in the
-# Flatpak manifest and packaging/aur/cordial-git/PKGBUILD while giving the new
+# Flatpak manifest and packaging/aur/stacked-git/PKGBUILD while giving the new
 # formats a licence list to copy; all three are fixed in the same change.
 # NOTICE itself needs no install line: %%license below picks it up from the
 # build directory where %%autosetup already put it, the same way README.md
@@ -294,9 +289,9 @@ export CC=clang CXX=clang++
 # package was caught shipping a feature-less binary by it.
 readelf -d %{buildroot}%{_bindir}/cordial-run | grep -qi webkit
 
-desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.luohoa97.Cordial.desktop
+desktop-file-validate %{buildroot}%{_datadir}/applications/io.github.damnshabu.Stacked.desktop
 appstream-util validate-relax --nonet \
-    %{buildroot}%{_datadir}/metainfo/io.github.luohoa97.Cordial.metainfo.xml
+    %{buildroot}%{_datadir}/metainfo/io.github.damnshabu.Stacked.metainfo.xml
 
 # The same feature pair as %%build, and leaving it off is not a tidy-up:
 # `cargo test` with a different feature resolution rebuilds cordial-run and
@@ -344,13 +339,11 @@ appstream-util validate-relax --nonet \
 %license mocktail-webview-Apache-2.0.txt
 %{_datadir}/cordial/plugins/
 %doc README.md THIRD-PARTY-NOTICES.md
-%{_bindir}/cordial-shell
-%{_bindir}/cordial
+%{_bindir}/stacked
 %{_bindir}/cordial-run
-%{_datadir}/applications/io.github.luohoa97.Cordial.desktop
-%{_datadir}/metainfo/io.github.luohoa97.Cordial.metainfo.xml
-%{_datadir}/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg
-%{_datadir}/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg
+%{_datadir}/applications/io.github.damnshabu.Stacked.desktop
+%{_datadir}/metainfo/io.github.damnshabu.Stacked.metainfo.xml
+%{_datadir}/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
 
 %changelog
 * Sat Aug 22 2026 luohoa97 <luohoa97@users.noreply.github.com> - 0.6.0-1.108.20260822git9d9c980

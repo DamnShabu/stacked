@@ -1,4 +1,5 @@
-# Announce a published release in the Cordial Discord.
+# Announce a published release in the project's Discord, through whatever
+# webhook the DISCORD_WEBHOOK secret names.
 #
 # The gap this closes is the one CLAUDE.md already names: "a change that is not
 # in a release has not reached anybody", and a release nobody is told about is
@@ -41,7 +42,7 @@
 #
 # **That we build the event is also what lets us fit Discord's limits.** An
 # embed description is capped at 4096 characters and the whole embed at 6000.
-# Cordial's release notes are long on purpose -- they carry a what-is-broken
+# The release notes here are long on purpose -- they carry a what-is-broken
 # section -- and four of the last five were over the cap: v0.12.1 5,376,
 # v0.12.0 6,593, v0.11.0 9,657, v0.9.0 5,064. Discord answers an over-length
 # embed with a 400 and posts nothing, and the action logs the status code
@@ -266,9 +267,9 @@ jobs:
           GITHUB_EVENT: ${{ steps.event.outputs.event }}
         with:
           webhook: ${{ secrets.DISCORD_WEBHOOK }}
-          username: Cordial
+          username: Stacked
           color: '#5865F2'
-          footer: Cordial loads Roblox natively on Linux
+          footer: Stacked loads Roblox natively on Linux
           # Checked and warned about in the step above rather than read raw,
           # because the way this goes wrong is silent.
           mention: ${{ steps.mention.outputs.value }}

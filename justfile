@@ -166,7 +166,7 @@ test:
 # Build and test, the pre-pull-request gate
 check: build test
 
-# Start Cordial: just dev [--in host|toolbox|distrobox|nix] [--apk PATH] [--play]
+# Start Stacked: just dev [--in host|toolbox|distrobox|nix] [--apk PATH] [play args]
 dev *args:
     #!/usr/bin/env bash
     set -euo pipefail
@@ -185,11 +185,11 @@ dev *args:
             # `--apk` as its value — which it did, the first time this was written.
             --in)    env="${2:-}"; shift 2 ;;
             --in=*)  env="${1#*=}"; shift ;;
-            # Start playing straight away, so a harness or an agent gets a
-            # running client without a human pressing Roblox. Goes through the
-            # window's own `win.launch` action, which is the same thing the
-            # button does.
-            --play)  export CORDIAL_AUTOSTART=1; shift ;;
+            # Accepted and dropped. This used to set CORDIAL_AUTOSTART so the
+            # GTK launcher pressed its own Play button; `stacked play` always
+            # plays, nothing reads that variable any more, and harnesses and
+            # agent briefs that still pass `--play` should keep working.
+            --play)  shift ;;
             *)       extra+=("$1"); shift ;;
         esac
     done
@@ -207,13 +207,13 @@ dev *args:
       nix)       bindir=target-nix/release ;;
       *)         echo "usage: just dev [--in host|toolbox|distrobox|nix] [--apk PATH]" >&2; exit 1 ;;
     esac
-    if [ ! -x "$bindir/cordial-shell" ]; then
-        echo "no cordial-shell in $bindir — did 'just build $env' succeed?" >&2
+    if [ ! -x "$bindir/stacked" ]; then
+        echo "no stacked in $bindir — did 'just build $env' succeed?" >&2
         exit 1
     fi
     # Deliberately no check that the APK exists and no advice about how to get
     # one. Finding a build, and explaining what to do when there is not one, is
-    # the shell's job — it is what the user actually sees, and a second copy of
+    # the launcher's job — it is what the user actually sees, and a second copy of
     # that message here would drift out of step with it.
     if [ -n "$apk" ]; then
         export CORDIAL_APK="$apk"
@@ -225,7 +225,7 @@ dev *args:
     # client -- which is exactly the friction it was built to remove. Set
     # CORDIAL_DEV_CONTROL=0 to run without it.
     #
-    # Exported rather than passed as a flag because the shell launches the
+    # Exported rather than passed as a flag because `stacked` launches the
     # client as a child and the child inherits the environment; `launch.rs`
     # adds to that environment rather than clearing it.
     export CORDIAL_DEV_CONTROL="${CORDIAL_DEV_CONTROL:-1}"
@@ -247,7 +247,9 @@ dev *args:
     # packaging scripts would install, from the files being edited.
     export CORDIAL_SYSTEM_PLUGIN_DIR="${CORDIAL_SYSTEM_PLUGIN_DIR:-$PWD/plugins}"
     echo "built-in plugins from $CORDIAL_SYSTEM_PLUGIN_DIR" >&2
-    exec "./$bindir/cordial-shell" ${extra+"${extra[@]}"}
+    # Anything not consumed above goes to `stacked play`: `--profile NAME`,
+    # `--run SECS`, or a roblox-player: link.
+    exec "./$bindir/stacked" play ${extra+"${extra[@]}"}
 
 # Run the engine directly: just client [--in host|distrobox|nix] [--apk PATH] [--run SECS]
 client *args:
@@ -294,7 +296,7 @@ client *args:
     # building its exact name, so this recipe never has to know that Play
     # spells the same ABI with an underscore there instead of a hyphen (see
     # `cordial_update::install::SPLIT_APK`'s own comment for that trap --
-    # `cordial-shell/src/install.rs` got it wrong once by rebuilding that
+    # `crates/cordial-shell/src/install.rs` got it wrong once by rebuilding that
     # filename from the hyphenated form instead of using that constant).
     case "$(uname -m)" in
         x86_64)  abi_dir=x86_64 ;;
@@ -390,20 +392,19 @@ icons:
     #!/usr/bin/env bash
     set -euo pipefail
     # A `just dev` build installs nothing, so its window borrows whatever icon
-    # the *installed* Flatpak exported -- which is why a dev build titled
-    # Frostbite still wore the Cordial mango, and why that looked like a code
-    # bug rather than a missing file.
+    # the *installed* Flatpak exported -- which is how a dev build under
+    # Cordial once wore the wrong icon, and why that looked like a code bug
+    # rather than a missing file.
     #
     # On Wayland the compositor resolves a window's icon by name through the
-    # icon theme, so the fix is to have the names on disk. Both go in, because
-    # a name that resolves to nothing gives a blank window in the switcher.
+    # icon theme, so the fix is to have the name on disk; a name that resolves
+    # to nothing gives a blank window in the switcher.
     dest="${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/apps"
     mkdir -p "$dest"
-    cp packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg "$dest/"
-    cp packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg "$dest/"
+    cp packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg "$dest/"
     # Harmless if absent, and GTK re-reads scalable icons without it anyway.
     gtk-update-icon-cache -q -t -f "$(dirname "$(dirname "$dest")")" 2>/dev/null || true
-    echo "installed both icons into $dest"
+    echo "installed the icon into $dest"
 
 # Attach the development MCP to whichever running client has a control socket
 mcp *args:

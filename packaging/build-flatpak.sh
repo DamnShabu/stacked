@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
-# Build Cordial as a Flatpak.
+# Build Stacked as a Flatpak.
 #
 # Flatpak is the primary distribution target (spec §11). Building one on every
 # change is worth the minute it costs: it is the only check that the runtime's
 # dependencies are actually declared rather than merely present on the machine
-# that happens to be building it. A Cordial that runs from `cargo build` but not
-# from a Flatpak is a Cordial nobody else can install.
+# that happens to be building it. A Stacked that runs from `cargo build` but not
+# from a Flatpak is a Stacked nobody else can install.
 #
 # Usage:
 #     packaging/build-flatpak.sh [--install]
@@ -14,7 +14,7 @@ set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 root="$(dirname "$here")"
-manifest="$here/io.github.luohoa97.Cordial.yml"
+manifest="$here/io.github.damnshabu.Stacked.yml"
 builddir="$root/target/flatpak"
 repo="$root/target/flatpak-repo"
 
@@ -81,12 +81,12 @@ echo
 echo "built into $repo"
 
 # A single-file bundle, which is what you hand someone who wants to try it.
-flatpak build-bundle "$repo" "$root/target/cordial.flatpak" io.github.luohoa97.Cordial
-echo "bundle: $root/target/cordial.flatpak"
+flatpak build-bundle "$repo" "$root/target/stacked.flatpak" io.github.damnshabu.Stacked
+echo "bundle: $root/target/stacked.flatpak"
 
 if [[ "${1:-}" == "--install" ]]; then
-    flatpak install --user --noninteractive --or-update --reinstall "$repo" io.github.luohoa97.Cordial
-    echo "installed. run with: flatpak run io.github.luohoa97.Cordial"
+    flatpak install --user --noninteractive --or-update --reinstall "$repo" io.github.damnshabu.Stacked
+    echo "installed. run with: flatpak run io.github.damnshabu.Stacked"
 else
     echo "install with: packaging/build-flatpak.sh --install"
 fi

@@ -1,19 +1,19 @@
-# Maintainer: luohoa97 <luohoa97@users.noreply.github.com>
+# Maintainer: DamnShabu <damnshabu@users.noreply.github.com>
 #
-# Cordial vendors no Roblox code, and fetches the engine rather than shipping
-# it -- signature-checked, from a mirror, since v0.9.0. The engine is Roblox's
+# Stacked vendors no Roblox code, and fetches the engine rather than shipping
+# it -- signature-checked, from a mirror, with `stacked install`. The engine is Roblox's
 # official Android x86-64 build, which comes from Google Play and which the
 # user supplies -- see the pkgdesc, the .install note and README section 1.
-# Every other line here follows from packaging/io.github.luohoa97.Cordial.yml,
+# Every other line here follows from packaging/io.github.damnshabu.Stacked.yml,
 # which is the manifest that demonstrably builds.
 
-_pkgname=cordial
-pkgname=cordial-git
+_pkgname=stacked
+pkgname=stacked-git
 pkgver=0.6.0.r108.g9d9c980
 pkgrel=1
-pkgdesc="Roblox's official Android build, run natively on Linux -- Cordial ships no Roblox code and fetches a signature-verified one"
+pkgdesc="Roblox's official Android build, run natively on Linux -- Stacked ships no Roblox code and fetches a signature-verified one"
 arch=('x86_64')
-url="https://github.com/luohoa97/cordial"
+url="https://github.com/DamnShabu/stacked"
 license=('GPL-3.0-or-later')
 depends=(
   # Linked, via the -sys crates' pkg-config probes.
@@ -53,7 +53,7 @@ depends=(
   # there is no sound and nothing says so.
   'pipewire'
   'hicolor-icon-theme'
-  # Plugins are Deno programs (ADR-008) and Cordial bundles no runtime -- it
+  # Plugins are Deno programs (ADR-008) and Stacked bundles no runtime -- it
   # execs `deno` off PATH. Without it every plugin fails to spawn: the system
   # installs, lists in Settings, grants permissions and cannot run a line,
   # which is what an Arch user reported on 2026-09-02.
@@ -86,25 +86,28 @@ makedepends=(
 )
 optdepends=(
   # `bwrap` is genuinely optional: sandbox.rs only ever *subtracts* from what
-  # Cordial already holds, so without it a plugin still runs with zero Deno
+  # Stacked already holds, so without it a plugin still runs with zero Deno
   # permissions and the broker still mediates every effect. Recommended, not
   # required.
   'bubblewrap: kernel sandbox under the plugin runtime'
-  # ADR-011 makes Wayland the backend Cordial targets. The X11 path still
+  # ADR-011 makes Wayland the backend Stacked targets. The X11 path still
   # starts and window.rs dlopens these for it; CORDIAL_MONITOR needs Xinerama.
   'libx11: X11 session fallback'
   'libxinerama: CORDIAL_MONITOR monitor selection under X11'
-  # Roblox's own Android build, unpacked by Sober, is the copy Cordial looks
+  # Roblox's own Android build, unpacked by Sober, is the copy Stacked looks
   # for first. It is a suggestion and not a dependency because a user-supplied
   # APK works just as well and neither one comes from this package.
-  'sober: a Roblox build for Cordial to run (Cordial ships none)'
+  'sober: a Roblox build for Stacked to run (Stacked ships none)'
 )
 provides=("$_pkgname")
-conflicts=("$_pkgname" 'cordial-bin')
+# Cordial's packages install /usr/bin/cordial-run and /usr/share/cordial too,
+# because both names are still the code's, so this cannot sit beside any of
+# them. The Flatpaks can coexist: their ids differ.
+conflicts=("$_pkgname" 'cordial' 'cordial-git' 'cordial-bin')
 install="$pkgname.install"
 options=('!lto')
 source=(
-  "$_pkgname::git+https://github.com/luohoa97/cordial.git"
+  "$_pkgname::git+https://github.com/DamnShabu/stacked.git"
   # The two submodules, and mcpelauncher-linker's own two, declared here rather
   # than fetched by a `git submodule update --init --recursive` in prepare().
   # Same reasoning as the Flatpak manifest's `git` sources: what the build
@@ -211,7 +214,7 @@ check() {
   #
   # So it needs `libgvfsdbus.so` in /usr/lib/gio/modules *and* a session bus to
   # talk to. A clean chroot has neither, and neither is a dependency of
-  # Cordial, so gating a package build on it would make the package unbuildable
+  # Stacked, so gating a package build on it would make the package unbuildable
   # for a reason that has nothing to do with the package. Reported upstream
   # rather than papered over: the comment in deep_link.rs attributes the
   # reshaping to GIO when it belongs to gvfs.
@@ -237,14 +240,15 @@ package() {
 
   # Both binaries, side by side. launch.rs looks for the loader as the sibling
   # of current_exe and nowhere else -- there is no baked-in path and nothing to
-  # configure -- so a shell installed without cordial-run beside it is a
-  # launcher whose Launch button cannot find anything to launch.
-  install -Dm755 target/release/cordial-shell "$pkgdir/usr/bin/cordial-shell"
-  # See packaging/aur/cordial/PKGBUILD: `cordial` is the command and
-  # `cordial-shell` is the file. cordial-run gets no alias on purpose.
-  ln -sf cordial-shell "$pkgdir/usr/bin/cordial"
-  # First-party plugins, read-only beside the binary.
-  # Until the native packages existed nothing installed these anywhere, so the settings window listed no built-in plugins for anybody -- including Flatpak users, whose /app/share/cordial/plugins the code has looked in from the start and which has never existed.
+  # configure -- so `stacked` installed without cordial-run beside it is a
+  # launcher with nothing to launch. `cordial-run` deliberately gets no alias:
+  # it is the loader `stacked` starts and is not what anyone should run by hand.
+  install -Dm755 target/release/stacked "$pkgdir/usr/bin/stacked"
+  # First-party plugins, read-only beside the binary. Until the native
+  # packages existed nothing installed these anywhere, so no built-in plugin
+  # was listed for anybody -- including Flatpak users, whose
+  # /app/share/cordial/plugins the code has looked in from the start and which
+  # had never existed. The path keeps Cordial's name because the code does.
   for plugin in plugins/*/; do
     id=$(basename "$plugin")
     [ -f "$plugin/plugin.json" ] || continue
@@ -254,23 +258,19 @@ package() {
 
   install -Dm755 target/release/cordial-run "$pkgdir/usr/bin/cordial-run"
 
-  # The square icons under packaging/icons/hicolor/. Both of them: Frostbite is
-  # the twice-a-year name in crates/cordial-shell/src/branding.rs, and a
-  # missing one is a blank icon in the task switcher on the one day nobody is
-  # watching for it. A test in that file asserts both exist and are square.
+  # The square icon under packaging/icons/hicolor/. A test in
+  # crates/cordial-shell/src/branding.rs asserts it exists and is square.
   local _icons="usr/share/icons/hicolor/scalable/apps"
-  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.svg" \
-    "$pkgdir/$_icons/io.github.luohoa97.Cordial.svg"
-  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.luohoa97.Cordial.Frostbite.svg" \
-    "$pkgdir/$_icons/io.github.luohoa97.Cordial.Frostbite.svg"
+  install -Dm644 "packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg" \
+    "$pkgdir/$_icons/io.github.damnshabu.Stacked.svg"
 
-  # Exec=cordial-shell %u, and the %u is not decorative: the entry registers
+  # Exec=stacked %u, and the %u is not decorative: the entry registers
   # x-scheme-handler/roblox-player, which is how a Play button on the website
   # reaches a client at all.
-  install -Dm644 "packaging/io.github.luohoa97.Cordial.desktop" \
-    "$pkgdir/usr/share/applications/io.github.luohoa97.Cordial.desktop"
-  install -Dm644 "packaging/io.github.luohoa97.Cordial.metainfo.xml" \
-    "$pkgdir/usr/share/metainfo/io.github.luohoa97.Cordial.metainfo.xml"
+  install -Dm644 "packaging/io.github.damnshabu.Stacked.desktop" \
+    "$pkgdir/usr/share/applications/io.github.damnshabu.Stacked.desktop"
+  install -Dm644 "packaging/io.github.damnshabu.Stacked.metainfo.xml" \
+    "$pkgdir/usr/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
 
   # MIT requires its notice in "all copies or substantial portions" and
   # Apache-2.0 section 4(d) requires NOTICE to travel with derivative works.
@@ -291,8 +291,8 @@ package() {
   # is Apache-2.0 material -- mocktail's implementation of Roblox's
   # in-experience web window, taken as the basis for Cordial's own -- and
   # NOTICE at the repository root is the section 4(d) attribution for it.
-  # Found while giving packaging/aur/cordial/PKGBUILD a licence list to copy
-  # from this one; the Flatpak manifest and packaging/rpm/cordial.spec had the
+  # Found while giving packaging/aur/stacked/PKGBUILD a licence list to copy
+  # from this one; the Flatpak manifest and packaging/rpm/stacked.spec had the
   # same gap and are fixed alongside this.
   install -Dm644 NOTICE "$pkgdir/usr/share/licenses/$pkgname/NOTICE"
   install -Dm644 third_party/mocktail-webview/LICENSE \

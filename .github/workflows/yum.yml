@@ -1,4 +1,4 @@
-# Build Cordial's own dnf/yum repository and hand it to flatpak.yml to publish.
+# Build Stacked's own dnf/yum repository and hand it to flatpak.yml to publish.
 #
 # The dnf analogue of apt.yml, kept as a separate file for exactly the same
 # reason that one gives for not folding into flatpak.yml or release.yml: a
@@ -13,7 +13,7 @@
 # registry.fedoraproject.org/fedora:44 -- see packaging/rpm/build-rpm.sh's
 # own header for why that specific container. This workflow triggers off
 # that job finishing and downloads what it already built rather than
-# compiling Cordial a second time on every push.
+# compiling Stacked a second time on every push.
 #
 # Why this file does not deploy to Pages itself: the same reason apt.yml
 # does not -- GitHub Pages, published through actions/deploy-pages, is one
@@ -28,7 +28,7 @@
 #
 # Nothing here fetches, embeds or references any Roblox material -- see
 # AGENTS.md, "Permanently out of scope". This workflow's job is entirely
-# about .rpm files Cordial already built of its own source.
+# about .rpm files Stacked already built of its own source.
 
 name: RPM repository
 
@@ -174,7 +174,7 @@ jobs:
         # `merge-multiple` rather than a single fixed `name`.
         # packaging/rpm/build-repo.sh already sorts by the arch it reads out
         # of each .rpm's own filename (rpmbuild names them, e.g.
-        # cordial-0.17.0-1.fc44.aarch64.rpm), so flattening both artifacts'
+        # stacked-0.17.0-1.fc44.aarch64.rpm), so flattening both artifacts'
         # files into one dist/rpm directory needs no further change there.
         if: steps.gpg.outputs.signing == 'true'
         uses: actions/download-artifact@v4

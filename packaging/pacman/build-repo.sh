@@ -2,9 +2,9 @@
 # Build a signed pacman repository database from one or more already-built
 # .pkg.tar.zst files.
 #
-# This is Cordial's own repository -- the analogue of packaging/apt/build-repo.sh
+# This is Stacked's own repository -- the analogue of packaging/apt/build-repo.sh
 # and packaging/rpm/build-repo.sh for `pacman -S` rather than `apt`/`dnf`
-# install. It is not packaging/aur/cordial/PKGBUILD's concern and does not
+# install. It is not packaging/aur/stacked/PKGBUILD's concern and does not
 # touch it: that directory builds the package makepkg produces (release.yml's
 # `arch` job does that, and syncs the PKGBUILD to a separate packaging
 # repository for AUR-shaped consumption); this script starts after that
@@ -35,7 +35,7 @@
 # room on disk to gain one. .github/workflows/pacman.yml runs this inside
 # archlinux:base-devel specifically so this gets exercised for real the first
 # time it runs there, the same way release.yml's own `arch` job already
-# builds packaging/aur/cordial/PKGBUILD in that image rather than trying to
+# builds packaging/aur/stacked/PKGBUILD in that image rather than trying to
 # cross-build Arch packages anywhere else; if this script is wrong, that is
 # where it will show, not here.
 set -euo pipefail
@@ -62,7 +62,7 @@ repo=$(cd "$here/../.." && pwd)
 
 # Fixed rather than a flag, matching packaging/apt/build-repo.sh's ARCH: this
 # repository ships one architecture today. Widen the day a second one exists.
-DBNAME=cordial
+DBNAME=stacked
 ARCH=x86_64
 
 outdir="$repo/dist/pacman-repo"
@@ -140,8 +140,8 @@ if [ "$allow_unsigned" -eq 1 ]; then
     ( cd "$destdir" && repo-add "$dbfile" ./*.pkg.tar.zst )
 else
     echo "==> repo-add -s -k $ARCH_GPG_KEY_ID"
-    # -s signs the resulting database (both cordial.db.tar.gz and
-    # cordial.files.tar.gz get a detached .sig alongside them); -k pins which
+    # -s signs the resulting database (both stacked.db.tar.gz and
+    # stacked.files.tar.gz get a detached .sig alongside them); -k pins which
     # secret key repo-add's own gpg call signs with, the same reason
     # packaging/apt/build-repo.sh's gpg invocations always pass
     # --local-user rather than relying on a homedir default. **Individual
@@ -151,16 +151,16 @@ else
     # --addsign, package-level signing does not actually conflict with
     # cosign's release-page signature covering the same bytes. It is left
     # out anyway, for the same reason gpgcheck=0 stays permanent in
-    # packaging/cordial.repo: this design signs the index once
-    # (cordial.db.tar.gz) rather than every artefact it lists, the same
+    # packaging/stacked.repo: this design signs the index once
+    # (stacked.db.tar.gz) rather than every artefact it lists, the same
     # shape apt's Release and dnf's repomd.xml already take, so pacman.conf's
     # SigLevel only has to trust the database, never the package.
     ( cd "$destdir" && repo-add -s -k "$ARCH_GPG_KEY_ID" "$dbfile" ./*.pkg.tar.zst )
 
     # The public half, for a user's pacman-key. Armoured, matching
-    # packaging/rpm/build-repo.sh's RPM-GPG-KEY-cordial rather than apt's
+    # packaging/rpm/build-repo.sh's RPM-GPG-KEY-stacked rather than apt's
     # binary export: `pacman-key --add` reads the armoured form directly.
-    gpg --batch --yes --armor --export "$ARCH_GPG_KEY_ID" > "$outdir/cordial-archive-keyring.asc"
+    gpg --batch --yes --armor --export "$ARCH_GPG_KEY_ID" > "$outdir/stacked-archive-keyring.asc"
 fi
 
 echo "==> built: $outdir"

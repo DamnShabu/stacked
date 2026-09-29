@@ -1,17 +1,17 @@
 name: Roblox updated and something broke
-description: A new Roblox build fails to load, or needs symbols Cordial does not provide
+description: A new Roblox build fails to load, or needs symbols Stacked does not provide
 body:
   - type: markdown
     attributes:
       value: |
-        Roblox ships new builds constantly and Cordial tracks a moving target. This is expected breakage, not a defect report — it is the most useful routine contribution anyone can make.
+        Roblox ships new builds constantly and Stacked tracks a moving target. This is expected breakage, not a defect report — it is the most useful routine contribution anyone can make.
 
   - type: input
     id: build-number
     attributes:
       label: Roblox build number
       description: |
-        Required, and the whole point of this form — the first thing anyone needs to act on this. Find it in the **`Roblox` line of the diagnostics block below**, but only if Cordial fetched this build itself; for an APK obtained elsewhere it says `unknown (an APK Cordial did not fetch records no version)`. It is also in **Roblox's own log filename**, regardless of where the APK came from: `<files>/appData/logs/<version>_<timestamp>_Player_*.log`.
+        Required, and the whole point of this form — the first thing anyone needs to act on this. Find it in the **`Roblox` line of the diagnostics block below**, which reads it off the extracted library wherever the APK came from and says `unknown` only when there is no extracted library to read. It is also in **Roblox's own log filename**, regardless of where the APK came from: `<files>/appData/logs/<version>_<timestamp>_Player_*.log`.
       placeholder: e.g. 2.736.1408
     validations:
       required: true
@@ -20,7 +20,7 @@ body:
     id: apk-source
     attributes:
       label: Where you got the APK
-      description: Cordial fetched it itself, Sober's cache, a manual download, or somewhere else.
+      description: Stacked fetched it itself, Sober's cache, a manual download, or somewhere else.
     validations:
       required: false
 
@@ -29,11 +29,12 @@ body:
     attributes:
       label: Diagnostics
       description: |
-        Required. Get it from the **Copy diagnostics** button at **Settings → Report a Problem**, or from a terminal — `cordial --diagnostics` (.deb/.rpm/Arch), `flatpak run io.github.luohoa97.Cordial --diagnostics` (Flatpak), `./Cordial-*.AppImage --diagnostics` (AppImage), or `cordial-shell --diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
+        Required. Run `stacked diagnostics` in a terminal (.deb/.rpm/Arch), `flatpak run io.github.damnshabu.Stacked diagnostics` (Flatpak), `./Stacked-*.AppImage diagnostics` (AppImage), or `target/release/stacked diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
 
-        Six rows, looking like this:
+        Seven rows, looking like this:
         ```
-        Cordial   0.11.0 (0fdbb4425)
+        Stacked   0.11.0 (0fdbb4425)
+        Licence   GPL-3.0-or-later
         Install   rpm
         Roblox    2.736.1408 (fetched by Cordial)
         System    Linux host 7.1.8-200.fc44.x86_64 ... x86_64 GNU/Linux
@@ -43,7 +44,7 @@ body:
 
         It carries your hostname and your distribution's name, and no account name, session token, or profile name. You are about to paste this in public — edit the hostname out first if you would rather it not travel.
       render: text
-      placeholder: Paste the output of `cordial --diagnostics` here.
+      placeholder: Paste the output of `stacked diagnostics` here.
     validations:
       required: true
 
@@ -64,7 +65,7 @@ body:
         === stubs called: N distinct of TOTAL ===
         ```
 
-        A **called stub** — it loaded, but the engine reached for something Cordial answers with nothing. Paste the names. TOTAL is however many stubs this build compiles in and grows over time, so it will not match this example.
+        A **called stub** — it loaded, but the engine reached for something Stacked answers with nothing. Paste the names. TOTAL is however many stubs this build compiles in and grows over time, so it will not match this example.
 
   - type: textarea
     id: failure

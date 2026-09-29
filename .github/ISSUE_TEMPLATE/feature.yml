@@ -1,5 +1,5 @@
 name: Feature or capability
-description: Something Cordial should be able to do, or something a plugin should be able to ask for
+description: Something Stacked should be able to do, or something a plugin should be able to ask for
 labels:
   - enhancement
 body:
@@ -16,11 +16,12 @@ body:
     attributes:
       label: Diagnostics
       description: |
-        Required. Get it from the **Copy diagnostics** button at **Settings → Report a Problem**, or from a terminal — `cordial --diagnostics` (.deb/.rpm/Arch), `flatpak run io.github.luohoa97.Cordial --diagnostics` (Flatpak), `./Cordial-*.AppImage --diagnostics` (AppImage), or `cordial-shell --diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
+        Required. Run `stacked diagnostics` in a terminal (.deb/.rpm/Arch), `flatpak run io.github.damnshabu.Stacked diagnostics` (Flatpak), `./Stacked-*.AppImage diagnostics` (AppImage), or `target/release/stacked diagnostics` (built from source). It works even when the client cannot start at all — a missing library, a GTK too old, no display — because it is answered before anything else in the process runs, which is exactly the report that most needs it.
 
-        Six rows, looking like this:
+        Seven rows, looking like this:
         ```
-        Cordial   0.11.0 (0fdbb4425)
+        Stacked   0.11.0 (0fdbb4425)
+        Licence   GPL-3.0-or-later
         Install   rpm
         Roblox    2.736.1408 (fetched by Cordial)
         System    Linux host 7.1.8-200.fc44.x86_64 ... x86_64 GNU/Linux
@@ -30,7 +31,7 @@ body:
 
         It carries your hostname and your distribution's name, and no account name, session token, or profile name. You are about to paste this in public — edit the hostname out first if you would rather it not travel.
       render: text
-      placeholder: Paste the output of `cordial --diagnostics` here.
+      placeholder: Paste the output of `stacked diagnostics` here.
     validations:
       required: true
 
@@ -39,11 +40,11 @@ body:
     attributes:
       label: Whose job is it
       description: |
-        Cordial is deliberately small, and most features belong outside it. If you are unsure, pick "Not sure" — getting this wrong is cheap to correct now and expensive later.
+        Stacked is deliberately small, and most features belong outside it. If you are unsure, pick "Not sure" — getting this wrong is cheap to correct now and expensive later.
       options:
         - "A plugin — it uses capabilities that already exist"
-        - "A plugin, plus a new brokered capability — Cordial has to expose an effect first"
-        - "The client itself — it is about loading, rendering, input or the shell"
+        - "A plugin, plus a new brokered capability — Stacked has to expose an effect first"
+        - "The client itself — it is about loading, rendering, input or the launcher"
         - "Not sure"
     validations:
       required: true
@@ -53,7 +54,7 @@ body:
     attributes:
       label: If it needs a new capability, what is the narrowest effect that does the job
       description: |
-        Cordial brokers effects and never hands over the resource behind them ([ADR-007](../../docs/adr/ADR-007-host-resources-are-brokered.md)). `presence.set` takes a presence payload; Cordial owns the Discord socket. Plugins get no socket, no D-Bus connection, no file descriptor.
+        Stacked brokers effects and never hands over the resource behind them ([ADR-007](../../docs/adr/ADR-007-host-resources-are-brokered.md)). `presence.set` takes a presence payload; Stacked owns the Discord socket. Plugins get no socket, no D-Bus connection, no file descriptor.
 
         Answer with the narrowest effect that does the job — not what access would let a plugin arrange it itself. A good broker is a payload type and an effect, and adding one is a small change. If what you are describing needs a design document, that is usually a sign the capability is too broad and wants splitting. Leave this blank if the feature is not a new capability.
     validations:
