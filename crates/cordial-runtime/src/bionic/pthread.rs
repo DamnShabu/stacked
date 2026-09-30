@@ -1514,12 +1514,21 @@ mod tests {
         // SAFETY: `thread` came from the `cordial_pthread_create` call above.
         assert_eq!(unsafe { pthread_join(thread, std::ptr::null_mut()) }, 0);
 
-        assert_eq!(
-            SEEN_STACK.load(Ordering::SeqCst) as usize,
-            REQUESTED_STACK,
-            "the new thread must see the stack size that was set on the attr \
-             it was created with, round-tripped through pthread_create and \
-             pthread_getattr_np"
+        // Not an exact match. glibc hands a new thread any cached stack from an
+        // exited thread that is at least the requested size and at most four
+        // times it, and `pthread_getattr_np` reports the stack it got. libtest's
+        // own 2 MiB worker threads leave exactly such a stack behind, so the
+        // aarch64 .rpm build read back 2097152 here for a 1 MiB request and
+        // failed. What the attr translation must show is that the request
+        // reached glibc at all: an attr it never saw gets the rlimit default
+        // (8 MiB on every builder), which is outside this range.
+        let seen = SEEN_STACK.load(Ordering::SeqCst) as usize;
+        const GUARD_SLACK: usize = 64 << 10;
+        assert!(
+            (REQUESTED_STACK..=4 * REQUESTED_STACK + GUARD_SLACK).contains(&seen),
+            "the new thread must get a stack glibc chose for the size set on \
+             the attr it was created with, round-tripped through \
+             pthread_create and pthread_getattr_np; saw {seen}"
         );
         assert_eq!(attr_destroy(attr), 0);
     }
