@@ -145,6 +145,34 @@ If the intersection leaves nothing, the plugin is not restarted at all — the
 same `not started` invariant as an ordinary launch, applied to an update
 whose new manifest happens to ask for less than the profile ever granted.
 
+## A plugin that failed to start is remembered, not retried every tick
+
+`diff` reports `Start` for every wanted plugin that is not running, and a
+plugin whose spawn failed is not running. The first version therefore retried
+each failed plugin once a second for the whole session: with no Deno on the
+machine, three plugins produced about nine log lines a second, each attempt
+certain to fail as the last had. Found in a Flatpak client mid-game.
+
+A failed start is now recorded (`Shared::blocked`, `reconcile::Blocked`)
+against the plugin's fingerprint and grant, with a reason that decides when to
+try again. No interpreter: retried when one is found at any of the paths
+`sandbox::interpreter_present` looks in, checked once per tick and only while
+something is waiting. An unusable `entry`: retried only when the plugin's files
+or grant change. Any other spawn error: retried with a doubling wait, two
+seconds up to about a minute. Plugins waiting for Deno are named in one log
+line, not one each, and that line and the health entry Settings shows no longer
+say to restart, because installing Deno is picked up by the next tick
+(`plugin_host` tests drive `reconcile_tick_with` with a runtime that is absent
+and then present).
+
+The same investigation found the message was also wrong on the machine that
+reported it. Inside the Flatpak the sandbox is always `Sandbox::None`, whose
+command ran a bare `deno` resolved against `PATH`, while the check before it
+also accepts Cordial's own downloaded copy. Deno 2.9.6 was in the data
+directory, `interpreter_present` said yes, the spawn said ENOENT, and that was
+reported as "Deno is not installed". The unconfined command now runs the path
+that was found.
+
 ## What is deliberately out of scope
 
 **Asset overlays and a plugin's own `flags.json` do not hot-swap.**

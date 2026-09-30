@@ -362,6 +362,17 @@ pub fn available() -> Sandbox {
 /// `manifest::unpacked_dirs`. An installed plugin does not change under a
 /// running client, so watching one is a thread doing nothing.
 pub fn command(sandbox: Sandbox, entry: &Path, reload: bool) -> Command {
+    command_with(sandbox, entry, reload, interpreter())
+}
+
+/// [`command`] with the interpreter's location supplied rather than looked
+/// up, so a test can say where Deno is without editing the process's `PATH`.
+fn command_with(
+    sandbox: Sandbox,
+    entry: &Path,
+    reload: bool,
+    interpreter: Option<(PathBuf, Vec<PathBuf>)>,
+) -> Command {
     let mut deno_args: Vec<&str> = vec!["run", "--no-prompt", "--quiet"];
     if reload {
         deno_args.push("--watch");
@@ -382,7 +393,7 @@ pub fn command(sandbox: Sandbox, entry: &Path, reload: bool) -> Command {
                 .args(["--tmpfs", "/tmp"]);
 
             // Wherever the interpreter actually is — see `interpreter`.
-            let deno = match interpreter() {
+            let deno = match interpreter {
                 Some((real, binds)) => {
                     for b in binds {
                         let p = b.display().to_string();
@@ -427,7 +438,18 @@ pub fn command(sandbox: Sandbox, entry: &Path, reload: bool) -> Command {
             c
         }
         Sandbox::None => {
-            let mut c = Command::new("deno");
+            // **The path `interpreter_present` found, not the bare name.**
+            // This was `Command::new("deno")`, resolved against `PATH` at
+            // spawn time, while the check before it also accepts Linuxbrew,
+            // `~/.deno` and Cordial's own downloaded copy. Inside the
+            // Flatpak -- always `Sandbox::None`, and where the downloaded
+            // copy is the only Deno there can be -- the check said yes and the
+            // spawn said ENOENT, which was then reported as "Deno is not
+            // installed" for a Deno sitting in the data directory.
+            let mut c = match interpreter {
+                Some((real, _)) => Command::new(real),
+                None => Command::new("deno"),
+            };
             c.args(&deno_args).arg(entry);
             c
         }
@@ -525,6 +547,25 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
     use super::*;
+
+    /// The unconfined command must run the Deno that was found, wherever it
+    /// is, and not whatever `PATH` happens to name. Off-`PATH` installs are
+    /// the Flatpak's only kind.
+    #[test]
+    fn the_unconfined_command_runs_the_interpreter_that_was_found() {
+        let found = PathBuf::from("/data/cordial/deno/2.9.6/deno");
+        let c = command_with(
+            Sandbox::None,
+            Path::new("/plugins/x/main.ts"),
+            false,
+            Some((found.clone(), vec![])),
+        );
+        assert_eq!(Path::new(c.get_program()), found.as_path());
+        // With nothing found it still names `deno`, so the failure is the
+        // ordinary, reportable one.
+        let c = command_with(Sandbox::None, Path::new("/plugins/x/main.ts"), false, None);
+        assert_eq!(c.get_program().to_string_lossy(), "deno");
+    }
 
     #[test]
     fn every_layer_says_what_is_still_true_not_only_what_is_missing() {

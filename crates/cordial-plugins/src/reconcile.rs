@@ -322,6 +322,111 @@ pub fn intersect_for_restart(
     profile_granted.intersection(new_manifest_requested).cloned().collect()
 }
 
+/// Why a plugin this profile wants running could not be started, and so must
+/// not be started again until something changes.
+///
+/// **The bug this exists for.** [`diff`] says `Start` for any wanted plugin
+/// that is not running. A plugin whose spawn *failed* is not running, so it
+/// was `Start` again one tick later, forever: three plugins on a machine with
+/// no interpreter logged nine lines a second for a whole play session,
+/// re-reading three manifests and re-failing three spawns each time, and every
+/// one of those retries was certain to fail the same way. "Not running" and
+/// "wanted" are not enough to justify an attempt; a failed attempt has to
+/// remember what it failed *against*.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BlockKind {
+    /// No interpreter on this machine. Lifts when one appears, and not
+    /// before -- which the caller checks by looking for it, not by retrying
+    /// the spawn to find out.
+    RuntimeMissing,
+    /// A failure the same files cannot get past: an `entry` that is not a
+    /// usable path. Lifts only when the plugin's own files or grant change.
+    Permanent,
+    /// A spawn error that may pass by itself (out of descriptors, out of
+    /// processes). Retried with a growing wait rather than every tick.
+    Transient,
+}
+
+/// A failed start, remembered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Blocked {
+    kind: BlockKind,
+    fingerprint: Fingerprint,
+    granted: BTreeSet<Capability>,
+    failures: u32,
+    retry_at: std::time::Instant,
+}
+
+impl Blocked {
+    /// Record a failure of `kind` for a plugin whose files and grant were
+    /// `want`, given whatever was already recorded for it.
+    ///
+    /// Consecutive transient failures against unchanged files count up, which
+    /// is what lengthens the wait; anything else starts the count again,
+    /// because a plugin that was edited or re-granted has earned a prompt
+    /// retry rather than inheriting the previous state's patience.
+    pub fn record(
+        kind: BlockKind,
+        previous: Option<&Blocked>,
+        want: &Desired,
+        now: std::time::Instant,
+    ) -> Blocked {
+        let same_state = previous
+            .is_some_and(|p| p.fingerprint == want.fingerprint && p.granted == want.granted);
+        let failures = match previous {
+            Some(p) if same_state && kind == BlockKind::Transient && p.kind == BlockKind::Transient => {
+                p.failures + 1
+            }
+            _ => 1,
+        };
+        Blocked {
+            kind,
+            fingerprint: want.fingerprint,
+            granted: want.granted.clone(),
+            failures,
+            retry_at: now + Self::backoff(failures),
+        }
+    }
+
+    /// Two seconds, then four, doubling to about a minute.
+    pub fn backoff(failures: u32) -> std::time::Duration {
+        std::time::Duration::from_secs(1u64 << failures.clamp(1, 6))
+    }
+
+    pub fn kind(&self) -> &BlockKind {
+        &self.kind
+    }
+
+    /// How long a [`BlockKind::Transient`] failure will wait before the next
+    /// attempt, for the log line.
+    pub fn wait(&self) -> std::time::Duration {
+        Self::backoff(self.failures)
+    }
+
+    /// Whether `want` deserves another attempt now.
+    ///
+    /// A changed fingerprint or grant always does: that is a different plugin
+    /// from the one that failed. Otherwise it depends on why it failed.
+    /// `runtime_present` is only consulted for [`BlockKind::RuntimeMissing`],
+    /// so a caller can make it a closure that stats the filesystem without
+    /// paying for that on every tick of every other kind of failure.
+    pub fn allows_retry(
+        &self,
+        want: &Desired,
+        runtime_present: impl FnOnce() -> bool,
+        now: std::time::Instant,
+    ) -> bool {
+        if self.fingerprint != want.fingerprint || self.granted != want.granted {
+            return true;
+        }
+        match self.kind {
+            BlockKind::RuntimeMissing => runtime_present(),
+            BlockKind::Permanent => false,
+            BlockKind::Transient => now >= self.retry_at,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -555,5 +660,84 @@ mod tests {
             [Capability::Log, Capability::UrlOpen].into_iter().collect();
         let effective = intersect_for_restart(&profile_granted, &new_requested);
         assert_eq!(effective, [Capability::Log].into_iter().collect());
+    }
+
+    fn desired_for(user: &Path, profile: &Path) -> Desired {
+        desired_state(&user.join("nowhere"), user, profile).remove("quiet").expect("granted and enabled")
+    }
+
+    fn blocked_fixture(name: &str) -> (Desired, PathBuf, PathBuf) {
+        let (system, user, profile) = scratch(name);
+        write_plugin(&user, "quiet", "", "// v1\n");
+        std::fs::write(grants::path_in(&profile), r#"{"quiet":["log"]}"#).unwrap();
+        let want = desired_for(&user, &profile);
+        drop(system);
+        (want, user, profile)
+    }
+
+    #[test]
+    fn a_missing_runtime_blocks_until_it_appears_and_not_before() {
+        let (want, user, _p) = blocked_fixture("blocked-runtime");
+        let now = std::time::Instant::now();
+        let b = Blocked::record(BlockKind::RuntimeMissing, None, &want, now);
+        let later = now + std::time::Duration::from_secs(3600);
+        assert!(!b.allows_retry(&want, || false, later), "an hour later, still no Deno, still blocked");
+        assert!(b.allows_retry(&want, || true, now), "Deno appeared");
+        let _ = std::fs::remove_dir_all(user.parent().unwrap());
+    }
+
+    #[test]
+    fn the_runtime_is_only_looked_for_when_that_is_what_the_plugin_waits_on() {
+        let (want, user, _p) = blocked_fixture("blocked-lookup");
+        let now = std::time::Instant::now();
+        for kind in [BlockKind::Permanent, BlockKind::Transient] {
+            let b = Blocked::record(kind, None, &want, now);
+            let _ = b.allows_retry(&want, || panic!("a filesystem lookup nothing asked for"), now);
+        }
+        let _ = std::fs::remove_dir_all(user.parent().unwrap());
+    }
+
+    #[test]
+    fn a_permanent_failure_lifts_only_when_the_plugin_or_its_grant_changes() {
+        let (want, user, profile) = blocked_fixture("blocked-permanent");
+        let now = std::time::Instant::now();
+        let b = Blocked::record(BlockKind::Permanent, None, &want, now);
+        let much_later = now + std::time::Duration::from_secs(86_400);
+        assert!(!b.allows_retry(&want, || true, much_later));
+
+        std::fs::write(user.join("quiet").join("main.ts"), "// v2\n").unwrap();
+        let edited = desired_for(&user, &profile);
+        assert!(b.allows_retry(&edited, || true, now), "edited files are a different plugin");
+
+        std::fs::write(grants::path_in(&profile), r#"{"quiet":["log","notify.send"]}"#).unwrap();
+        let regranted = desired_for(&user, &profile);
+        assert!(b.allows_retry(&regranted, || true, now), "a new grant is a different plugin");
+        let _ = std::fs::remove_dir_all(user.parent().unwrap());
+    }
+
+    #[test]
+    fn a_transient_failure_waits_longer_each_time_and_starts_over_when_the_plugin_changes() {
+        let (want, user, profile) = blocked_fixture("blocked-transient");
+        let t0 = std::time::Instant::now();
+        let first = Blocked::record(BlockKind::Transient, None, &want, t0);
+        assert!(!first.allows_retry(&want, || true, t0 + std::time::Duration::from_secs(1)));
+        assert!(first.allows_retry(&want, || true, t0 + std::time::Duration::from_secs(2)));
+
+        let second = Blocked::record(BlockKind::Transient, Some(&first), &want, t0);
+        assert!(!second.allows_retry(&want, || true, t0 + std::time::Duration::from_secs(3)));
+        assert!(second.allows_retry(&want, || true, t0 + std::time::Duration::from_secs(4)));
+
+        // Capped, so a plugin does not go a whole session without trying.
+        let mut b = first;
+        for _ in 0..20 {
+            b = Blocked::record(BlockKind::Transient, Some(&b), &want, t0);
+        }
+        assert_eq!(b.wait(), std::time::Duration::from_secs(64));
+
+        std::fs::write(user.join("quiet").join("main.ts"), "// v2\n").unwrap();
+        let edited = desired_for(&user, &profile);
+        let reset = Blocked::record(BlockKind::Transient, Some(&b), &edited, t0);
+        assert_eq!(reset.wait(), std::time::Duration::from_secs(2));
+        let _ = std::fs::remove_dir_all(user.parent().unwrap());
     }
 }
