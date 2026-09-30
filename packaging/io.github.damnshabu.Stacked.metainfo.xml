@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.1" date="2026-09-30">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.1</url>
+      <description>
+        <p>
+          Packaging only. Building the AppImage from source now fetches the
+          project's submodules itself instead of failing partway through.
+          Nothing in the installed application changed.
+        </p>
+      </description>
+    </release>
     <release version="0.21.0" date="2026-09-30">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.0</url>
       <description>
