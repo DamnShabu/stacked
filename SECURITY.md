@@ -3,12 +3,23 @@
 ## Reporting
 
 Report security issues through GitHub's private vulnerability reporting on this
-repository ("Security" → "Report a vulnerability"). Please do not open a public
-issue for anything exploitable.
+repository ("Security" → "Report a vulnerability", or
+[directly](https://github.com/DamnShabu/stacked/security/advisories/new)).
+Please do not open a public issue for anything exploitable.
 
 Include what you did, what happened, and what you expected. A reproduction that
 someone else can run is worth more than a description, and this project's whole
 method is that claims are verified by running them.
+
+## Supported versions
+
+Only the newest release is supported, and a fix ships in the next one. Your
+package manager, or the Roblox manager's *Update Stacked*, installs it.
+
+| Version | Supported |
+|---|---|
+| 0.21.1 (the newest) | Yes |
+| 0.21.0 and older, and every Cordial release | No — update first |
 
 ## What counts
 
@@ -91,3 +102,13 @@ no response-time guarantee. It is also young and largely written by an AI with a
 human directing architecture — see the note at the end of
 [CONTRIBUTING.md](CONTRIBUTING.md) — so treat its security posture as unproven
 rather than assumed.
+
+What a reporter can expect is a best effort at:
+
+<!-- TODO(maintainer): confirm or change these targets. -->
+
+| | Target |
+|---|---|
+| Acknowledging a report | TODO(maintainer) |
+| A first assessment | TODO(maintainer) |
+| A fix released, for a confirmed issue | TODO(maintainer) |

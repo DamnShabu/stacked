@@ -28,6 +28,28 @@ the history it holds, not because it is current.
 commits before that were the bionic linker port, the JNI layer and the framework
 work, and none of them were released.
 
+## [Unreleased]
+
+Changes to the repository rather than to anything a user installs, so they
+need no release of their own.
+
+### Added
+
+- A Code of Conduct (Contributor Covenant 3.0), a documentation issue form,
+  and a label scheme in `.github/labels.yml` applied by `scripts/setup-repo.sh`.
+- Workflows that label pull requests by path and size, triage new issues, and
+  welcome first-time contributors. None of them closes or locks anything.
+- Dependabot version updates for Cargo, npm and GitHub Actions, and a
+  `CODEOWNERS` file.
+
+### Changed
+
+- Every third-party action is pinned to a commit SHA, and the two workflows
+  that had no `permissions:` block are read-only.
+- The issue forms apply the new `type:` labels.
+- `SECURITY.md` has a supported-versions table, `.github/SUPPORT.md` says when
+  to open an issue and when to ask, and `CONTRIBUTING.md` lists what CI runs.
+
 ## 0.6.0 — 2026-08-20
 
 **The embedded web view is integrated in both directions.** Opening a web
@@ -335,3 +357,5 @@ a signed-in session.
 - **The XSendEvent injection advice is retracted:** Wayland has no such thing.
 - Text is invisible while typing because Android draws it with a widget — the
   cause is recorded, the fix is not in this release.
+
+[Unreleased]: https://github.com/DamnShabu/stacked/compare/v0.21.1...HEAD

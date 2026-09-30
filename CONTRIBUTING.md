@@ -290,6 +290,33 @@ Before opening a pull request:
 - the client still launches — repeatedly, not once
 - your commit message says what you **measured**, not just what you changed
 
+This is what CI runs, so you can run the same thing first. The `test` workflow is
+switched off on GitHub at the moment, so for now nothing runs these for you:
+
+```bash
+cargo test --workspace
+cargo test --workspace --features cordial-shell/webview,cordial-runtime/webview
+
+# Only if you touched tools/discord-bridge or .github/ISSUE_TEMPLATE
+cd tools/discord-bridge && npm ci
+deno task check && deno task test && deno lint && deno fmt --check
+```
+
+### Branches, commits and review
+
+Branch from `main` and open a pull request against it; it is merged with a
+merge commit. Commit subjects are short and usually lead with the area they
+touch — `appimage: check out submodules before building`, `status: show the
+recorded Roblox version` — with a few lines of body saying what changed, what
+you measured, and what is still unverified. Longer reasoning belongs in an ADR
+under [`docs/adr/`](docs/adr), linked from the commit.
+
+The [pull request template](.github/PULL_REQUEST_TEMPLATE.md) asks for the
+same things as the list above. The maintainer reviews every pull request; a
+label for its size and the areas it touches is added automatically. Issues go
+through the [issue forms](.github/ISSUE_TEMPLATE/), and everyone taking part
+follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 Licensed GPL-3.0-or-later. By contributing you agree your work ships under it.
 Third-party notices live in
 [`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md) and must be kept accurate;

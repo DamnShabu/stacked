@@ -186,7 +186,10 @@ framework layer answers the platform calls the engine makes. See
 Read [`CONTRIBUTING.md`](CONTRIBUTING.md) and [`AGENTS.md`](AGENTS.md).
 Decisions and the reasons behind them are in [`docs/adr/`](docs/adr). Report
 bugs [here](https://github.com/DamnShabu/stacked/issues) with the output of
-`stacked diagnostics`.
+`stacked diagnostics`. Where to ask for help is in
+[`SUPPORT.md`](.github/SUPPORT.md), security reports go through
+[`SECURITY.md`](SECURITY.md), and everyone here follows the
+[Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## Credits and licence
 

@@ -1,5 +1,9 @@
 ## What this changes
 
+## Linked issues
+
+<!-- "Fixes #123" closes it on merge; "Refs #123" links without closing. -->
+
 ## What you measured
 
 Cordial's rule is that claims are worth what they were measured with. This
@@ -13,6 +17,8 @@ cleanly" are not measurements.
 - [ ] `cargo test --workspace` passes
 - [ ] `cargo build --release` is warning-clean for the code I touched
 - [ ] the client still launches — repeatedly, not once
+- [ ] any document this makes wrong is fixed in the same change (README,
+      `docs/`, an ADR, a comment)
 
 ## Anything you disproved
 
@@ -20,6 +26,18 @@ If you found that something already written down is wrong — in a comment, in
 `docs/NEXT.md`, in an ADR — say so here. Several commits in this repository exist
 only to retract an earlier claim, and that is the highest-value thing a change
 can carry.
+
+## Breaking changes
+
+<!-- Anything that changes a user's setup: a profile layout, a setting or flag
+     renamed or removed, a plugin API change, a dropped platform. "None" is a
+     fine answer. -->
+
+## Screenshots
+
+<!-- For a change anyone can see: the window, the settings, a dialog. Delete
+     this section otherwise. `cordial_screenshot` reads the frame straight out
+     of the swapchain -- see AGENTS.md. -->
 
 ## Scope check
 

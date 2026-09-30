@@ -25,6 +25,22 @@ There is no blank-issue option — a report without the shape one of these
 gives it is much harder to act on, and the templates exist so nobody has to
 guess what to include.
 
+## Issue or discussion
+
+**An issue is for something that should change**: a bug, a feature, a document
+that is wrong, a finding. **A question that is not yet any of those** — "is
+this expected?", "does anyone run it on X?" — belongs in Discussions, once
+they are open.
+
+<!-- TODO(maintainer): Discussions are not enabled yet; scripts/setup-repo.sh
+     turns them on. Link them here when they are:
+     https://github.com/DamnShabu/stacked/discussions -->
+<!-- TODO(maintainer): the Discord bridge (ADR-030) files issues from a Discord
+     server, but no invite link is written down anywhere in the repository.
+     Add it here if the server is public. -->
+
+If you are not sure, open the issue. Moving one is cheap.
+
 ## Security issue
 
 Report it privately through [a GitHub security
@@ -37,3 +53,23 @@ rather than in a public issue.
 and what has already been ruled out — including a fair number of things that
 looked like bugs and were not. It is worth a look before writing a report
 from scratch.
+
+## Common questions
+
+**Something is broken. What do I run first?** `stacked doctor`. It checks the
+display, Vulkan, sound, the keyring, the browser handler and the Roblox build,
+and says what to do about anything it finds. The README's
+[Troubleshooting](../README.md#troubleshooting) covers the usual answers.
+
+**Is my bug already known?** [`docs/known-issues.md`](../docs/known-issues.md)
+has the state of each one, including those reported against Cordial that apply
+here too.
+
+**Will this get my account banned?** It can. Roblox does not support
+third-party clients and bans in waves, including by mistake. Do not use an
+account you care about.
+
+**Can Stacked run scripts or cheats?** No, and it will not. See
+[SECURITY.md](../SECURITY.md#forks-and-clients-built-on-stacked).
+
+More in the README's [FAQ](../README.md#faq).
