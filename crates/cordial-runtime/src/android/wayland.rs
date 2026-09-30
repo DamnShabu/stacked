@@ -996,8 +996,8 @@ struct LockedPointerListener {
 /// accelerated delta the compositor's pointer profile produced, then the raw
 /// unaccelerated one.
 ///
-/// Cordial uses the **unaccelerated** pair by default, and which pair it uses
-/// is now a setting -- see [`relative_pointer_motion`]. This comment said the
+/// Cordial uses the **accelerated** pair by default since 2026-09-30 (it was
+/// the unaccelerated one before), and which pair it uses is a setting -- see [`relative_pointer_motion`]. This comment said the
 /// opposite until 2026-08-21, having outlived commit 6cb9ed7 which changed the
 /// behaviour and left the description behind. A comment that contradicts the
 /// code twenty lines below it costs more than no comment.
@@ -4322,10 +4322,10 @@ unsafe extern "C" fn relative_pointer_motion(
         // argument above is strong for a first-person camera and not
         // universal: a player who has tuned their desktop pointer profile and
         // wants the client to obey it is not wrong, and neither is one who
-        // wants raw input. The default is unaccelerated because that is what a
-        // camera wants and what the original reported bug was about;
-        // `CORDIAL_POINTER_ACCEL=always` restores the accelerated pair, and
-        // the settings window offers it as a switch. This env var governs the
+        // wants raw input. The default was unaccelerated until 2026-09-30 and is
+        // now accelerated, because players preferred it in shooters;
+        // `CORDIAL_POINTER_ACCEL=unlocked` selects the raw pair, and the
+        // settings window offers both. This env var governs the
         // camera only. The unlocked cursor below has no equivalent switch --
         // not because an honest "off" is impossible for it, the unaccelerated
         // pair is sitting right there in the same event exactly as it is
@@ -4410,12 +4410,12 @@ unsafe extern "C" fn relative_pointer_motion(
 fn pointer_acceleration() -> bool {
     static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *ON.get_or_init(|| {
-        // "always" is the only value that turns this on. Anything else,
-        // including the variable being absent, leaves the camera on raw
-        // movement -- the shell sends "unlocked" for that, which names what
-        // happens rather than pretending Cordial can disable acceleration for
-        // the unlocked cursor, because it cannot.
-        matches!(std::env::var("CORDIAL_POINTER_ACCEL").as_deref(), Ok("always"))
+        // "unlocked" is the only value that turns this off, leaving the camera
+        // on raw movement; anything else, including the variable being absent,
+        // uses the accelerated pair, matching the shell's default. "unlocked"
+        // names what happens rather than pretending Cordial can disable
+        // acceleration for the unlocked cursor, because it cannot.
+        !matches!(std::env::var("CORDIAL_POINTER_ACCEL").as_deref(), Ok("unlocked"))
     })
 }
 

@@ -119,16 +119,17 @@ impl ThrottleWhen {
 #[serde(rename_all = "lowercase")]
 pub enum PointerAcceleration {
     /// The desktop's setting moves the cursor, and camera movement is raw.
-    /// The default, and the only honest description of the status quo.
     UnlockedCursor,
-    /// The desktop's setting moves the camera too, for anyone who has tuned
-    /// their pointer profile and wants the client to obey it.
+    /// The desktop's setting moves the camera too. The default since
+    /// 2026-09-30: players found accelerated camera movement better in
+    /// shooters, and raw movement is still one choice away. A profile whose
+    /// saved config already names "unlocked" keeps it.
     Always,
 }
 
 impl Default for PointerAcceleration {
     fn default() -> Self {
-        PointerAcceleration::UnlockedCursor
+        PointerAcceleration::Always
     }
 }
 

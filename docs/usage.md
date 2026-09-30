@@ -79,7 +79,7 @@ values it accepts.
 | `graphics_optimization_mode` | `balanced` | `balanced`, `roblox-app`, `mobile-tier`, `more-cores` or `fewer-cores`. None of these is measured to help. |
 | `gamemode` | `true` | Ask Feral GameMode for the performance governor while you play. |
 | `throttle` | `visible` | `visible`, `unfocused` or `off`. When the engine is allowed to slow down in the background. |
-| `pointer_acceleration` | `unlockedcursor` | `unlockedcursor` or `always`. Whether desktop pointer acceleration also affects the camera. |
+| `pointer_acceleration` | `always` | `always` or `unlockedcursor`. Whether desktop pointer acceleration also affects the camera; `unlockedcursor` gives raw camera movement. A config that already names `unlockedcursor` keeps it. |
 | `gamepad` | `true` | Controllers. |
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
 | `close_on_leave` | `false` | Close Roblox when you leave an experience. |

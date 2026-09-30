@@ -1626,9 +1626,10 @@ bugs were in machinery Cordial does not have.
   contradicts it, and a comment that confident about a behaviour nobody has
   measured is the shape this file exists to warn about. Nothing here has been
   observed in that state.
-- **Locked.** `relative_pointer_motion` picks the unaccelerated pair unless
-  `CORDIAL_POINTER_ACCEL=always`. Raw is the shipped default and is deliberate.
-  Settings offers "Only the cursor" and "Cursor and camera" for it.
+- **Locked.** `relative_pointer_motion` picks the accelerated pair unless
+  `CORDIAL_POINTER_ACCEL=unlocked`. Raw was the default until upstream d17baa6
+  (2026-09-30) and this line said so; `stacked config set pointer_acceleration
+  unlockedcursor` gets it back.
 - **The setting only reaches a client the shell launched.** `launch.rs:397` is
   the one place `CORDIAL_POINTER_ACCEL` is set, and `just dev`, `just client`
   and a hand-run `cordial-run` set none of it. **Anybody testing this from a
