@@ -186,9 +186,7 @@ pub fn first_install() -> Result<(), String> {
     // The same rule as an update, and more so: this is the whole build.
     // `stacked install` is the explicit way to fetch it anyway.
     if metered() {
-        return Err("this connection is metered, so nothing was downloaded. \
-                    `stacked install` downloads Roblox when you choose"
-            .into());
+        return Err(METERED.into());
     }
     announce(
         "Stacked is downloading Roblox",
@@ -196,6 +194,10 @@ pub fn first_install() -> Result<(), String> {
     );
     obtain()
 }
+
+/// What [`first_install`] says when it would not download.
+pub const METERED: &str = "there is no Roblox build yet, and this connection is metered, so it \
+                           was not downloaded. `stacked install` downloads it when you choose.";
 
 fn obtain() -> Result<(), String> {
     let cancel = Cancel::new();

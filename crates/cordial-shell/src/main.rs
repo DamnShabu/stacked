@@ -351,10 +351,14 @@ fn play(args: &[String]) -> u8 {
         Ok(build) => build,
         Err(install::NotFound::NoBuild) if may_fetch => {
             if let Err(e) = auto_update::first_install() {
-                report(&format!(
-                    "there is no Roblox build yet, and downloading one failed: {e}\n\
-                     `stacked install` tries again."
-                ));
+                if e == auto_update::METERED {
+                    report(&e);
+                } else {
+                    report(&format!(
+                        "there is no Roblox build yet, and downloading one failed: {e}\n\
+                         `stacked install` tries again."
+                    ));
+                }
                 return 1;
             }
             just_installed = true;
