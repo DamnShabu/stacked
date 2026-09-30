@@ -38,9 +38,6 @@ pub(crate) fn resolve(ticket: LaunchTicket) -> Option<ProfileMatch> {
 }
 
 #[cfg(test)]
-pub(crate) use profile::snapshot_for_test;
-
-#[cfg(test)]
 mod keyring_tests;
 #[cfg(test)]
 mod tests;

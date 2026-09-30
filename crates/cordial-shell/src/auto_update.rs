@@ -89,7 +89,7 @@ pub fn decide(
 /// version question can cost; the build on disk has already been identified by
 /// [`installed_version`] by the time this runs, so asking it again would pay
 /// that cost to learn nothing.
-fn newest_online(deadline: Duration) -> Option<String> {
+pub(crate) fn newest_online(deadline: Duration) -> Option<String> {
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
         let mut best: Option<String> = None;

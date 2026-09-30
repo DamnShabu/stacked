@@ -449,6 +449,14 @@ pub fn extract_into(archive_bytes: &[u8], dest: &Path, limits: Limits) -> Result
             return Err(Refusal::SetuidBit { path: shown, mode });
         }
 
+        // `./` on its own is the archive's own root, which is `dest`. GNU tar
+        // writes it first for `tar -C dir .`, which is the command
+        // `plugins/README.md` gives for packaging a plugin -- so refusing it
+        // as an entry with no path refused every archive made the documented
+        // way. Only a directory: a *file* with no path is still malformed.
+        if kind.is_dir() && declared.components().all(|c| matches!(c, Component::CurDir)) {
+            continue;
+        }
         let relative = safe_relative(&declared)?;
         // Applied after sanitising, never before: the traversal, absolute-path
         // and escape checks all run against what the archive actually declared,
@@ -696,6 +704,28 @@ mod tests {
         append_file(&mut b, "plugin.json", manifest.as_bytes(), 0o644);
         append_file(&mut b, "main.ts", b"console.log('hello');\n", 0o644);
         compress(b.into_inner().unwrap())
+    }
+
+    /// **The archive `plugins/README.md` tells an author to make installs.**
+    /// `tar --zstd -cf x.tar.zst -C dir .` writes a `./` entry for the root
+    /// before the files, and that entry used to be refused as having no path.
+    #[test]
+    fn an_archive_made_with_tar_dash_c_dot_installs() {
+        let mut b = tar::Builder::new(Vec::new());
+        append_dir(&mut b, "./");
+        append_file(&mut b, "./plugin.json", MANIFEST.as_bytes(), 0o644);
+        append_file(&mut b, "./main.ts", b"console.log('hello');\n", 0o644);
+        let archive = compress(b.into_inner().unwrap());
+        let root = scratch("install-dot-root");
+        let (plugin, dir) = install_local(&archive, &root).expect("the documented packaging must install");
+        assert_eq!(plugin.manifest.id, "demo");
+        assert!(dir.join("main.ts").is_file());
+    }
+
+    #[test]
+    fn a_file_with_no_path_is_still_refused() {
+        let archive = archive_of(tar::EntryType::Regular, "./", 0o644);
+        assert!(extract_into(&archive, &scratch("file-no-path"), Limits::default()).is_err());
     }
 
     fn append_dir(b: &mut tar::Builder<Vec<u8>>, path: &str) {

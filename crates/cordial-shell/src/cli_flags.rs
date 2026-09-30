@@ -34,7 +34,10 @@ pub fn run(args: &[String]) -> u8 {
             return 2;
         }
     };
-    let name = crate::chosen_profile(named);
+    let name = match crate::existing_profile(named) {
+        Ok(name) => name,
+        Err(e) => return fail(&e),
+    };
     let path = match profile::dir(&name) {
         Ok(dir) => flag_document::path_in(&dir),
         Err(e) => {

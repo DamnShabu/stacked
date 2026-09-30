@@ -75,7 +75,8 @@ Playing
 Roblox builds
   install                 Find a Roblox build, or download one if there is none.
                           A copy Sober already downloaded is used first.
-  update                  Download the newest Roblox build.
+  update [--force]        Download the newest Roblox build, if it is newer than
+                          the one you have. --force downloads it regardless.
   versions                List the builds kept on disk.
   versions available      List the builds that can be downloaded.
   versions get VERSION    Download one build into the store.
@@ -157,7 +158,7 @@ fn main() -> ExitCode {
                 "play" => play(rest),
                 "status" => status(rest),
                 "install" => cli_roblox::install(),
-                "update" => cli_roblox::update(),
+                "update" => cli_roblox::update(rest),
                 "versions" => cli_roblox::versions(rest),
                 "pin" => cli_roblox::pin(rest),
                 "unpin" => cli_roblox::unpin(rest),
@@ -215,9 +216,24 @@ pub(crate) fn take_profile(args: &[String]) -> Result<(Option<String>, Vec<Strin
     Ok((profile, rest))
 }
 
-/// The profile a command acts on: the one named, or the current one.
-pub(crate) fn chosen_profile(named: Option<String>) -> String {
-    named.unwrap_or_else(|| shell_config::load(&shell_config::path()).profile)
+/// The profile a command acts on: the one named, or the current one, refusing
+/// a named profile that does not exist.
+///
+/// For the commands that write into a profile -- `pin`, `flags`, `plugins`.
+/// Without it a mistyped `--profile` made a new directory, wrote the change
+/// there and reported success, and the profile the user meant was untouched.
+/// The current profile is accepted even before its directory exists, because
+/// on a fresh install that is `default` and nothing has created it yet.
+pub(crate) fn existing_profile(named: Option<String>) -> Result<String, String> {
+    let current = shell_config::load(&shell_config::path()).profile;
+    match named {
+        Some(name) if name != current && !profile::list().contains(&name) => Err(format!(
+            "there is no profile {name:?}. `stacked profiles` lists them, and \
+             `stacked profiles new {name}` makes one."
+        )),
+        Some(name) => Ok(name),
+        None => Ok(current),
+    }
 }
 
 fn play(args: &[String]) -> u8 {
@@ -381,6 +397,10 @@ fn play(args: &[String]) -> u8 {
         }
     };
 
+    // `play --profile NEW` makes the profile, as it always has. Noted, so the
+    // plugins a new profile should not start are switched off in it below.
+    let is_new_profile = !profile::list().contains(&profile_name);
+
     // ADR-012's claim, taken before the process exists so that a refusal
     // costs nothing, and naming the profile because "already open" on its own
     // does not tell anyone which one to close.
@@ -398,6 +418,11 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
+
+    if is_new_profile {
+        println!("stacked: profile {profile_name:?} is new; it starts signed out");
+        cli_plugins::settle_new_profile(claim.profile_dir());
+    }
 
     // Account routing authenticated exact identity and cookie bytes before
     // the lock was taken. If the saved values changed in between, the name no
@@ -553,6 +578,7 @@ fn profiles(args: &[String]) -> u8 {
             // profile switcher did.
             match profile::acquire(name) {
                 Ok(claim) => {
+                    cli_plugins::settle_new_profile(claim.profile_dir());
                     drop(claim);
                     println!("created profile {name:?}. `stacked profiles use {name}` makes it current.");
                     0

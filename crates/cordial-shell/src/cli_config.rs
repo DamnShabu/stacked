@@ -72,7 +72,14 @@ pub fn run(args: &[String]) -> u8 {
             };
             // Anything after the key is joined back on, so an audio sink with
             // spaces in its name does not need quoting.
-            apply(key, Some(parse_value(&args[2..].join(" "))))
+            let raw = args[2..].join(" ");
+            if key == "profile" && !crate::shell_config::load(&path).profile.eq(&raw)
+                && !cordial_shell::profile::list().contains(&raw)
+            {
+                eprintln!("stacked: there is no profile {raw:?}. `stacked profiles new {raw}` makes one.");
+                return 1;
+            }
+            apply(key, Some(value_for(key, &raw)))
         }
         Some("unset" | "reset") => {
             let Some(key) = args.get(1) else {
@@ -128,6 +135,38 @@ fn known(key: &str) -> bool {
 fn unknown(key: &str) -> u8 {
     eprintln!("stacked: there is no setting {key:?}. `stacked config` lists them.");
     2
+}
+
+/// Keys whose value is text whatever it looks like.
+///
+/// Without this, `config set profile 123` was refused as "invalid type:
+/// integer" although `123` is a valid profile name, because [`parse_value`]
+/// reads anything JSON can as JSON. An audio sink named `null` would have been
+/// stored as no sink at all.
+const TEXT_KEYS: &[&str] = &["profile", "audio_output", "roblox.apk", "roblox.lib_dir"];
+
+/// Keys that hold a path, made absolute when set.
+///
+/// A relative path was stored as typed and then resolved against wherever the
+/// next launch ran from -- which, from the desktop entry or a browser, is not
+/// the directory it was typed in. `cd ~/Downloads && stacked config set
+/// roblox.apk base.apk` worked in that terminal and nowhere else.
+const PATH_KEYS: &[&str] = &["roblox.apk", "roblox.lib_dir"];
+
+/// What `config set KEY RAW` stores.
+fn value_for(key: &str, raw: &str) -> Value {
+    if PATH_KEYS.contains(&key) {
+        let path = std::path::Path::new(raw);
+        let absolute = match std::env::current_dir() {
+            Ok(cwd) if path.is_relative() => cwd.join(path),
+            _ => path.to_path_buf(),
+        };
+        return Value::String(absolute.to_string_lossy().into_owned());
+    }
+    if TEXT_KEYS.contains(&key) {
+        return Value::String(raw.to_string());
+    }
+    parse_value(raw)
 }
 
 /// A value as typed. JSON where it parses -- numbers, `true`, a quoted string,
@@ -248,6 +287,17 @@ mod tests {
         assert_eq!(parse_value("144"), Value::from(144));
         assert_eq!(parse_value("true"), Value::Bool(true));
         assert_eq!(parse_value("Built-in Audio Analog Stereo"), Value::from("Built-in Audio Analog Stereo"));
+    }
+
+    #[test]
+    fn text_settings_stay_text_and_paths_become_absolute() {
+        assert_eq!(value_for("profile", "123"), Value::from("123"));
+        assert_eq!(value_for("audio_output", "null"), Value::from("null"));
+        assert_eq!(value_for("fps_cap", "123"), Value::from(123));
+        let cwd = std::env::current_dir().unwrap();
+        assert_eq!(value_for("roblox.apk", "base.apk"), Value::from(cwd.join("base.apk").to_str().unwrap()));
+        assert_eq!(value_for("roblox.apk", "/x/base.apk"), Value::from("/x/base.apk"));
+        change(&defaults(), "profile", Some(value_for("profile", "123"))).expect("a numeric profile name is a name");
     }
 
     #[test]

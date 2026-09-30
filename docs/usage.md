@@ -18,7 +18,7 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked LINK` | Join a `roblox-player:` or `roblox:` link. This is what the desktop entry runs when you press Play on the website. |
 | `stacked status` | Show which profile and Roblox build a launch would use. |
 | `stacked install` | Find a Roblox build, or download one if there isn't one. A copy Sober has already downloaded counts. |
-| `stacked update` | Download the newest build. |
+| `stacked update` | Download the newest build, if it's newer than the one you have. `--force` downloads it anyway. |
 | `stacked versions` | List the builds kept on disk. `versions available` lists the ones you can download. `versions get V` downloads one, and `versions remove V` deletes one. |
 | `stacked pin V`, `stacked unpin` | Make a profile always run build V, or go back to the current build. Both take `--profile`. |
 | `stacked profiles` | List profiles. `profiles new NAME` creates one, and `profiles use NAME` makes it the current one. |
@@ -185,7 +185,10 @@ stacked plugins remove thing
 `stacked plugins` lists them. Plugin preferences have no command and are edited
 in the plugin's `preferences.json` ([plugins.md](plugins.md)).
 
-`enable`, `disable`, `grant` and `revoke` take `--profile NAME`. A client that
+A plugin with code starts switched off in every profile, including profiles
+you create later, and has to be enabled in each one where you want it.
+`enable`, `disable`, `grant` and `revoke` take `--profile NAME`, and refuse a
+profile that doesn't exist. A client that
 is already running picks up the change within a second or two.
 
 ## Environment variables

@@ -25,7 +25,13 @@ pub fn run(args: &[String]) -> u8 {
             return 2;
         }
     };
-    let profile_name = crate::chosen_profile(named);
+    let profile_name = match crate::existing_profile(named) {
+        Ok(name) => name,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
     let profile_dir = match profile::dir(&profile_name) {
         Ok(dir) => dir,
         Err(e) => {
@@ -82,11 +88,28 @@ pub fn run(args: &[String]) -> u8 {
                 println!("it needs Deno to run, and there is none. `stacked plugins deno` installs it.");
             }
             if consent::starts_disabled(&plugin) {
-                if let Err(e) = enablement::set_enabled(&profile_dir, &id, false) {
-                    eprintln!("stacked: could not leave {id} switched off: {e}");
-                    return 1;
+                // In every profile, not only the one named: enablement is per
+                // profile and a profile with no opinion runs the plugin, so
+                // switching it off here alone left it running everywhere else
+                // the moment it was installed. `settle_new_profile` covers the
+                // profiles created after this.
+                let mut names = profile::list();
+                if !names.contains(&profile_name) {
+                    names.push(profile_name.clone());
                 }
-                println!("it contains code, so it is off. `stacked plugins enable {id}` switches it on.");
+                for name in names {
+                    let written = profile::dir(&name)
+                        .map_err(|e| e.to_string())
+                        .and_then(|dir| enablement::set_enabled(&dir, &id, false).map_err(|e| e.to_string()));
+                    if let Err(e) = written {
+                        eprintln!("stacked: could not leave {id} switched off in profile {name:?}: {e}");
+                        return 1;
+                    }
+                }
+                println!(
+                    "it contains code, so it is off in every profile. \
+                     `stacked plugins enable {id}` switches it on in this one."
+                );
             }
             if !plugin.requested.is_empty() {
                 println!("it asks for these, none granted yet:");
@@ -209,6 +232,24 @@ pub fn run(args: &[String]) -> u8 {
         Some(other) => {
             eprintln!("stacked: unknown plugins command {other:?}. Try `stacked help`.");
             2
+        }
+    }
+}
+
+/// Switch off, in a profile that has just been created, every plugin with code
+/// the user has installed.
+///
+/// A profile with no opinion about a plugin runs it (`enablement::is_enabled`),
+/// which is right for one nobody has installed code into yet and wrong for a
+/// new profile: it would start every installed plugin's process the first time
+/// it launched, without the per-profile `enable` that installing asks for.
+/// First-party plugins are left to `enablement::default_for`.
+pub(crate) fn settle_new_profile(profile_dir: &std::path::Path) {
+    for plugin in manifest::discover(&manifest::plugin_root()) {
+        if consent::starts_disabled(&plugin) {
+            if let Err(e) = enablement::set_enabled(profile_dir, &plugin.manifest.id, false) {
+                eprintln!("stacked: could not leave {} off in the new profile: {e}", plugin.manifest.id);
+            }
         }
     }
 }
