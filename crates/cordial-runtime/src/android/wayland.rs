@@ -3331,6 +3331,11 @@ impl WaylandWindow {
         unpack_pointer_position(self.pointer_pos.load(Ordering::Acquire))
     }
 
+    fn canvas_centre(&self) -> (f32, f32) {
+        let (w, h, _) = self.geometry();
+        (w as f32 / 2.0, h as f32 / 2.0)
+    }
+
     fn dispatch_pointer_motion(&self, x: f32, y: f32) {
         self.set_pointer_position(x, y);
         let handle = self.active_handle.load(Ordering::Relaxed);
@@ -4080,6 +4085,7 @@ static SHIFT_DURING_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
 /// would kill the camera for good with nothing on screen to explain it,
 /// which is the same shape as the Escape latch this release just removed.
 static RIGHT_DRAG_LATCH_SINCE: AtomicI64 = AtomicI64::new(0);
+static ENGINE_OWNS_LOCK: AtomicBool = AtomicBool::new(false);
 
 
 /// `CORDIAL_NO_POINTER_LOCK=1` — never capture the pointer, whatever the engine
@@ -4153,6 +4159,12 @@ unsafe extern "C" fn locked_pointer_locked(_data: *mut c_void, _lp: *mut c_void)
     // be drained by.
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
+    if ENGINE_OWNS_LOCK.load(Ordering::Acquire) {
+        if let Some(w) = current() {
+            let (cx, cy) = w.canvas_centre();
+            w.set_pointer_position(cx, cy);
+        }
+    }
     if super::input::trace_mouse() {
         eprintln!("[cordial] pointer lock: compositor sent locked");
     }
@@ -4630,6 +4642,17 @@ impl WaylandWindow {
         // `false` with the menu open, `true` again on closing it. The latch was
         // duplicating a decision the engine had already made correctly.
         let want = asked;
+        if want {
+            let owned = engine_wants
+                && (!dragging
+                    || LOCK_WANTED_BEFORE_RIGHT_DRAG.load(Ordering::Acquire)
+                    || SHIFT_DURING_RIGHT_DRAG.load(Ordering::Acquire));
+            ENGINE_OWNS_LOCK.store(owned, Ordering::Release);
+            if owned && POINTER_LOCK_ACTIVE.load(Ordering::Acquire) {
+                let (cx, cy) = self.canvas_centre();
+                self.set_pointer_position(cx, cy);
+            }
+        }
 
         // Confinement comes off before any lock is asked for, and goes on only
         // after any lock has been released below. One constraint per surface:
@@ -4641,8 +4664,11 @@ impl WaylandWindow {
         }
 
         let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
+        let lockable_here = !Self::constrain_toplevel() || POINTER_ON_CANVAS.load(Ordering::Acquire);
         if want && !held {
-            self.lock_pointer();
+            if lockable_here {
+                self.lock_pointer();
+            }
         } else if !want && held {
             self.release_pointer();
         } else if want && held && self.lock_went_dead() {
@@ -4829,7 +4855,17 @@ fn constrain_toplevel() -> bool {
         if slot.is_null() {
             return;
         }
-        let (x, y) = self.pointer_position();
+        // Leaving a lock the engine held (shift lock, first person) puts the
+        // cursor back at the canvas centre, where the engine has been keeping
+        // its own pointer; anything else goes back where the engine drew it.
+        let centre = ENGINE_OWNS_LOCK.swap(false, Ordering::AcqRel);
+        let (x, y) = if centre {
+            let (cx, cy) = self.canvas_centre();
+            self.set_pointer_position(cx, cy);
+            (cx, cy)
+        } else {
+            self.pointer_position()
+        };
         // The hint is in the constrained surface's coordinates, and the engine's
         // position is the canvas's. On the toplevel that is a header bar's
         // height out, so the cursor came back that far above where the engine
@@ -4880,7 +4916,8 @@ fn constrain_toplevel() -> bool {
         super::input::reset_mouse_delta();
         super::input::forget_pending_unlocked_delta();
         if super::input::trace_mouse() {
-            eprintln!("[cordial] pointer lock: released, cursor hinted to ({x}, {y})");
+            let how = if centre { " (canvas centre)" } else { "" };
+            eprintln!("[cordial] pointer lock: released, cursor hinted to ({x}, {y}){how}");
         }
     }
 
