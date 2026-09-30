@@ -33,7 +33,13 @@
   };
 
   outputs = { self, nixpkgs, flake-utils }:
-    flake-utils.lib.eachDefaultSystem (system:
+    # Linux only. `eachDefaultSystem` also yields the two Darwin systems, and
+    # nixpkgs 26.11 throws on `import nixpkgs { system = "x86_64-darwin"; }`,
+    # which broke `nix develop` on Linux too: the per-system `//` below forces
+    # every system's attrset to be evaluated to learn its names. Nothing here
+    # builds on Darwin anyway -- the bionic linker, Wayland and PipeWire are
+    # all Linux.
+    flake-utils.lib.eachSystem [ "x86_64-linux" "aarch64-linux" ] (system:
       let
         pkgs = import nixpkgs { inherit system; };
         lib = pkgs.lib;
