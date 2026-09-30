@@ -133,8 +133,16 @@ fn known(key: &str) -> bool {
 }
 
 fn unknown(key: &str) -> u8 {
-    eprintln!("stacked: there is no setting {key:?}. `stacked config` lists them.");
+    match crate::completions::suggest(key, keys()) {
+        Some(near) => eprintln!("stacked: there is no setting {key:?}. Did you mean {near}?"),
+        None => eprintln!("stacked: there is no setting {key:?}. `stacked config` lists them."),
+    }
     2
+}
+
+/// Every setting's key, for completion and suggestions.
+pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
+    KEYS.iter().map(|(k, _, _)| *k)
 }
 
 /// Keys whose value is text whatever it looks like.

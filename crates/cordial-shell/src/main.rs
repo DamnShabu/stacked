@@ -36,9 +36,12 @@ mod cli_config;
 mod cli_flags;
 mod cli_plugins;
 mod cli_roblox;
+mod completions;
 mod crash;
 mod deep_link;
+mod desktop;
 mod diagnostics;
+mod doctor;
 mod install;
 mod launch;
 mod root_warning;
@@ -117,6 +120,13 @@ Plugins
                           Grant only what the plugin asks for; `plugins` lists it.
   plugins deno            Install Deno, which plugins with code run on.
 
+Setting up
+  doctor [--offline]      Check this machine for what would stop Roblox
+                          working, and say what to run about each.
+  desktop install         Add Stacked to the app menu and make it what the
+                          website's Play button opens. `desktop remove` undoes it.
+  completions SHELL       Print tab completion for bash, zsh or fish.
+
 Other
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
@@ -172,10 +182,17 @@ fn main() -> ExitCode {
                     0
                 }
                 "plugins" | "plugin" => cli_plugins::run(rest),
+                "doctor" => doctor::run(rest),
+                "desktop" => desktop::run(rest),
+                "completions" => completions::run(rest),
+                "__complete" => completions::dynamic(rest),
                 // A bare link is the desktop entry's `%u`: play, joining it.
                 link if looks_like_link(link) => play(&args),
                 other => {
-                    eprintln!("stacked: unknown command {other:?}. Try `stacked help`.");
+                    match completions::suggest(other, completions::COMMANDS.iter().map(|(n, _, _)| *n)) {
+                        Some(near) => eprintln!("stacked: unknown command {other:?}. Did you mean `stacked {near}`?"),
+                        None => eprintln!("stacked: unknown command {other:?}. Try `stacked help`."),
+                    }
                     2
                 }
             }
@@ -644,10 +661,7 @@ mod tests {
     fn every_command_in_the_usage_text_is_one_main_dispatches() {
         // A usage line naming a command that falls through to "unknown
         // command" is the `--help` that lies; this keeps the two in step.
-        for command in [
-            "play", "status", "install", "update", "versions", "pin", "unpin", "profiles",
-            "config", "flags", "audio-outputs", "plugins", "diagnostics", "help", "version",
-        ] {
+        for (command, _, _) in completions::COMMANDS {
             assert!(USAGE.contains(&format!("  {command}")), "{command} missing from usage");
         }
     }

@@ -44,15 +44,17 @@ install -Dm755 target/release/stacked target/release/cordial-run -t ~/.local/bin
 PipeWire's headers are optional, but without them there is no sound.
 `stacked` and `cordial-run` have to stay in the same directory.
 
-To have browser Play buttons and your app menu open Stacked, also install the
-desktop entry and icon:
+Then add Stacked to your app menu and make it what the website's Play button
+opens, and check the machine for anything that would stop it running:
 
 ```bash
-install -Dm644 packaging/io.github.damnshabu.Stacked.desktop -t ~/.local/share/applications/
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
-  -t ~/.local/share/icons/hicolor/scalable/apps/
-update-desktop-database ~/.local/share/applications
+~/.local/bin/stacked desktop install
+~/.local/bin/stacked doctor
 ```
+
+Tab completion: `stacked completions bash`, `zsh` or `fish` prints the script
+for your shell ([`docs/usage.md`](docs/usage.md#tab-completion) says where to
+put it).
 
 **To update Stacked**, run `git pull --recurse-submodules` and repeat the
 `cargo build` and first `install` lines.
@@ -77,6 +79,7 @@ Stacked ships no part of Roblox.
 | `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import file.json` takes a Bloxstrap export. |
 | `stacked config` | List every setting and its current value. |
 | `stacked plugins install x.tar.zst` | Add a plugin. One that runs code starts switched off with no permissions. |
+| `stacked doctor` | Check this machine for problems, with the fix for each. |
 | `stacked diagnostics` | Print what a bug report needs. |
 
 **F11** toggles fullscreen. **Ctrl-C** in the terminal closes the game. Every command and setting is in [`docs/usage.md`](docs/usage.md).
@@ -94,6 +97,10 @@ FastFlags: `stacked flags set NAME VALUE`, checked against the flag's type;
 see [`docs/fastflags.md`](docs/fastflags.md).
 
 ## Troubleshooting
+
+Start with `stacked doctor`. It checks the display, Vulkan, sound, the
+keyring, the browser handler and the Roblox build, and says what to run about
+anything it finds.
 
 - **Pressing Play in the browser does nothing.** Run `stacked` in a terminal
   to see why. When it's started from the browser, Stacked also sends the
