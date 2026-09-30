@@ -220,6 +220,20 @@ struct InputState {
     held_keys: Vec<(i32, i32)>,
 }
 
+/// Record that `key` went down or up, so a focus loss can release whatever is
+/// still down. A repeat of a key already held is not held twice: auto-repeat
+/// sends KeyPress over and over, and one release per press would send the
+/// engine releases for a key it was only ever pressed once.
+fn track_held_key(held: &mut Vec<(i32, i32)>, down: bool, key: (i32, i32)) {
+    if down {
+        if !held.contains(&key) {
+            held.push(key);
+        }
+    } else {
+        held.retain(|k| *k != key);
+    }
+}
+
 /// X11 pointer capture state.
 ///
 /// X11 has no Wayland relative-pointer protocol in this backend, so the first
@@ -1751,14 +1765,7 @@ impl HostWindow {
         if let Some(keycode) = keysym_to_android(keysym) {
             {
                 let mut input = self.input.lock().unwrap_or_else(|e| e.into_inner());
-                let held = (keycode, ev.detail as i32);
-                if down {
-                    if !input.held_keys.contains(&held) {
-                        input.held_keys.push(held);
-                    }
-                } else {
-                    input.held_keys.retain(|k| *k != held);
-                }
+                track_held_key(&mut input.held_keys, down, (keycode, ev.detail as i32));
             }
             deliver_key(handle, down, keycode, ev.detail as i32, meta, 0, unicode, now, now);
             // The evdev code, not the Android keycode. X11 keycodes are evdev
@@ -2266,6 +2273,19 @@ fn keysym_text_fallback(lookup_len: c_int, x11_state: c_uint, keysym: c_ulong) -
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn held_keys_are_tracked_once_and_dropped_on_release() {
+        let mut held = Vec::new();
+        track_held_key(&mut held, true, (51, 25));
+        track_held_key(&mut held, true, (51, 25)); // auto-repeat
+        track_held_key(&mut held, true, (47, 39));
+        assert_eq!(held, vec![(51, 25), (47, 39)]);
+        track_held_key(&mut held, false, (51, 25));
+        assert_eq!(held, vec![(47, 39)], "only the key that came up is forgotten");
+        track_held_key(&mut held, false, (99, 99)); // release for a key never seen
+        assert_eq!(held, vec![(47, 39)]);
+    }
 
     #[test]
     fn a_keysym_only_supplies_text_that_xlib_could_not() {
