@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.2" date="2026-10-01">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.2</url>
+      <description>
+        <p>
+          The first Stacked release with packages to download: an AppImage,
+          .deb, .rpm, Arch package and Flatpak. The application is the same
+          as 0.21.1.
+        </p>
+      </description>
+    </release>
     <release version="0.21.1" date="2026-09-30">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.1</url>
       <description>
