@@ -105,6 +105,7 @@
 //! through `NativeInputInterface` for the same reason the mouse does.
 
 use std::io::Read;
+use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::OnceLock;
 
 use super::input;
@@ -134,8 +135,86 @@ use super::input;
 /// glyph, `CORDIAL_GAMEPAD_TYPE` overrides it, and the launch log says so the
 /// first time a pad is seen rather than leaving a user to find out.
 fn enabled() -> bool {
-    static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| enabled_for(std::env::var("CORDIAL_GAMEPAD").ok().as_deref()))
+    match SWITCH.load(Ordering::Relaxed) {
+        SWITCH_ON => true,
+        SWITCH_OFF => false,
+        // First read. Not a `OnceLock` any more: the switch can change while a
+        // game is running (the control socket's `gamepad on|off`), and a cache
+        // that cannot be written is what made it launch-only.
+        _ => {
+            let on = enabled_for(std::env::var("CORDIAL_GAMEPAD").ok().as_deref());
+            // `compare_exchange` so a live change that landed between the load
+            // above and here is not overwritten by the environment.
+            let _ = SWITCH.compare_exchange(
+                SWITCH_UNSET,
+                if on { SWITCH_ON } else { SWITCH_OFF },
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            );
+            SWITCH.load(Ordering::Relaxed) == SWITCH_ON
+        }
+    }
+}
+
+const SWITCH_UNSET: u8 = 0;
+const SWITCH_ON: u8 = 1;
+const SWITCH_OFF: u8 = 2;
+static SWITCH: AtomicU8 = AtomicU8::new(SWITCH_UNSET);
+
+/// Taken by every test that moves [`SWITCH`], here and in `devctl`, so that
+/// one never reads it mid-flip by another.
+#[cfg(test)]
+pub(crate) static TEST_GUARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// Set when the switch has gone off and pads may still be held. The pump checks
+/// it each tick, so turning the setting off costs a relaxed load and not a lock
+/// on a path that runs thousands of times a second.
+static WITHDRAW: AtomicBool = AtomicBool::new(false);
+
+/// The live switch, driven by the control socket's `gamepad on|off`; the
+/// launch setting (`stacked config set gamepad`) only seeds it through
+/// `CORDIAL_GAMEPAD`. Takes effect on the pump's next tick, which is
+/// where the engine's natives are called from and therefore where a disconnect
+/// has to be sent.
+///
+/// Turning it on needs nothing further: the rescan that already runs every two
+/// seconds finds the pads and announces them as it would at launch. Turning it
+/// off is what needs work, because the engine has been told those pads exist and
+/// going quiet would leave it with controllers that never move -- see
+/// [`withdraw`].
+pub fn set_enabled(on: bool) {
+    SWITCH.store(if on { SWITCH_ON } else { SWITCH_OFF }, Ordering::Relaxed);
+    if !on {
+        WITHDRAW.store(true, Ordering::Relaxed);
+    }
+}
+
+/// The setting in force, for the control socket's reply.
+pub fn current_enabled() -> bool {
+    enabled()
+}
+
+/// Tell the engine every announced pad has gone, and let go of the devices.
+///
+/// This is the path a pad that is unplugged already takes --
+/// `deliver_gamepad_disconnect` for its id -- which is the reason it is
+/// reasonable to use here: the engine has to cope with a disconnect whenever a
+/// user pulls a cable, so a setting that sends the same thing is asking for
+/// nothing it does not already handle. **Only announced pads get one.** A pad
+/// that was opened but never announced is one the engine was never told about,
+/// and disconnecting an id it has not heard of is the kind of call that has no
+/// reason to be safe.
+///
+/// `disconnect` is a parameter only so the test does not need an engine.
+fn withdraw(pads: &mut Vec<Pad>, mut disconnect: impl FnMut(i32)) -> usize {
+    let mut sent = 0;
+    for pad in pads.drain(..) {
+        if pad.announced {
+            disconnect(pad.id);
+            sent += 1;
+        }
+    }
+    sent
 }
 
 /// The gate's decision, separated from where it reads it.
@@ -635,8 +714,8 @@ fn dispatch(id: i32, kind: u8, index: u8, value: i16) {
 /// `input::idle_keepalive`.
 ///
 /// Cheap when there is nothing to do, which is the common case and the one that
-/// matters: with the feature off this is one relaxed `OnceLock` read and a
-/// return, and with it on and no pad attached it is a `Vec::is_empty` plus four
+/// matters: with the feature off this is two relaxed loads and a return, and
+/// with it on and no pad attached it is a `Vec::is_empty` plus four
 /// `open` attempts every two seconds.
 ///
 /// Deliberately does *not* drive the engine's idle throttle. `idle_keepalive`
@@ -647,6 +726,15 @@ fn dispatch(id: i32, kind: u8, index: u8, value: i16) {
 /// leaves the keepalive to the path it was measured on.
 pub fn poll() {
     if !enabled() {
+        if WITHDRAW.swap(false, Ordering::Relaxed) {
+            let mut pads = PADS.lock().unwrap_or_else(|e| e.into_inner());
+            let n = withdraw(&mut pads, input::deliver_gamepad_disconnect);
+            if n > 0 {
+                eprintln!(
+                    "[cordial] gamepad: switched off; {n} controller(s) disconnected from the engine"
+                );
+            }
+        }
         return;
     }
     // The all-or-nothing gate. A build that exported some of the six but not the
@@ -727,7 +815,48 @@ fn poll_probe() {
 
 #[cfg(test)]
 mod tests {
-    use super::{enabled_for};
+    use super::{enabled_for, withdraw, Pad};
+
+    fn pad(id: i32, announced: bool) -> Pad {
+        // A real file descriptor that never produces an event; `withdraw` only
+        // drops it, which is what letting go of a device is.
+        Pad { id, file: std::fs::File::open("/dev/null").unwrap(), announced }
+    }
+
+    /// **Switching the controllers off has to tell the engine**, or it keeps
+    /// pads that never move. Only the pads it was told about get a disconnect.
+    #[test]
+    fn switching_off_disconnects_each_announced_pad_once_and_lets_go_of_all() {
+        let mut pads = vec![pad(0, true), pad(1, false), pad(2, true)];
+        let mut told = Vec::new();
+        let n = withdraw(&mut pads, |id| told.push(id));
+        assert_eq!(told, vec![0, 2], "pad 1 was never announced, so the engine has never heard of it");
+        assert_eq!(n, 2);
+        assert!(pads.is_empty(), "the device files are released, not kept open while off");
+
+        // Control: nothing held, nothing sent. A second tick while still off is
+        // a no-op rather than a second disconnect for the same ids.
+        let mut again = Vec::new();
+        assert_eq!(withdraw(&mut pads, |id| again.push(id)), 0);
+        assert!(again.is_empty());
+    }
+
+    /// The setting is a real switch now, in both directions, and the launch
+    /// environment only seeds it.
+    #[test]
+    fn the_switch_can_be_turned_off_and_back_on_after_it_was_seeded() {
+        use super::{current_enabled, set_enabled, SWITCH, SWITCH_UNSET, TEST_GUARD};
+        use std::sync::atomic::Ordering;
+        let _g = TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        SWITCH.store(SWITCH_UNSET, Ordering::Relaxed);
+        let seeded = current_enabled();
+        set_enabled(!seeded);
+        assert_eq!(current_enabled(), !seeded, "the seed must not win over a later change");
+        set_enabled(seeded);
+        assert_eq!(current_enabled(), seeded);
+        // Leave it on, the default, for anything that runs after.
+        set_enabled(true);
+    }
 
     /// **A mouse that joydev bound to is not a controller.**
     ///

@@ -399,6 +399,20 @@ fn handle(line: &str) -> String {
             push(Cmd::Redraw);
             "ok".into()
         }
+        // `gamepad [on|off]` -- switch controller support while a game runs
+        // (`gamepad::set_enabled`): off disconnects every pad the engine was
+        // told about, on lets the next rescan announce them again. With no
+        // argument it only reports the switch.
+        "gamepad" => {
+            match it.next() {
+                Some("on") => crate::android::gamepad::set_enabled(true),
+                Some("off") => crate::android::gamepad::set_enabled(false),
+                None => {}
+                Some(_) => return "err gamepad [on|off]".into(),
+            }
+            let on = crate::android::gamepad::current_enabled();
+            format!("ok gamepad {}", if on { "on" } else { "off" })
+        }
         // The capture the compositor would not give us. See `vulkan::capture`.
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
@@ -626,6 +640,16 @@ fn report_replace(verb: &str, text: &str, result: Result<usize, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gamepad_verb_moves_the_switch_and_reports_it() {
+        let _g = crate::android::gamepad::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(handle("gamepad off"), "ok gamepad off");
+        assert_eq!(handle("gamepad"), "ok gamepad off", "a bare verb only reports");
+        assert_eq!(handle("gamepad on"), "ok gamepad on");
+        assert_eq!(handle("gamepad maybe"), "err gamepad [on|off]");
+        assert_eq!(handle("gamepad"), "ok gamepad on", "a bad argument changes nothing");
+    }
 
     // `QUEUE` is process-global, so this drains it first rather than assuming
     // it starts empty -- this is the only test in the file that touches it,

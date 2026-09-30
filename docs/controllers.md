@@ -36,4 +36,6 @@ CORDIAL_MONITOR=1 CORDIAL_FULLSCREEN=1 cargo run --release --bin cordial-run -- 
 
 `cordial-run --help` lists the rest. `stacked config set gamepad false` turns
 controller support off entirely, and `CORDIAL_GAMEPAD=0` does the same for one
-launch.
+launch. With the control socket on, `gamepad off` and `gamepad on` switch it
+while a game runs: off tells the engine every pad it knows about has been
+unplugged, and on lets the next rescan, within two seconds, announce them again.
