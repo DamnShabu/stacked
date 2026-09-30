@@ -21,7 +21,7 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked update` | Download the newest build, if it's newer than the one you have. `--force` downloads it anyway. |
 | `stacked versions` | List the builds kept on disk. `versions available` lists the ones you can download. `versions get V` downloads one, and `versions remove V` deletes one. |
 | `stacked pin V`, `stacked unpin` | Make a profile always run build V, or go back to the current build. Both take `--profile`. |
-| `stacked profiles` | List profiles. `profiles new NAME` creates one, and `profiles use NAME` makes it the current one. |
+| `stacked profiles` | List profiles. `profiles new NAME` creates one, `profiles use NAME` makes it the current one, and `profiles remove NAME` deletes one, including its saved sign-in in the keyring. `remove` asks you to type the name, or takes `--yes`. |
 | `stacked config` | List every setting with its current value (see below). |
 | `stacked flags` | List, set and remove the current profile's FastFlags (see [FastFlags](#fastflags)). |
 | `stacked audio-outputs` | List the names `audio_output` accepts. |

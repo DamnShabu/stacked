@@ -7,7 +7,7 @@ _stacked() {
         words="play status install update versions pin unpin profiles config flags audio-outputs plugins doctor desktop completions diagnostics help version"
     elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == config && ${COMP_WORDS[2]} == @(get|set|unset) ]]; then
         words=$(stacked __complete config-keys 2>/dev/null)
-    elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == profiles && ${COMP_WORDS[2]} == use ]]; then
+    elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == profiles && ${COMP_WORDS[2]} == @(use|remove) ]]; then
         words=$(stacked __complete profiles 2>/dev/null)
     elif [[ ${COMP_WORDS[1]} == @(plugins|flags) && ${COMP_WORDS[2]} == @(install|import) ]]; then
         COMPREPLY=($(compgen -f -- "$cur")); return
@@ -19,7 +19,7 @@ _stacked() {
         versions) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list available get remove"; fi ;;
         pin) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="--profile"; fi ;;
         unpin) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="--profile"; fi ;;
-        profiles) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list new use"; fi ;;
+        profiles) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list new use remove"; fi ;;
         config) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list get set unset path"; fi ;;
         flags) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list get set unset import edit clear path --profile"; fi ;;
         plugins) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list install remove enable disable grant revoke prefs deno --profile"; fi ;;

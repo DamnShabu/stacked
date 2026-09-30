@@ -59,6 +59,11 @@ put it).
 **To update Stacked**, run `git pull --recurse-submodules` and repeat the
 `cargo build` and first `install` lines.
 
+**To remove it**, run `stacked desktop remove` and delete the two binaries.
+Profiles stay in `~/.local/share/cordial` until you delete them, and
+`stacked profiles remove NAME` also clears that profile's sign-in from the
+keyring.
+
 ## Use
 
 ```bash
@@ -73,7 +78,7 @@ Stacked ships no part of Roblox.
 | | |
 |---|---|
 | `stacked play --profile alt` | Play signed in as someone else. Each profile is its own sign-in. |
-| `stacked profiles new alt` | Make a profile. `stacked profiles use alt` makes it the default. |
+| `stacked profiles new alt` | Make a profile. `profiles use alt` makes it the default, and `profiles remove alt` deletes it. |
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
 | `stacked update` | Download the newest Roblox build now. `stacked` also does this by itself when you press Play. |
 | `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import --sober` copies Sober's, and `import file.json` takes a Bloxstrap export. |

@@ -26,7 +26,7 @@ complete -c stacked -n '__fish_seen_subcommand_from update' -l force
 complete -c stacked -n '__fish_seen_subcommand_from versions; and test (count (commandline -opc)) -eq 2' -a 'list available get remove'
 complete -c stacked -n '__fish_seen_subcommand_from pin' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from unpin' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
-complete -c stacked -n '__fish_seen_subcommand_from profiles; and test (count (commandline -opc)) -eq 2' -a 'list new use'
+complete -c stacked -n '__fish_seen_subcommand_from profiles; and test (count (commandline -opc)) -eq 2' -a 'list new use remove'
 complete -c stacked -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -a 'list get set unset path'
 complete -c stacked -n '__fish_seen_subcommand_from flags; and test (count (commandline -opc)) -eq 2' -a 'list get set unset import edit clear path'
 complete -c stacked -n '__fish_seen_subcommand_from flags' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
@@ -36,5 +36,5 @@ complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
 complete -c stacked -n '__fish_seen_subcommand_from desktop; and test (count (commandline -opc)) -eq 2' -a 'install remove status'
 complete -c stacked -n '__fish_seen_subcommand_from completions; and test (count (commandline -opc)) -eq 2' -a 'bash zsh fish'
 complete -c stacked -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get set unset' -a '(stacked __complete config-keys 2>/dev/null)'
-complete -c stacked -n '__fish_seen_subcommand_from profiles; and __fish_seen_subcommand_from use' -a '(stacked __complete profiles 2>/dev/null)'
+complete -c stacked -n '__fish_seen_subcommand_from profiles; and __fish_seen_subcommand_from use remove' -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from install import' -F

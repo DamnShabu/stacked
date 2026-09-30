@@ -91,6 +91,7 @@ Profiles (each is a separate sign-in and data directory)
   profiles                List profiles; * marks the current one.
   profiles new NAME       Create a profile.
   profiles use NAME       Make NAME the current profile.
+  profiles remove NAME    Delete a profile, its sign-in and its data. Asks first.
 
 Settings
   config                  Show every setting and its value.
@@ -626,11 +627,95 @@ fn profiles(args: &[String]) -> u8 {
             println!("current profile is now {name:?}");
             0
         }
+        Some("remove" | "delete" | "rm") => {
+            let Some(name) = args.get(1).filter(|a| !a.starts_with('-')) else {
+                eprintln!("stacked: profiles remove needs a name");
+                return 2;
+            };
+            let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+            remove_profile(name, &config.profile, yes)
+        }
         Some(other) => {
             eprintln!("stacked: unknown profiles command {other:?}. Try `stacked help`.");
             2
         }
     }
+}
+
+/// Delete a profile: its sign-in, settings, FastFlags, plugin grants and
+/// Roblox's data for it.
+///
+/// **The saved sign-in is erased first, from the keyring as well as the
+/// profile.** Keyring entries are keyed by the profile's directory
+/// (`secrets::attributes`), so deleting the directory alone would leave a live
+/// session token in the keyring with nothing that would ever read or remove
+/// it -- and a later profile of the same name would inherit it.
+///
+/// Refused for the current profile, which the next `stacked` would recreate
+/// empty, and for one that is running, by taking its lock the way a launch
+/// does. The directory is renamed aside before it is deleted, so an
+/// interrupted removal leaves no half-profile under the old name.
+fn remove_profile(name: &str, current: &str, yes: bool) -> u8 {
+    if !profile::list().iter().any(|n| n == name) {
+        eprintln!("stacked: there is no profile {name:?}. `stacked profiles` lists them.");
+        return 1;
+    }
+    if name == current {
+        eprintln!(
+            "stacked: {name:?} is the current profile. `stacked profiles use OTHER` first, then remove it."
+        );
+        return 1;
+    }
+    if !yes {
+        // SAFETY: `isatty` reads nothing but its argument.
+        if unsafe { libc::isatty(0) } != 1 {
+            eprintln!("stacked: profiles remove deletes a sign-in and its data; pass --yes to do it without a terminal");
+            return 2;
+        }
+        print!(
+            "This deletes profile {name:?}: its sign-in, settings, FastFlags and Roblox data.\n\
+             Type the profile's name to confirm: "
+        );
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut typed = String::new();
+        if std::io::stdin().read_line(&mut typed).is_err() || typed.trim() != name {
+            println!("not removed");
+            return 1;
+        }
+    }
+    let claim = match profile::acquire(name) {
+        Ok(claim) => claim,
+        Err(e @ profile::Error::Busy(..)) => {
+            eprintln!("stacked: {e}
+Close it first.");
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let dir = claim.profile_dir().to_path_buf();
+    let store = if cordial_shell::secrets::usable().is_ok() {
+        cordial_shell::secrets::Store::Keyring
+    } else {
+        cordial_shell::secrets::Store::File
+    };
+    for kind in [cordial_shell::secrets::Kind::Cookies, cordial_shell::secrets::Kind::Identity] {
+        if let Err(e) = cordial_shell::secrets::erase(store, &dir, kind) {
+            eprintln!("stacked: could not erase the saved {}: {e}. Nothing was removed.", kind.name());
+            return 1;
+        }
+    }
+    let aside = dir.with_file_name(format!(".{name}.removing"));
+    let _ = std::fs::remove_dir_all(&aside);
+    if let Err(e) = std::fs::rename(&dir, &aside).and_then(|()| std::fs::remove_dir_all(&aside)) {
+        eprintln!("stacked: {}: {e}", dir.display());
+        return 1;
+    }
+    drop(claim);
+    println!("removed profile {name:?}");
+    0
 }
 
 #[cfg(test)]

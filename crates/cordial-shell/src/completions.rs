@@ -18,7 +18,7 @@ pub const COMMANDS: &[(&str, &[&str], &[&str])] = &[
     ("versions", &["list", "available", "get", "remove"], &[]),
     ("pin", &[], &["--profile"]),
     ("unpin", &[], &["--profile"]),
-    ("profiles", &["list", "new", "use"], &[]),
+    ("profiles", &["list", "new", "use", "remove"], &[]),
     ("config", &["list", "get", "set", "unset", "path"], &[]),
     ("flags", &["list", "get", "set", "unset", "import", "edit", "clear", "path"], &["--profile"]),
     ("audio-outputs", &[], &[]),
@@ -91,7 +91,7 @@ _stacked() {{
         words="{names}"
     elif (( COMP_CWORD == 3 )) && [[ ${{COMP_WORDS[1]}} == config && ${{COMP_WORDS[2]}} == @(get|set|unset) ]]; then
         words=$(stacked __complete config-keys 2>/dev/null)
-    elif (( COMP_CWORD == 3 )) && [[ ${{COMP_WORDS[1]}} == profiles && ${{COMP_WORDS[2]}} == use ]]; then
+    elif (( COMP_CWORD == 3 )) && [[ ${{COMP_WORDS[1]}} == profiles && ${{COMP_WORDS[2]}} == @(use|remove) ]]; then
         words=$(stacked __complete profiles 2>/dev/null)
     elif [[ ${{COMP_WORDS[1]}} == @(plugins|flags) && ${{COMP_WORDS[2]}} == @(install|import) ]]; then
         COMPREPLY=($(compgen -f -- "$cur")); return
@@ -137,7 +137,7 @@ fn fish() -> String {
          -a '(stacked __complete config-keys 2>/dev/null)'\n",
     );
     out.push_str(
-        "complete -c stacked -n '__fish_seen_subcommand_from profiles; and __fish_seen_subcommand_from use' \
+        "complete -c stacked -n '__fish_seen_subcommand_from profiles; and __fish_seen_subcommand_from use remove' \
          -a '(stacked __complete profiles 2>/dev/null)'\n",
     );
     out.push_str("complete -c stacked -n '__fish_seen_subcommand_from install import' -F\n");
