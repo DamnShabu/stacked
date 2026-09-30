@@ -85,8 +85,24 @@
       version numbers carry on from it, and each link goes to the release page
       where that version actually shipped. The notes describe Cordial as it was,
       GTK launcher and Settings window included. Stacked's own releases go on
-      top, and none has been cut yet.
+      top; 0.21.0 is the first.
     -->
+    <release version="0.21.0" date="2026-09-30">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.0</url>
+      <description>
+        <p>
+          The first Stacked release. Stacked is started with the stacked
+          command and opens no window but the game's. It installs Roblox on
+          first launch and a newer build before each launch that needs one.
+        </p>
+        <ul>
+          <li>stacked doctor checks the machine and says what to fix.</li>
+          <li>FastFlags can be set, checked and imported from Sober or Bloxstrap.</li>
+          <li>The cursor stays on the game's screen in fullscreen.</li>
+          <li>The frame-rate target follows the screen's refresh rate.</li>
+        </ul>
+      </description>
+    </release>
     <!--
       **This list is eight releases stale below, and 0.13.0 was the first entry
       added since 0.5.2.** The comment above asks for it to be kept in step and

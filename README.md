@@ -149,6 +149,13 @@ the same defaults Sober does: GameMode for the performance governor, MAILBOX
 rather than FIFO presentation, and no launcher left running while you play.
 Beyond that, it targets your screen's refresh rate rather than 60.
 
+**I use Sober. How do I switch?** Stacked starts from the Roblox build Sober
+already downloaded, and only downloads one when a newer build is out.
+`stacked flags import --sober` copies your FastFlags, and
+`stacked desktop install` makes the website's Play button open Stacked
+instead. You sign in again, once per
+profile. Sober keeps working alongside it.
+
 **I used Cordial. What carries over?** Everything: profiles, sign-ins,
 FastFlags, and settings. Stacked reads the same `~/.local/share/cordial` and
 `~/.config/cordial` paths. Cordial's Settings window is `stacked config` here.
