@@ -140,6 +140,14 @@ pub fn is_crash(status: &std::process::ExitStatus, output: &str) -> bool {
         return true;
     }
 
+    // The teardown watchdog (issue #52) exits 124 after the user has already
+    // closed the game and cookies are saved: a hang on the way out, not a crash
+    // worth a page. It says so on stderr, and that line is required too, so a
+    // stray 124 from anything else still reaches the crash page.
+    if status.code() == Some(124) && output.contains("shutdown sequence has not returned") {
+        return false;
+    }
+
     // The exact spacing in Xlib's `XIO` line varies between versions, while
     // the connection-loss wording is stable. Keep this as a marker check
     // rather than special-casing exit code 1: a loader failure also returns 1
@@ -196,6 +204,15 @@ mod tests {
         let line = describe(&status);
         assert!(!line.contains("exit code"), "{line}");
         assert!(line.contains("stopped by the system"), "{line}");
+    }
+
+    #[test]
+    fn the_teardown_watchdog_exit_is_not_a_crash_but_a_bare_124_is() {
+        let status = ExitStatus::from_raw(124 << 8);
+        let line = "[android] the engine's shutdown sequence has not returned after 10s; \
+                    exiting without it, with status 124 (issue #52).";
+        assert!(!is_crash(&status, line));
+        assert!(is_crash(&status, "something else exited 124"));
     }
 
     #[test]
