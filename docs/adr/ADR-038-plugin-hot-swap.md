@@ -144,6 +144,42 @@ just changed again.
 If the intersection leaves nothing, the plugin is not restarted at all — the
 same `not started` invariant as an ordinary launch, applied to an update
 whose new manifest happens to ask for less than the profile ever granted.
+The first version of that rule was a bypass; the next section is what it
+became.
+
+## An update that asks for nothing granted stays stopped, waiting for approval
+
+The "not restarted" above only stopped the old process and moved on. The next
+tick found the plugin absent from `running` and still wanted, `diff` said
+`Start`, and `Start` hands over `Desired::granted`, the raw grants-file entry:
+the update ran on exactly the grant this section says it must not inherit,
+one second late. The same route was open whenever the replacement failed to
+spawn and was retried, and whenever the old process was slow enough to die
+that the restart was deferred a tick.
+
+Decided (maintainer's choice, not derived): when an update requests nothing
+the profile has granted, the plugin is **left stopped**. The new version is
+not run, the old version is not run in its place, and no later tick starts it.
+
+- `BlockKind::NeedsApproval` records the state in `Shared::blocked`, against
+  the plugin's fingerprint and grant. It is not retried by time or by Deno
+  appearing; it lifts only when the plugin's files change again or the
+  profile's grant for it changes, which is the user approving in Settings.
+- `Shared::updating` remembers that a plugin's files changed while it ran, and
+  every start of it until one succeeds, including the retry after a spawn
+  failure, goes through `intersect_for_restart`. A grant that changes but
+  still intersects to nothing (the user switched on something the new
+  manifest does not ask for) is recorded again rather than started.
+- The plugin's health entry reads `Update needs approval: <permissions>`,
+  naming what the manifest requests that the profile has not granted. Settings
+  shows it as a warning icon on the plugin's row, not as a failure, and the
+  entry is cleared when the plugin starts or stops being wanted.
+
+Not covered, deliberately: an update that requests *some* of what was granted
+plus something new still runs, with the granted part only, as above. And a
+Cordial relaunch, or a plugin switched off and on, starts from the grants file
+as `start_all` always has; the launch-time trust in `docs/plugin-api.md` is
+unchanged.
 
 ## A plugin that failed to start is remembered, not retried every tick
 

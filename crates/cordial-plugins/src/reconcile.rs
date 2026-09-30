@@ -345,6 +345,34 @@ pub enum BlockKind {
     /// A spawn error that may pass by itself (out of descriptors, out of
     /// processes). Retried with a growing wait rather than every tick.
     Transient,
+    /// Not a failure: an update whose manifest asks for nothing this profile
+    /// has granted, so it has nothing it is allowed to run with. Lifts only
+    /// when the grant changes (the user approves it in Settings) or the
+    /// plugin's files change again.
+    ///
+    /// **This exists because the alternative was a bypass.** The restart path
+    /// stopped such a plugin and moved on, and the next tick read "wanted and
+    /// not running" as a plain `Start`, which hands over the raw grants-file
+    /// entry -- exactly the set ADR-038 says an update must not inherit. The
+    /// record is what makes "do not run it" survive the tick after the one
+    /// that decided it.
+    NeedsApproval,
+}
+
+/// The health line for an update that cannot run until the profile approves
+/// what it asks for: `requested` is what the new manifest declares and
+/// `granted` what the profile holds.
+///
+/// Short on purpose -- it is a tooltip in Settings -- and it names the
+/// permissions, because "needs approval" alone leaves a user opening every
+/// switch to find the one that changed.
+pub fn approval_message(requested: &BTreeSet<Capability>, granted: &BTreeSet<Capability>) -> String {
+    let missing: Vec<&str> = requested.difference(granted).map(|c| c.name()).collect();
+    if missing.is_empty() {
+        format!("{}: it now declares no permissions", crate::health::NEEDS_APPROVAL)
+    } else {
+        format!("{}: {}", crate::health::NEEDS_APPROVAL, missing.join(", "))
+    }
 }
 
 /// A failed start, remembered.
@@ -421,7 +449,7 @@ impl Blocked {
         }
         match self.kind {
             BlockKind::RuntimeMissing => runtime_present(),
-            BlockKind::Permanent => false,
+            BlockKind::Permanent | BlockKind::NeedsApproval => false,
             BlockKind::Transient => now >= self.retry_at,
         }
     }
@@ -690,7 +718,7 @@ mod tests {
     fn the_runtime_is_only_looked_for_when_that_is_what_the_plugin_waits_on() {
         let (want, user, _p) = blocked_fixture("blocked-lookup");
         let now = std::time::Instant::now();
-        for kind in [BlockKind::Permanent, BlockKind::Transient] {
+        for kind in [BlockKind::Permanent, BlockKind::Transient, BlockKind::NeedsApproval] {
             let b = Blocked::record(kind, None, &want, now);
             let _ = b.allows_retry(&want, || panic!("a filesystem lookup nothing asked for"), now);
         }
@@ -713,6 +741,33 @@ mod tests {
         let regranted = desired_for(&user, &profile);
         assert!(b.allows_retry(&regranted, || true, now), "a new grant is a different plugin");
         let _ = std::fs::remove_dir_all(user.parent().unwrap());
+    }
+
+    #[test]
+    fn an_update_waiting_for_approval_lifts_only_on_new_files_or_a_new_grant() {
+        let (want, user, profile) = blocked_fixture("blocked-approval");
+        let now = std::time::Instant::now();
+        let b = Blocked::record(BlockKind::NeedsApproval, None, &want, now);
+        let much_later = now + std::time::Duration::from_secs(86_400);
+        assert!(!b.allows_retry(&want, || true, much_later), "time does not approve anything");
+
+        std::fs::write(user.join("quiet").join("main.ts"), "// v2\n").unwrap();
+        assert!(b.allows_retry(&desired_for(&user, &profile), || true, now));
+
+        std::fs::write(grants::path_in(&profile), r#"{"quiet":["log","notify.send"]}"#).unwrap();
+        assert!(b.allows_retry(&desired_for(&user, &profile), || true, now));
+        let _ = std::fs::remove_dir_all(user.parent().unwrap());
+    }
+
+    #[test]
+    fn the_approval_message_names_what_the_profile_has_not_granted() {
+        let requested = BTreeSet::from([Capability::Log, Capability::UrlOpen, Capability::NotifySend]);
+        let granted = BTreeSet::from([Capability::Log]);
+        assert_eq!(approval_message(&requested, &granted), "Update needs approval: notify.send, url.open");
+        assert_eq!(
+            approval_message(&BTreeSet::new(), &granted),
+            "Update needs approval: it now declares no permissions"
+        );
     }
 
     #[test]
