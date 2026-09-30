@@ -249,6 +249,10 @@ install -Dpm 0644 packaging/io.github.damnshabu.Stacked.desktop \
     %{buildroot}%{_datadir}/applications/io.github.damnshabu.Stacked.desktop
 install -Dpm 0644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
     %{buildroot}%{_datadir}/metainfo/io.github.damnshabu.Stacked.metainfo.xml
+# Tab completion, from the copies a test keeps equal to `stacked completions`.
+install -Dpm 0644 packaging/completions/stacked.bash %{buildroot}%{_datadir}/bash-completion/completions/stacked
+install -Dpm 0644 packaging/completions/_stacked     %{buildroot}%{_datadir}/zsh/site-functions/_stacked
+install -Dpm 0644 packaging/completions/stacked.fish %{buildroot}%{_datadir}/fish/vendor_completions.d/stacked.fish
 
 # MIT requires its notice in "all copies or substantial portions" and
 # Apache-2.0 section 4(d) requires NOTICE to travel with derivative works. Both
@@ -344,6 +348,9 @@ appstream-util validate-relax --nonet \
 %{_datadir}/applications/io.github.damnshabu.Stacked.desktop
 %{_datadir}/metainfo/io.github.damnshabu.Stacked.metainfo.xml
 %{_datadir}/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg
+%{_datadir}/bash-completion/completions/stacked
+%{_datadir}/zsh/site-functions/_stacked
+%{_datadir}/fish/vendor_completions.d/stacked.fish
 
 %changelog
 * Sat Aug 22 2026 luohoa97 <luohoa97@users.noreply.github.com> - 0.6.0-1.108.20260822git9d9c980

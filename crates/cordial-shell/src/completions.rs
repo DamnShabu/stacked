@@ -213,6 +213,25 @@ mod tests {
         }
     }
 
+    /// The packages install the committed copies in `packaging/completions/`,
+    /// so a build never has to run the binary it is packaging. This is what
+    /// keeps those copies from going stale: change a command, run the three
+    /// `stacked completions` lines in that directory's README, commit.
+    #[test]
+    fn the_packaged_scripts_are_what_the_binary_prints() {
+        let zsh = format!("#compdef stacked\nautoload -U +X bashcompinit && bashcompinit\n{}", bash());
+        for (file, expected) in [
+            (include_str!("../../../packaging/completions/stacked.bash"), bash()),
+            (include_str!("../../../packaging/completions/_stacked"), zsh),
+            (include_str!("../../../packaging/completions/stacked.fish"), fish()),
+        ] {
+            assert_eq!(
+                file, expected,
+                "packaging/completions/ is stale; regenerate it with `stacked completions bash|zsh|fish`"
+            );
+        }
+    }
+
     #[test]
     fn the_bash_script_parses() {
         // `bash -n` checks syntax without running anything. Skipped where
