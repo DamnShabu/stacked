@@ -550,8 +550,14 @@ fn status(args: &[String]) -> u8 {
         Some((apk, origin)) => {
             // The recorded version only: reading it out of the engine is a
             // 118 MB scan when nothing has memoised it, and a status line is
-            // not worth that. Unknown here means "not yet extracted".
-            match cordial_update::cache::recorded_version(&install::engine_cache()) {
+            // not worth that. Unknown here means "not yet extracted". Only
+            // when the cache was extracted from this APK: otherwise the
+            // version is some other build's.
+            let cache = install::engine_cache();
+            let version = cordial_update::cache::is_current(&cache, &apk)
+                .then(|| cordial_update::cache::recorded_version(&cache))
+                .flatten();
+            match version {
                 Some(version) => println!("roblox:   {version}, {}", apk.display()),
                 None => println!("roblox:   {}", apk.display()),
             }
