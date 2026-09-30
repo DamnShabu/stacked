@@ -75,7 +75,7 @@ Building needs:
 
 ```bash
 # Fedora:         sudo dnf install clang cmake gtk4-devel libadwaita-devel pipewire-devel
-# Debian/Ubuntu:  sudo apt install clang cmake libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev
+# Debian/Ubuntu:  sudo apt install clang cmake pkg-config libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev
 # Arch:           sudo pacman -S clang cmake gtk4 libadwaita pipewire
 git clone --recursive https://github.com/DamnShabu/stacked
 cd stacked
@@ -84,8 +84,9 @@ install -Dm755 target/release/stacked target/release/cordial-run -t ~/.local/bin
 ```
 
 The submodules are required. `stacked` and `cordial-run` must sit in the same
-directory, or both be on your `PATH`. The README shows how to install the
-desktop entry, which is what makes a browser's Play button open Stacked.
+directory, or both be on your `PATH`. Then `stacked desktop install` adds the
+desktop entry, which is what makes a browser's Play button open Stacked, and
+`stacked doctor` checks the machine for anything that would stop it running.
 
 To build the Flatpak yourself instead:
 
