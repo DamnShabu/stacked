@@ -13,6 +13,7 @@ complete -c stacked -n __fish_use_subcommand -a flags
 complete -c stacked -n __fish_use_subcommand -a audio-outputs
 complete -c stacked -n __fish_use_subcommand -a plugins
 complete -c stacked -n __fish_use_subcommand -a doctor
+complete -c stacked -n __fish_use_subcommand -a logs
 complete -c stacked -n __fish_use_subcommand -a desktop
 complete -c stacked -n __fish_use_subcommand -a completions
 complete -c stacked -n __fish_use_subcommand -a diagnostics
@@ -33,6 +34,9 @@ complete -c stacked -n '__fish_seen_subcommand_from flags' -l profile -r -a '(st
 complete -c stacked -n '__fish_seen_subcommand_from plugins; and test (count (commandline -opc)) -eq 2' -a 'list install remove enable disable grant revoke prefs deno'
 complete -c stacked -n '__fish_seen_subcommand_from plugins' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l path
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l lines
 complete -c stacked -n '__fish_seen_subcommand_from desktop; and test (count (commandline -opc)) -eq 2' -a 'install remove status'
 complete -c stacked -n '__fish_seen_subcommand_from completions; and test (count (commandline -opc)) -eq 2' -a 'bash zsh fish'
 complete -c stacked -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get set unset' -a '(stacked __complete config-keys 2>/dev/null)'

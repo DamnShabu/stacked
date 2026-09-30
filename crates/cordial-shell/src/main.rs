@@ -132,6 +132,8 @@ Setting up
   completions SHELL       Print tab completion for bash, zsh or fish.
 
 Other
+  logs [--path] [--lines N] [--profile NAME]
+                          Show the end of Roblox's own newest log.
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
   help                    This. Also -h, --help.
@@ -187,6 +189,7 @@ fn main() -> ExitCode {
                 }
                 "plugins" | "plugin" => cli_plugins::run(rest),
                 "doctor" => doctor::run(rest),
+                "logs" | "log" => logs(rest),
                 "desktop" => desktop::run(rest),
                 "completions" => completions::run(rest),
                 "__complete" => completions::dynamic(rest),
@@ -496,7 +499,8 @@ fn play(args: &[String]) -> u8 {
         eprintln!();
         report(&format!(
             "{} Its output is above, or in the journal if it was started from the desktop. \
-             `stacked diagnostics` prints what a bug report needs alongside it.",
+             `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
+             bug report needs alongside it.",
             crash::describe(&status),
         ));
         eprintln!("It was started with:\n{}", instance.command_line);
@@ -642,6 +646,88 @@ fn profiles(args: &[String]) -> u8 {
     }
 }
 
+/// `stacked logs [--profile NAME] [--path] [--lines N]`: the engine's own
+/// newest log, which the bug template calls the most useful attachment and
+/// which lives four directories inside the profile where nobody finds it.
+///
+/// `<profile>/data/files/appData/logs` is where the engine writes when the
+/// launcher hands it `CORDIAL_FILES_DIR`; `launch.rs`'s end-to-end test is what
+/// established it.
+fn logs(args: &[String]) -> u8 {
+    let (named, rest) = match take_profile(args) {
+        Ok(v) => v,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 2;
+        }
+    };
+    let mut path_only = false;
+    let mut lines = 50usize;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--path" => path_only = true,
+            "--lines" | "-n" => match it.next().and_then(|n| n.parse().ok()) {
+                Some(n) => lines = n,
+                None => {
+                    eprintln!("stacked: --lines needs a number");
+                    return 2;
+                }
+            },
+            other => {
+                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path and --lines");
+                return 2;
+            }
+        }
+    }
+    let name = match existing_profile(named) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let dir = match profile::dir(&name) {
+        Ok(d) => d.join("data/files/appData/logs"),
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let Some(newest) = newest_log(&dir) else {
+        eprintln!("stacked: no Roblox log yet in {}. The engine writes one once it has started.", dir.display());
+        return 1;
+    };
+    if path_only {
+        println!("{}", newest.display());
+        return 0;
+    }
+    let text = match std::fs::read(&newest) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => {
+            eprintln!("stacked: {}: {e}", newest.display());
+            return 1;
+        }
+    };
+    let all: Vec<&str> = text.lines().collect();
+    for line in &all[all.len().saturating_sub(lines)..] {
+        println!("{line}");
+    }
+    eprintln!("\n({} lines of {}; --lines N for more)", all.len().min(lines), newest.display());
+    0
+}
+
+/// The most recently modified `.log` in `dir`.
+fn newest_log(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(when, _)| *when)
+        .map(|(_, path)| path)
+}
+
 /// Delete a profile: its sign-in, settings, FastFlags, plugin grants and
 /// Roblox's data for it.
 ///
@@ -721,6 +807,19 @@ Close it first.");
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newest_log_is_found_by_time_and_other_files_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(newest_log(dir.path()).is_none());
+        let old = dir.path().join("0.1_old_Player_1.log");
+        let new = dir.path().join("0.1_new_Player_2.log");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "not a log").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&new, "new").unwrap();
+        assert_eq!(newest_log(dir.path()), Some(new));
+    }
 
     #[test]
     fn a_bare_link_is_routed_to_play_and_a_command_is_not() {

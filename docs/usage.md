@@ -29,6 +29,7 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |
 | `stacked desktop install` | Add Stacked to the app menu and make it what the website's Play button opens. `desktop remove` undoes it. Packages and the Flatpak do this themselves. |
 | `stacked completions SHELL` | Print tab completion for `bash`, `zsh` or `fish`. |
+| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--lines N` for more, `--path` for where the file is. |
 | `stacked diagnostics` | Print the version, distribution and install method for a bug report. |
 
 Exit status is 0 on success, 1 on failure, 2 for a usage mistake, and 3 when

@@ -117,8 +117,9 @@ anything it finds.
 - **No window appears at all** on COSMIC, KWin or some wlroots compositors.
   This is a known bug with no fix yet
   ([cordial#38](https://github.com/luohoa97/cordial/issues/38)).
-- **It closed on its own.** The output above the prompt is what it printed.
-  Include it, and `stacked diagnostics`, in a bug report.
+- **It closed on its own.** The output above the prompt is what it printed,
+  and `stacked logs` shows Roblox's own log. Include both, and
+  `stacked diagnostics`, in a bug report.
 
 ## Status
 
