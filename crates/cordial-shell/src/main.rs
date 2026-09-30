@@ -548,7 +548,13 @@ fn status(args: &[String]) -> u8 {
     }
     match install::effective_apk(&config.roblox) {
         Some((apk, origin)) => {
-            println!("roblox:   {}", apk.display());
+            // The recorded version only: reading it out of the engine is a
+            // 118 MB scan when nothing has memoised it, and a status line is
+            // not worth that. Unknown here means "not yet extracted".
+            match cordial_update::cache::recorded_version(&install::engine_cache()) {
+                Some(version) => println!("roblox:   {version}, {}", apk.display()),
+                None => println!("roblox:   {}", apk.display()),
+            }
             println!("          {}", origin.describe());
         }
         None => println!("roblox:   none found -- `stacked` downloads one on first play"),
