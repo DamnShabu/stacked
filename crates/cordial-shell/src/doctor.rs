@@ -63,9 +63,9 @@ pub fn run(args: &[String]) -> u8 {
     }
     let checks = all(offline);
     for c in &checks {
-        println!("{}  {}", c.level.tag(), c.what);
+        println!("{}  {}", c.level.tag(), private(&c.what));
         for line in c.fix.lines() {
-            println!("      {line}");
+            println!("      {}", private(line));
         }
     }
     let fails = checks.iter().filter(|c| c.level == Level::Fail).count();
@@ -77,6 +77,19 @@ pub fn run(args: &[String]) -> u8 {
         (f, _) => println!("{f} problem{} will stop Roblox starting.", plural(f)),
     }
     u8::from(fails > 0)
+}
+
+/// `line` with the home directory shown as `~`.
+///
+/// The bug report template asks for this output, and a home directory is
+/// usually its owner's name -- the reason `diagnostics.rs` prints no path
+/// under `$HOME` at all. Paths are still worth showing here, because "which
+/// cordial-run" is a real answer; the name in them is not.
+fn private(line: &str) -> String {
+    match std::env::var("HOME") {
+        Ok(home) if home.len() > 1 => line.replace(home.trim_end_matches('/'), "~"),
+        _ => line.to_string(),
+    }
 }
 
 fn plural(n: usize) -> &'static str {
@@ -436,15 +449,17 @@ fn free_bytes(path: &Path) -> Option<u64> {
     Some(stat.f_bavail.saturating_mul(stat.f_frsize))
 }
 
+/// Not named: a profile name is often the account's, and this output is meant
+/// to be pasteable into a public issue, the same rule `diagnostics.rs` keeps.
 fn current_profile(name: &str) -> Check {
     if profile::is_held(name) {
         check(
             Level::Info,
-            format!("profile {name:?} is open in a running client"),
+            "the current profile is open in a running client",
             "A second `stacked` on it will be refused; `stacked play --profile NAME` uses another.",
         )
     } else {
-        check(Level::Ok, format!("profile {name:?} is free to play"), "")
+        check(Level::Ok, "the current profile is free to play", "")
     }
 }
 
@@ -455,6 +470,16 @@ mod tests {
     #[test]
     fn a_failure_outranks_a_warning_and_the_exit_code_follows_failures_only() {
         assert!(Level::Fail > Level::Warn && Level::Warn > Level::Info && Level::Info > Level::Ok);
+    }
+
+    #[test]
+    fn the_home_directory_is_never_printed() {
+        let Ok(home) = std::env::var("HOME") else { return };
+        if home.len() <= 1 {
+            return;
+        }
+        let shown = private(&format!("cordial-run is at {home}/.local/bin/cordial-run"));
+        assert_eq!(shown, "cordial-run is at ~/.local/bin/cordial-run");
     }
 
     #[test]
