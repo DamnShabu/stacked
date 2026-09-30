@@ -116,9 +116,13 @@ jobs:
           # checkout, and the sparse checkout above carries no remote it can
           # use for that -- naming it here is the fix, not a leftover.
           GH_REPO: ${{ github.repository }}
+          # Through the environment rather than spliced into the script, so a
+          # glob or count is data to the shell and never syntax.
+          FILE_GLOBS: ${{ inputs.file_globs }}
+          EXPECTED_COUNT: ${{ inputs.expected_count }}
         run: |
           set -euo pipefail
-          read -r -a globs <<< "${{ inputs.file_globs }}"
+          read -r -a globs <<< "$FILE_GLOBS"
           find_expr=()
           for g in "${globs[@]}"; do
             [ "${#find_expr[@]}" -eq 0 ] || find_expr+=(-o)
@@ -132,8 +136,8 @@ jobs:
           # the gap.
           printf 'attaching:\n'
           printf '  %s\n' "${files[@]}"
-          if [ "${#files[@]}" -ne "${{ inputs.expected_count }}" ]; then
-              echo "error: expected exactly ${{ inputs.expected_count }} file(s), found ${#files[@]}" >&2
+          if [ "${#files[@]}" -ne "$EXPECTED_COUNT" ]; then
+              echo "error: expected exactly $EXPECTED_COUNT file(s), found ${#files[@]}" >&2
               exit 1
           fi
           # Every workflow that ends up here calls `gh release upload`, which
@@ -192,6 +196,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
+          # Through the environment rather than spliced into the script, so a
+          # count is data to the shell and never syntax.
+          EXPECTED_COUNT: ${{ inputs.expected_count }}
         run: |
           set -euo pipefail
           # A bundle rather than the older `.sig` + `.pem` pair: it is one
@@ -201,8 +208,8 @@ jobs:
               cosign sign-blob --yes --bundle "$f.cosign.bundle" "$f"
           done < "$RUNNER_TEMP/attached.txt"
           mapfile -t bundles < <(find dist -name '*.cosign.bundle' | sort)
-          if [ "${#bundles[@]}" -ne "${{ inputs.expected_count }}" ]; then
-              echo "error: expected ${{ inputs.expected_count }} signature(s), produced ${#bundles[@]}" >&2
+          if [ "${#bundles[@]}" -ne "$EXPECTED_COUNT" ]; then
+              echo "error: expected $EXPECTED_COUNT signature(s), produced ${#bundles[@]}" >&2
               exit 1
           fi
           printf 'signed:\n'
