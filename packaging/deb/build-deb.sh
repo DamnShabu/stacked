@@ -125,6 +125,12 @@ install -Dm644 packaging/io.github.damnshabu.Stacked.desktop \
     "$root/usr/share/applications/io.github.damnshabu.Stacked.desktop"
 install -Dm644 packaging/io.github.damnshabu.Stacked.metainfo.xml \
     "$root/usr/share/metainfo/io.github.damnshabu.Stacked.metainfo.xml"
+# Tab completion, from the copies a test keeps equal to `stacked completions`.
+# Debian's zsh reads vendor completions from vendor-completions, not
+# site-functions.
+install -Dm644 packaging/completions/stacked.bash "$root/usr/share/bash-completion/completions/stacked"
+install -Dm644 packaging/completions/_stacked     "$root/usr/share/zsh/vendor-completions/_stacked"
+install -Dm644 packaging/completions/stacked.fish "$root/usr/share/fish/vendor_completions.d/stacked.fish"
 
 # Debian policy puts this under the package's own name, and the package is
 # `stacked`.

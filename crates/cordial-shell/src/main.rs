@@ -30,13 +30,18 @@
 #![allow(unsafe_code)]
 
 mod audio_devices;
+mod auto_update;
 mod browser_account;
 mod cli_config;
+mod cli_flags;
 mod cli_plugins;
 mod cli_roblox;
+mod completions;
 mod crash;
 mod deep_link;
+mod desktop;
 mod diagnostics;
+mod doctor;
 mod install;
 mod launch;
 mod root_warning;
@@ -64,14 +69,17 @@ roblox: link on its own joins that experience, which is what a browser hands
 over when you press Play on the website.
 
 Playing
-  play [--profile NAME] [--run SECS] [LINK]
-                          Start Roblox. --run stops it after SECS seconds.
+  play [--profile NAME] [--no-update] [--run SECS] [LINK]
+                          Start Roblox. A newer Roblox build is installed
+                          first unless --no-update (or `auto_update false`);
+                          --run stops it after SECS seconds.
   status                  Which Roblox build and profile a launch would use.
 
 Roblox builds
   install                 Find a Roblox build, or download one if there is none.
                           A copy Sober already downloaded is used first.
-  update                  Download the newest Roblox build.
+  update [--force]        Download the newest Roblox build, if it is newer than
+                          the one you have. --force downloads it regardless.
   versions                List the builds kept on disk.
   versions available      List the builds that can be downloaded.
   versions get VERSION    Download one build into the store.
@@ -83,6 +91,7 @@ Profiles (each is a separate sign-in and data directory)
   profiles                List profiles; * marks the current one.
   profiles new NAME       Create a profile.
   profiles use NAME       Make NAME the current profile.
+  profiles remove NAME    Delete a profile, its sign-in and its data. Asks first.
 
 Settings
   config                  Show every setting and its value.
@@ -90,7 +99,18 @@ Settings
   config set KEY VALUE    Change a setting. `stacked config` lists the keys.
   config unset KEY        Put a setting back to its default.
   config path             Where the settings file is.
-  flags path [--profile NAME]    Where a profile's FastFlags file is.
+
+FastFlags (each takes --profile NAME; changes apply at the next start)
+  flags                   List this profile's FastFlags.
+  flags set NAME VALUE    Set one. The value is checked against the name's type.
+  flags get NAME          Show one.
+  flags unset NAME        Remove one.
+  flags import FILE       Merge a Bloxstrap-style JSON export; - reads stdin.
+                          --sober takes Sober's instead of a FILE.
+                          --replace drops the flags that were there.
+  flags edit              Edit the file in $EDITOR; saved only if it is valid.
+  flags clear             Remove every flag.
+  flags path              Where the file is.
   audio-outputs           List the audio outputs `audio_output` can name.
 
 Plugins
@@ -100,9 +120,20 @@ Plugins
   plugins enable|disable ID [--profile NAME]
   plugins grant|revoke ID CAPABILITY [--profile NAME]
                           Grant only what the plugin asks for; `plugins` lists it.
+  plugins prefs ID [KEY VALUE | --reset] [--profile NAME]
+                          Show or change a plugin's preferences.
   plugins deno            Install Deno, which plugins with code run on.
 
+Setting up
+  doctor [--offline]      Check this machine for what would stop Roblox
+                          working, and say what to run about each.
+  desktop install         Add Stacked to the app menu and make it what the
+                          website's Play button opens. `desktop remove` undoes it.
+  completions SHELL       Print tab completion for bash, zsh or fish.
+
 Other
+  logs [--path] [--lines N] [--profile NAME]
+                          Show the end of Roblox's own newest log.
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
   help                    This. Also -h, --help.
@@ -143,13 +174,13 @@ fn main() -> ExitCode {
                 "play" => play(rest),
                 "status" => status(rest),
                 "install" => cli_roblox::install(),
-                "update" => cli_roblox::update(),
+                "update" => cli_roblox::update(rest),
                 "versions" => cli_roblox::versions(rest),
                 "pin" => cli_roblox::pin(rest),
                 "unpin" => cli_roblox::unpin(rest),
                 "profiles" | "profile" => profiles(rest),
                 "config" => cli_config::run(rest),
-                "flags" => flags(rest),
+                "flags" | "flag" | "fflags" => cli_flags::run(rest),
                 "audio-outputs" => {
                     for sink in audio_devices::sinks() {
                         println!("{}", audio_devices::row_label(&sink));
@@ -157,10 +188,18 @@ fn main() -> ExitCode {
                     0
                 }
                 "plugins" | "plugin" => cli_plugins::run(rest),
+                "doctor" => doctor::run(rest),
+                "logs" | "log" => logs(rest),
+                "desktop" => desktop::run(rest),
+                "completions" => completions::run(rest),
+                "__complete" => completions::dynamic(rest),
                 // A bare link is the desktop entry's `%u`: play, joining it.
                 link if looks_like_link(link) => play(&args),
                 other => {
-                    eprintln!("stacked: unknown command {other:?}. Try `stacked help`.");
+                    match completions::suggest(other, completions::COMMANDS.iter().map(|(n, _, _)| *n)) {
+                        Some(near) => eprintln!("stacked: unknown command {other:?}. Did you mean `stacked {near}`?"),
+                        None => eprintln!("stacked: unknown command {other:?}. Try `stacked help`."),
+                    }
                     2
                 }
             }
@@ -201,9 +240,24 @@ pub(crate) fn take_profile(args: &[String]) -> Result<(Option<String>, Vec<Strin
     Ok((profile, rest))
 }
 
-/// The profile a command acts on: the one named, or the current one.
-pub(crate) fn chosen_profile(named: Option<String>) -> String {
-    named.unwrap_or_else(|| shell_config::load(&shell_config::path()).profile)
+/// The profile a command acts on: the one named, or the current one, refusing
+/// a named profile that does not exist.
+///
+/// For the commands that write into a profile -- `pin`, `flags`, `plugins`.
+/// Without it a mistyped `--profile` made a new directory, wrote the change
+/// there and reported success, and the profile the user meant was untouched.
+/// The current profile is accepted even before its directory exists, because
+/// on a fresh install that is `default` and nothing has created it yet.
+pub(crate) fn existing_profile(named: Option<String>) -> Result<String, String> {
+    let current = shell_config::load(&shell_config::path()).profile;
+    match named {
+        Some(name) if name != current && !profile::list().contains(&name) => Err(format!(
+            "there is no profile {name:?}. `stacked profiles` lists them, and \
+             `stacked profiles new {name}` makes one."
+        )),
+        Some(name) => Ok(name),
+        None => Ok(current),
+    }
 }
 
 fn play(args: &[String]) -> u8 {
@@ -216,9 +270,11 @@ fn play(args: &[String]) -> u8 {
     };
     let mut run_seconds = None;
     let mut link = None;
+    let mut no_update = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--no-update" | "--offline" => no_update = true,
             "--run" => match it.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(n) => run_seconds = Some(n),
                 None => {
@@ -226,6 +282,12 @@ fn play(args: &[String]) -> u8 {
                     return 2;
                 }
             },
+            // Before the link arm, or a mistyped option is taken for a link
+            // and refused as one, which names the wrong mistake.
+            other if other.starts_with("--") => {
+                eprintln!("stacked: unknown option {other:?}. Try `stacked help`.");
+                return 2;
+            }
             other if link.is_none() => link = Some(other.to_string()),
             other => {
                 eprintln!("stacked: unexpected argument {other:?}");
@@ -280,8 +342,38 @@ fn play(args: &[String]) -> u8 {
         eprintln!("stacked: {}", root_warning::WARNING);
     }
 
-    let build = match install::locate(&config.roblox) {
+    // ADR-044: the build is fetched when there is none, and brought up to date
+    // when there is a newer one, unless the user has said not to. Neither can
+    // stop a launch that has a build to start; see `auto_update.rs`.
+    let may_fetch = config.auto_update && !no_update;
+    let mut just_installed = false;
+    let mut build = match install::locate(&config.roblox) {
         Ok(build) => build,
+        Err(install::NotFound::NoBuild) if may_fetch => {
+            if let Err(e) = auto_update::first_install() {
+                if e == auto_update::METERED {
+                    report(&e);
+                } else {
+                    report(&format!(
+                        "there is no Roblox build yet, and downloading one failed: {e}\n\
+                         `stacked install` tries again."
+                    ));
+                }
+                return 1;
+            }
+            just_installed = true;
+            match install::locate(&config.roblox) {
+                Ok(build) => build,
+                Err(install::NotFound::NoBuild) => {
+                    report("Roblox was installed and then could not be found. `stacked status` shows where Stacked looked.");
+                    return 1;
+                }
+                Err(install::NotFound::Unusable(message)) => {
+                    report(&message);
+                    return 1;
+                }
+            }
+        }
         Err(install::NotFound::NoBuild) => {
             report(
                 "no Roblox build found. `stacked install` downloads one, or uses the copy \
@@ -294,6 +386,24 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
+    if may_fetch && !just_installed {
+        let pinned = profile::dir(&profile_name).ok().and_then(|d| profile::pinned_version(&d)).is_some();
+        if let Some(origin) = auto_update::origin_of(&config) {
+            if auto_update::before_launch(&build, origin, pinned) {
+                build = match install::locate(&config.roblox) {
+                    Ok(build) => build,
+                    Err(install::NotFound::NoBuild) => {
+                        report("Roblox was updated and then could not be found. `stacked status` shows where Stacked looked.");
+                        return 1;
+                    }
+                    Err(install::NotFound::Unusable(message)) => {
+                        report(&message);
+                        return 1;
+                    }
+                };
+            }
+        }
+    }
     // A profile that names a Roblox version gets that one, whatever the
     // current build is -- and a pin that cannot be honoured refuses the launch
     // rather than quietly running the build it was pinned away from.
@@ -315,6 +425,10 @@ fn play(args: &[String]) -> u8 {
         }
     };
 
+    // `play --profile NEW` makes the profile, as it always has. Noted, so the
+    // plugins a new profile should not start are switched off in it below.
+    let is_new_profile = !profile::list().contains(&profile_name);
+
     // ADR-012's claim, taken before the process exists so that a refusal
     // costs nothing, and naming the profile because "already open" on its own
     // does not tell anyone which one to close.
@@ -332,6 +446,11 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
+
+    if is_new_profile {
+        println!("stacked: profile {profile_name:?} is new; it starts signed out");
+        cli_plugins::settle_new_profile(claim.profile_dir());
+    }
 
     // Account routing authenticated exact identity and cookie bytes before
     // the lock was taken. If the saved values changed in between, the name no
@@ -384,7 +503,8 @@ fn play(args: &[String]) -> u8 {
         eprintln!();
         report(&format!(
             "{} Its output is above, or in the journal if it was started from the desktop. \
-             `stacked diagnostics` prints what a bug report needs alongside it.",
+             `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
+             bug report needs alongside it.",
             crash::describe(&status),
         ));
         eprintln!("It was started with:\n{}", instance.command_line);
@@ -432,11 +552,34 @@ fn status(args: &[String]) -> u8 {
     }
     match install::effective_apk(&config.roblox) {
         Some((apk, origin)) => {
-            println!("roblox:   {}", apk.display());
+            // The recorded version only: reading it out of the engine is a
+            // 118 MB scan when nothing has memoised it, and a status line is
+            // not worth that. Unknown here means "not yet extracted". Only
+            // when the cache was extracted from this APK: otherwise the
+            // version is some other build's.
+            let cache = install::engine_cache();
+            let version = cordial_update::cache::is_current(&cache, &apk)
+                .then(|| cordial_update::cache::recorded_version(&cache))
+                .flatten();
+            match version {
+                Some(version) => println!("roblox:   {version}, {}", apk.display()),
+                None => println!("roblox:   {}", apk.display()),
+            }
             println!("          {}", origin.describe());
         }
-        None => println!("roblox:   none found -- `stacked install` gets one"),
+        None => println!("roblox:   none found -- `stacked` downloads one on first play"),
     }
+    let origin = auto_update::origin_of(&config);
+    let updates = if config.roblox.lib_dir.is_some() {
+        "manual -- roblox.lib_dir names the engine, so Stacked will not replace the build".to_string()
+    } else if !config.auto_update {
+        "manual -- `stacked update`; `stacked config set auto_update true` checks at every play".to_string()
+    } else if auto_update::manages(origin) {
+        "checked when you press Play".to_string()
+    } else {
+        origin.and_then(install::Origin::why_not_updatable).unwrap_or_default().to_string()
+    };
+    println!("updates:  {updates}");
     if profile::is_held(&name) {
         println!("running:  yes");
     }
@@ -478,6 +621,7 @@ fn profiles(args: &[String]) -> u8 {
             // profile switcher did.
             match profile::acquire(name) {
                 Ok(claim) => {
+                    cli_plugins::settle_new_profile(claim.profile_dir());
                     drop(claim);
                     println!("created profile {name:?}. `stacked profiles use {name}` makes it current.");
                     0
@@ -505,6 +649,14 @@ fn profiles(args: &[String]) -> u8 {
             println!("current profile is now {name:?}");
             0
         }
+        Some("remove" | "delete" | "rm") => {
+            let Some(name) = args.get(1).filter(|a| !a.starts_with('-')) else {
+                eprintln!("stacked: profiles remove needs a name");
+                return 2;
+            };
+            let yes = args.iter().any(|a| a == "--yes" || a == "-y");
+            remove_profile(name, &config.profile, yes)
+        }
         Some(other) => {
             eprintln!("stacked: unknown profiles command {other:?}. Try `stacked help`.");
             2
@@ -512,7 +664,14 @@ fn profiles(args: &[String]) -> u8 {
     }
 }
 
-fn flags(args: &[String]) -> u8 {
+/// `stacked logs [--profile NAME] [--path] [--lines N]`: the engine's own
+/// newest log, which the bug template calls the most useful attachment and
+/// which lives four directories inside the profile where nobody finds it.
+///
+/// `<profile>/data/files/appData/logs` is where the engine writes when the
+/// launcher hands it `CORDIAL_FILES_DIR`; `launch.rs`'s end-to-end test is what
+/// established it.
+fn logs(args: &[String]) -> u8 {
     let (named, rest) = match take_profile(args) {
         Ok(v) => v,
         Err(e) => {
@@ -520,35 +679,165 @@ fn flags(args: &[String]) -> u8 {
             return 2;
         }
     };
-    match rest.first().map(String::as_str) {
-        None | Some("path") => {
-            let name = chosen_profile(named);
-            match profile::dir(&name) {
-                // The runtime reads `<profile>/flags.json` unless
-                // `CORDIAL_FLAGS` points elsewhere; see `docs/fastflags.md`.
-                Ok(dir) => {
-                    match std::env::var_os("CORDIAL_FLAGS") {
-                        Some(over) => println!("{}", std::path::Path::new(&over).display()),
-                        None => println!("{}", cordial_plugins::flag_document::path_in(&dir).display()),
-                    }
-                    0
+    let mut path_only = false;
+    let mut lines = 50usize;
+    let mut it = rest.iter();
+    while let Some(arg) = it.next() {
+        match arg.as_str() {
+            "--path" => path_only = true,
+            "--lines" | "-n" => match it.next().and_then(|n| n.parse().ok()) {
+                Some(n) => lines = n,
+                None => {
+                    eprintln!("stacked: --lines needs a number");
+                    return 2;
                 }
-                Err(e) => {
-                    eprintln!("stacked: {e}");
-                    1
-                }
+            },
+            other => {
+                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path and --lines");
+                return 2;
             }
         }
-        Some(other) => {
-            eprintln!("stacked: unknown flags command {other:?}. Try `stacked help`.");
-            2
+    }
+    let name = match existing_profile(named) {
+        Ok(n) => n,
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let dir = match profile::dir(&name) {
+        Ok(d) => d.join("data/files/appData/logs"),
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let Some(newest) = newest_log(&dir) else {
+        eprintln!("stacked: no Roblox log yet in {}. The engine writes one once it has started.", dir.display());
+        return 1;
+    };
+    if path_only {
+        println!("{}", newest.display());
+        return 0;
+    }
+    let text = match std::fs::read(&newest) {
+        Ok(bytes) => String::from_utf8_lossy(&bytes).into_owned(),
+        Err(e) => {
+            eprintln!("stacked: {}: {e}", newest.display());
+            return 1;
+        }
+    };
+    let all: Vec<&str> = text.lines().collect();
+    for line in &all[all.len().saturating_sub(lines)..] {
+        println!("{line}");
+    }
+    eprintln!("\n({} lines of {}; --lines N for more)", all.len().min(lines), newest.display());
+    0
+}
+
+/// The most recently modified `.log` in `dir`.
+fn newest_log(dir: &std::path::Path) -> Option<std::path::PathBuf> {
+    std::fs::read_dir(dir)
+        .ok()?
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "log"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(when, _)| *when)
+        .map(|(_, path)| path)
+}
+
+/// Delete a profile: its sign-in, settings, FastFlags, plugin grants and
+/// Roblox's data for it.
+///
+/// **The saved sign-in is erased first, from the keyring as well as the
+/// profile.** Keyring entries are keyed by the profile's directory
+/// (`secrets::attributes`), so deleting the directory alone would leave a live
+/// session token in the keyring with nothing that would ever read or remove
+/// it -- and a later profile of the same name would inherit it.
+///
+/// Refused for the current profile, which the next `stacked` would recreate
+/// empty, and for one that is running, by taking its lock the way a launch
+/// does. The directory is renamed aside before it is deleted, so an
+/// interrupted removal leaves no half-profile under the old name.
+fn remove_profile(name: &str, current: &str, yes: bool) -> u8 {
+    if !profile::list().iter().any(|n| n == name) {
+        eprintln!("stacked: there is no profile {name:?}. `stacked profiles` lists them.");
+        return 1;
+    }
+    if name == current {
+        eprintln!(
+            "stacked: {name:?} is the current profile. `stacked profiles use OTHER` first, then remove it."
+        );
+        return 1;
+    }
+    if !yes {
+        // SAFETY: `isatty` reads nothing but its argument.
+        if unsafe { libc::isatty(0) } != 1 {
+            eprintln!("stacked: profiles remove deletes a sign-in and its data; pass --yes to do it without a terminal");
+            return 2;
+        }
+        print!(
+            "This deletes profile {name:?}: its sign-in, settings, FastFlags and Roblox data.\n\
+             Type the profile's name to confirm: "
+        );
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        let mut typed = String::new();
+        if std::io::stdin().read_line(&mut typed).is_err() || typed.trim() != name {
+            println!("not removed");
+            return 1;
         }
     }
+    let claim = match profile::acquire(name) {
+        Ok(claim) => claim,
+        Err(e @ profile::Error::Busy(..)) => {
+            eprintln!("stacked: {e}
+Close it first.");
+            return 3;
+        }
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            return 1;
+        }
+    };
+    let dir = claim.profile_dir().to_path_buf();
+    let store = if cordial_shell::secrets::usable().is_ok() {
+        cordial_shell::secrets::Store::Keyring
+    } else {
+        cordial_shell::secrets::Store::File
+    };
+    for kind in [cordial_shell::secrets::Kind::Cookies, cordial_shell::secrets::Kind::Identity] {
+        if let Err(e) = cordial_shell::secrets::erase(store, &dir, kind) {
+            eprintln!("stacked: could not erase the saved {}: {e}. Nothing was removed.", kind.name());
+            return 1;
+        }
+    }
+    let aside = dir.with_file_name(format!(".{name}.removing"));
+    let _ = std::fs::remove_dir_all(&aside);
+    if let Err(e) = std::fs::rename(&dir, &aside).and_then(|()| std::fs::remove_dir_all(&aside)) {
+        eprintln!("stacked: {}: {e}", dir.display());
+        return 1;
+    }
+    drop(claim);
+    println!("removed profile {name:?}");
+    0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_newest_log_is_found_by_time_and_other_files_are_ignored() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(newest_log(dir.path()).is_none());
+        let old = dir.path().join("0.1_old_Player_1.log");
+        let new = dir.path().join("0.1_new_Player_2.log");
+        std::fs::write(&old, "old").unwrap();
+        std::fs::write(dir.path().join("notes.txt"), "not a log").unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(&new, "new").unwrap();
+        assert_eq!(newest_log(dir.path()), Some(new));
+    }
 
     #[test]
     fn a_bare_link_is_routed_to_play_and_a_command_is_not() {
@@ -577,10 +866,7 @@ mod tests {
     fn every_command_in_the_usage_text_is_one_main_dispatches() {
         // A usage line naming a command that falls through to "unknown
         // command" is the `--help` that lies; this keeps the two in step.
-        for command in [
-            "play", "status", "install", "update", "versions", "pin", "unpin", "profiles",
-            "config", "flags", "audio-outputs", "plugins", "diagnostics", "help", "version",
-        ] {
+        for (command, _, _) in completions::COMMANDS {
             assert!(USAGE.contains(&format!("  {command}")), "{command} missing from usage");
         }
     }

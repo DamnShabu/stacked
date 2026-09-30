@@ -113,18 +113,22 @@ exists at its final name.
 
 **Idempotent, and cheap on the ordinary path.** `ensure_content_hash` reads
 `.content-sha256` first and returns it unhashed if it parses; only a build with
-none yet pays for a pass over the engine. That is every launch after the
-first for the current build — `adopt_current` runs on every launch to keep the
-single-slot path pointed at the right entry, and the fast path recorded a hash
-once and trusts it from then on. Verified by a test that writes a hash,
+none yet pays for a pass over the engine. *Corrected 2026-09-30:* this said
+`adopt_current` runs on every launch, which is true of the call and not of the
+hashing: once the single-slot path is a link, `adopt_current` returns at its
+first check and never reaches `ensure_content_hash`. The hash is taken when a
+build is keyed, which is once per build. Verified by a test that writes a hash,
 corrupts the engine bytes on disk, and calls `ensure_content_hash` again: the
 stale hash comes back unchanged, proving the second call never re-read the
 file.
 
 **`None` is the honest answer for an entry from before this shipped**, in the
 same spirit as `Entry::loaded_by`. Nothing re-hashes every existing entry on
-upgrade; the next time each one is keyed -- which for the current build is the
-very next launch -- it gets one.
+upgrade; the next time each one is keyed, it gets one. *Corrected 2026-09-30:*
+this said that for the current build that was the very next launch. It is not:
+an entry the single-slot path already links to is not keyed again, so an entry
+from before this shipped has no hash until it is extracted or installed anew.
+Nothing reads the hash yet (see below), so nothing depends on it being there.
 
 **`store::find_by_content_hash` is the lookup this buys**, and it is left
 unwired. Using it to recognise that a freshly downloaded build is byte-identical

@@ -52,11 +52,20 @@ body:
       required: true
 
   - type: textarea
+    id: doctor
+    attributes:
+      label: stacked doctor
+      description: |
+        Optional, and often faster than a back-and-forth. `stacked doctor` checks the display, Vulkan, sound, the keyring and the Roblox build, and may already name the problem. It shows your home directory as `~` and prints no account or profile name.
+      render: text
+      placeholder: Paste the output of `stacked doctor` here.
+
+  - type: textarea
     id: engine-log
     attributes:
       label: The engine's own log
       description: |
-        This is the most useful thing you can attach. Roblox writes its own log to `<files>/appData/logs/<version>_<timestamp>_Player_*.log` — by default under `~/.local/share/cordial/profiles/default/data/files/appData/logs/`. Attach the newest one, or paste the last ~50 lines.
+        This is the most useful thing you can attach. `stacked logs` prints the last 50 lines of Roblox's own newest log, and `stacked logs --path` says where the whole file is (by default under `~/.local/share/cordial/profiles/default/data/files/appData/logs/`). Attach it, or paste the lines.
       render: text
     validations:
       required: false

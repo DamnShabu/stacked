@@ -238,8 +238,11 @@ fn resolved_image(key: Option<&str>) -> Option<String> {
     guard.as_ref()?.get(id).cloned()
 }
 
+/// The project's own link. It names the fork people are running: a status
+/// saying "Cordial on GitHub" under a Stacked session sent anyone who clicked
+/// it to a different program's page.
 fn cordial_button() -> Value {
-    json!({ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" })
+    json!({ "label": "Stacked on GitHub", "url": "https://github.com/DamnShabu/stacked" })
 }
 
 /// The buttons under an activity: at most one about the game, then Cordial's.
@@ -510,7 +513,7 @@ mod tests {
             [(None, None), (Some(1u64), None), (Some(1u64), Some("a"))]
         {
             let b = super::buttons_for(place, job);
-            assert_eq!(b.last().unwrap()["label"], "Cordial on GitHub", "{place:?}/{job:?}");
+            assert_eq!(b.last().unwrap()["label"], "Stacked on GitHub", "{place:?}/{job:?}");
             assert!(b.len() <= 2, "Discord allows two buttons, got {}", b.len());
         }
     }

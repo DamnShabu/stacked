@@ -142,27 +142,60 @@ pub fn record_version(cache_dir: &Path, version: &str) -> std::io::Result<()> {
     std::fs::write(cache_dir.join(VERSION), version.trim())
 }
 
-/// The signing certificate this build was verified against, if anything ever
-/// verified it.
+/// The signing certificate `apk` was verified against, if it was, as it is
+/// right now.
 ///
-/// `None` means nobody checked, not that a check failed: a build that fails
-/// verification is refused rather than recorded, so this file never holds the
-/// fingerprint of something that was turned away.
-pub fn recorded_signer(cache_dir: &Path) -> Option<String> {
+/// `None` means nobody checked this archive, not that a check failed: a build
+/// that fails verification is refused rather than recorded, so this file never
+/// holds the fingerprint of something that was turned away.
+///
+/// **The record names the archive it vouches for, by the same size, mtime and
+/// path [`is_current`] uses.** It used to hold the fingerprint alone, and so
+/// vouched for whatever file was at the configured path on the next launch --
+/// a replaced `CORDIAL_APK`, a different `roblox.apk`, or Sober's copy swapped
+/// underneath, each of which launched once without a check before the
+/// re-extraction that followed happened to leave the record behind. Issue #51
+/// was about exactly that archive reaching the engine unexamined. A record
+/// written before this, with no second line, vouches for nothing and costs one
+/// verification to replace.
+pub fn recorded_signer(cache_dir: &Path, apk: &Path) -> Option<String> {
     let text = std::fs::read_to_string(cache_dir.join(SIGNER)).ok()?;
-    let trimmed = text.trim();
-    (!trimmed.is_empty()).then(|| trimmed.to_string())
+    let mut lines = text.lines();
+    let fingerprint = lines.next()?.trim();
+    let vouched_for = lines.next()?;
+    let matches = stamp_for(apk).is_some_and(|now| now == vouched_for);
+    (matches && !fingerprint.is_empty()).then(|| fingerprint.to_string())
 }
 
-/// Record the certificate a build verified against, so the next launch can read
-/// the answer instead of digesting the archive again.
+/// Record the certificate `apk` verified against, so the next launch of the
+/// same archive can read the answer instead of digesting it again.
 ///
 /// Lowercase hex, matching [`crate::apk_signature::Signer::certificate_sha256`]
 /// and the pinned list, so a reader comparing the two is comparing like with
 /// like rather than discovering a case difference at the worst moment.
-pub fn record_signer(cache_dir: &Path, fingerprint: &str) -> std::io::Result<()> {
+pub fn record_signer(cache_dir: &Path, fingerprint: &str, apk: &Path) -> std::io::Result<()> {
+    let stamp = stamp_for(apk).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::NotFound,
+            format!("cannot stat {} to record who signed it", apk.display()),
+        )
+    })?;
+    record_signer_stamped(cache_dir, fingerprint, &stamp)
+}
+
+/// [`record_signer`], with the archive's [`stamp_for`] taken by the caller
+/// before it verified.
+///
+/// For a caller with work between verifying and recording: a stamp taken at
+/// record time would vouch for a file replaced in between, which is exactly
+/// the archive that was never checked. Taken first, a replacement makes the
+/// stamp stale and the next launch verifies again.
+pub fn record_signer_stamped(cache_dir: &Path, fingerprint: &str, stamp: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(cache_dir)?;
-    std::fs::write(cache_dir.join(SIGNER), fingerprint.trim().to_ascii_lowercase())
+    std::fs::write(
+        cache_dir.join(SIGNER),
+        format!("{}\n{stamp}\n", fingerprint.trim().to_ascii_lowercase()),
+    )
 }
 
 #[cfg(test)]
@@ -192,6 +225,25 @@ mod tests {
         assert_eq!(fields.next().unwrap(), apk.to_str().unwrap());
         assert_eq!(fields.next(), None);
         assert!(!stamp.ends_with('\n'), "stat prints no newline and printf writes none");
+    }
+
+    #[test]
+    fn a_recorded_signer_vouches_only_for_the_archive_it_was_recorded_for() {
+        let dir = scratch("signer");
+        let apk = dir.join("base.apk");
+        std::fs::write(&apk, b"the archive that was checked").unwrap();
+        record_signer(&dir, "ABCDEF", &apk).unwrap();
+        assert_eq!(recorded_signer(&dir, &apk).as_deref(), Some("abcdef"));
+
+        let other = dir.join("other.apk");
+        std::fs::write(&other, b"the archive that was checked").unwrap();
+        assert_eq!(recorded_signer(&dir, &other), None, "a different path is a different archive");
+
+        std::fs::write(&apk, b"a replacement of a different length").unwrap();
+        assert_eq!(recorded_signer(&dir, &apk), None, "a replaced archive must be checked again");
+
+        std::fs::write(dir.join(SIGNER), "abcdef").unwrap();
+        assert_eq!(recorded_signer(&dir, &apk), None, "an old one-line record vouches for nothing");
     }
 
     #[test]

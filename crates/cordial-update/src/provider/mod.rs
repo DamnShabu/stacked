@@ -666,6 +666,17 @@ pub fn obtain_and_install(
             &mut |_, _, _| {},
         )
         .map_err(from_install)?;
+        // `obtain` verified these archives a moment ago, so the launch that
+        // follows need not digest them again. Keyed to the installed base by
+        // `record_signer` itself, so it vouches for nothing else. Best effort:
+        // a record that cannot be written costs one verification, not a build.
+        if let Some(base) = crate::install::managed_base() {
+            let _ = crate::cache::record_signer(
+                &crate::install::engine_dir(),
+                &obtained.certificate_sha256,
+                &base,
+            );
+        }
         Ok((obtained, installed))
     })();
 

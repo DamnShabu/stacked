@@ -64,9 +64,8 @@ what is installed, what each one requests and what it has been granted.
 **Discord shows "Playing Cordial", not Stacked.** The default application id in
 `main.ts` is upstream Cordial's registered Discord application, and Stacked has
 none of its own. The plugin's `client_id` preference takes another
-application's id, and with no Settings page to set it in, that means writing
-`{ "client_id": "<digits>" }` to
-`~/.local/share/cordial/profiles/<profile>/plugins/discord-presence/preferences.json`.
+application's id: `stacked plugins prefs discord-presence client_id <digits>`.
+The button under the status does link to Stacked.
 
 **The lifecycle push carries no payload**, so unless the game describes itself
 over BloxstrapRPC the activity names only the application, with an elapsed

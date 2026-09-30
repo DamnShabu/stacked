@@ -11,24 +11,45 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 
 | Command | What it does |
 |---|---|
-| `stacked`, `stacked play` | Start Roblox on the current profile and wait for it to exit. |
+| `stacked`, `stacked play` | Start Roblox on the current profile and wait for it to exit. The first time, this downloads Roblox. After that it installs a newer build first, if there is one (see [Updates](#updates)). |
 | `stacked play --profile NAME` | Start Roblox on a different profile. |
+| `stacked play --no-update` | Start the build you have without checking for a newer one. |
 | `stacked play --run SECS` | Stop the client after SECS seconds. Useful for testing. |
 | `stacked LINK` | Join a `roblox-player:` or `roblox:` link. This is what the desktop entry runs when you press Play on the website. |
 | `stacked status` | Show which profile and Roblox build a launch would use. |
 | `stacked install` | Find a Roblox build, or download one if there isn't one. A copy Sober has already downloaded counts. |
-| `stacked update` | Download the newest build. |
+| `stacked update` | Download the newest build, if it's newer than the one you have. `--force` downloads it anyway. |
 | `stacked versions` | List the builds kept on disk. `versions available` lists the ones you can download. `versions get V` downloads one, and `versions remove V` deletes one. |
 | `stacked pin V`, `stacked unpin` | Make a profile always run build V, or go back to the current build. Both take `--profile`. |
-| `stacked profiles` | List profiles. `profiles new NAME` creates one, and `profiles use NAME` makes it the current one. |
+| `stacked profiles` | List profiles. `profiles new NAME` creates one, `profiles use NAME` makes it the current one, and `profiles remove NAME` deletes one, including its saved sign-in in the keyring. `remove` asks you to type the name, or takes `--yes`. |
 | `stacked config` | List every setting with its current value (see below). |
-| `stacked flags path` | Print where the current profile's FastFlags file is. |
+| `stacked flags` | List, set and remove the current profile's FastFlags (see [FastFlags](#fastflags)). |
 | `stacked audio-outputs` | List the names `audio_output` accepts. |
 | `stacked plugins …` | Manage plugins (see below). |
+| `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |
+| `stacked desktop install` | Add Stacked to the app menu and make it what the website's Play button opens. `desktop remove` undoes it. Packages and the Flatpak do this themselves. |
+| `stacked completions SHELL` | Print tab completion for `bash`, `zsh` or `fish`. |
+| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--lines N` for more, `--path` for where the file is. |
 | `stacked diagnostics` | Print the version, distribution and install method for a bug report. |
 
 Exit status is 0 on success, 1 on failure, 2 for a usage mistake, and 3 when
-the profile is already open in another client.
+the profile is already open in another client. `stacked doctor` exits 1 when
+it finds a problem that would stop Roblox starting.
+
+A mistyped command or setting gets a suggestion: `stacked staus` answers "Did
+you mean `stacked status`?".
+
+### Tab completion
+
+```bash
+stacked completions bash > ~/.local/share/bash-completion/completions/stacked
+stacked completions zsh  > "${fpath[1]}/_stacked"
+stacked completions fish > ~/.config/fish/completions/stacked.fish
+```
+
+It completes commands, subcommands, options, setting names and profile names.
+Profile names and settings are read when you press Tab, so the script doesn't
+need regenerating when they change.
 
 **Ctrl-C** stops the game the same way closing its window does. `stacked`
 stays running until the client has exited, then reports whether it crashed.
@@ -48,6 +69,7 @@ values it accepts.
 | Key | Default | Values |
 |---|---|---|
 | `profile` | `default` | Which profile `stacked` plays on. |
+| `auto_update` | `true` | Install a newer Roblox build, if there is one, when you press Play. `false` leaves it to `stacked update`. |
 | `theme` | `stacked` | `stacked` or `system`. The title bar colours. `system` follows your desktop. |
 | `title_bar` | `default` | `default`, `compact` or `hidden`. It is always hidden in fullscreen. |
 | `fullscreen_confine` | `true` | Keep the cursor on the window while it is fullscreen. |
@@ -104,6 +126,55 @@ It has been checked against sway, which accepted the request and confined the
 pointer. It has not been tried on a real multi-monitor desktop, or on X11. If
 it misbehaves, run `stacked config set fullscreen_confine false`.
 
+## Updates
+
+Roblox stops letting old clients join, usually within a week or two of a new
+build. So `stacked play` asks whether a newer build is available and, if there
+is one, installs it before the game starts. The first launch on a new machine
+downloads Roblox the same way.
+
+The check takes one small request. It gives up after five seconds, and after a
+check that found nothing new it doesn't ask again for ten minutes. If it can't
+get an answer, or the download fails, the build you already have starts.
+
+It doesn't run when:
+
+- you chose the APK yourself (`roblox.apk` or `CORDIAL_APK`), since Stacked
+  won't replace that
+- the profile is pinned to a version (`stacked pin`)
+- NetworkManager says the connection is metered. Stacked tells you a newer
+  build exists, and `stacked update` gets it when you choose. The first
+  download waits for `stacked install` in the same way
+- `auto_update` is `false`, or you pass `--no-update`
+
+`stacked status` says which of these applies.
+
+## FastFlags
+
+Each profile has its own FastFlags file. The commands below edit it, and each
+takes `--profile NAME`. Changes apply the next time Roblox starts.
+
+```bash
+stacked flags                                   # list them
+stacked flags set DFIntTaskSchedulerTargetFps 144
+stacked flags set FFlagDebugDisplayFPS true     # written as True
+stacked flags unset FFlagDebugDisplayFPS
+stacked flags import bloxstrap.json             # merge a Bloxstrap export; --replace to start over
+stacked flags import --sober                    # copy the fflags from Sober's config.json
+stacked flags edit                              # open it in $EDITOR
+stacked flags path                              # where the file is
+```
+
+`set` checks the value against the type in the flag's name. `FFlag…` takes
+`true` or `false`, `FInt…` and `FLog…` take a whole number, and `FString…`
+takes any text. A `D` or `S` in front doesn't change the type. A name without
+one of those prefixes is saved with a warning.
+
+`import` and `edit` save nothing if any value is invalid, and say which one.
+`edit` works on a copy, so a half-finished edit never reaches the game. More on
+what flags do, and which ones Stacked sets itself, is in
+[fastflags.md](fastflags.md).
+
 ## Themes
 
 The game window's title bar follows `theme`.
@@ -129,14 +200,21 @@ stacked plugins grant thing presence.set
 stacked plugins enable thing
 stacked plugins disable thing
 stacked plugins revoke thing presence.set
+stacked plugins prefs fps-flex mode mailbox
 stacked plugins remove thing
 ```
 
 `grant` accepts only the capabilities the plugin's manifest asks for;
-`stacked plugins` lists them. Plugin preferences have no command and are edited
-in the plugin's `preferences.json` ([plugins.md](plugins.md)).
+`stacked plugins` lists them.
 
-`enable`, `disable`, `grant` and `revoke` take `--profile NAME`. A client that
+`stacked plugins prefs ID` lists a plugin's preferences with the values each
+accepts. `stacked plugins prefs ID KEY VALUE` changes one, and `--reset` puts
+them all back to their defaults. Like grants, preferences are per profile.
+
+A plugin with code starts switched off in every profile, including profiles
+you create later, and has to be enabled in each one where you want it.
+`enable`, `disable`, `grant` and `revoke` take `--profile NAME`, and refuse a
+profile that doesn't exist. A client that
 is already running picks up the change within a second or two.
 
 ## Environment variables

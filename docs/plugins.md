@@ -73,14 +73,11 @@ That covers installing, updating, removing, enabling, disabling and granting
 the next launch and still does (ADR-005), because `FFlag`/`FInt`/`FString`
 are read once at startup regardless of who is asking to change them.
 
-**A plugin's preferences have no page any more.** Cordial drew one in
-Settings for every plugin that declares preferences, which three of the four
-shipped plugins do. Stacked has no window to draw it in and no command for
-it yet, so a plugin runs with its declared defaults unless you write
-`~/.local/share/cordial/profiles/<profile>/plugins/<plugin-id>/preferences.json`
-yourself: a flat JSON object of key to value, using the keys in the plugin's
-`plugin.json`. A value that does not fit the declaration falls back to the
-default.
+**A plugin's preferences are a command.** Three of the four shipped plugins
+declare some. `stacked plugins prefs ID` lists them with the values each takes,
+and `stacked plugins prefs ID KEY VALUE` sets one for the current profile
+(`--profile NAME` for another). A value that doesn't fit the declaration is
+refused, and `--reset` puts them all back.
 
 **Trust the source.** A plugin runs as a real process on your machine. Stacked
 gives it no ambient permissions — no file access, no network, no environment, no

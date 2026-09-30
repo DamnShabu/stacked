@@ -186,7 +186,7 @@ fn discord_presence_follows_lifecycle_events_all_the_way_to_the_wire() {
     // one there is no place id, so it is the only button.
     assert_eq!(
         activity["buttons"],
-        serde_json::json!([{ "label": "Cordial on GitHub", "url": "https://github.com/luohoa97/cordial" }]),
+        serde_json::json!([{ "label": "Stacked on GitHub", "url": "https://github.com/DamnShabu/stacked" }]),
         "got: {activity}"
     );
 

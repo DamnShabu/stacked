@@ -44,36 +44,47 @@ install -Dm755 target/release/stacked target/release/cordial-run -t ~/.local/bin
 PipeWire's headers are optional, but without them there is no sound.
 `stacked` and `cordial-run` have to stay in the same directory.
 
-To have browser Play buttons and your app menu open Stacked, also install the
-desktop entry and icon:
+Then add Stacked to your app menu and make it what the website's Play button
+opens, and check the machine for anything that would stop it running:
 
 ```bash
-install -Dm644 packaging/io.github.damnshabu.Stacked.desktop -t ~/.local/share/applications/
-install -Dm644 packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg \
-  -t ~/.local/share/icons/hicolor/scalable/apps/
-update-desktop-database ~/.local/share/applications
+~/.local/bin/stacked desktop install
+~/.local/bin/stacked doctor
 ```
+
+Tab completion: `stacked completions bash`, `zsh` or `fish` prints the script
+for your shell ([`docs/usage.md`](docs/usage.md#tab-completion) says where to
+put it).
 
 **To update Stacked**, run `git pull --recurse-submodules` and repeat the
 `cargo build` and first `install` lines.
 
+**To remove it**, run `stacked desktop remove` and delete the two binaries.
+Profiles stay in `~/.local/share/cordial` until you delete them, and
+`stacked profiles remove NAME` also clears that profile's sign-in from the
+keyring.
+
 ## Use
 
 ```bash
-stacked install    # get Roblox: Sober's copy if you have one, otherwise a download checked against Roblox's signature
 stacked            # play
 ```
 
-Stacked ships no part of Roblox; `stacked install` gets it for you.
+The first time, that downloads Roblox, using Sober's copy if you have one, and
+checks it against Roblox's own signature. After that, each launch installs a
+newer build first if there is one, because Roblox turns old clients away.
+Stacked ships no part of Roblox.
 
 | | |
 |---|---|
 | `stacked play --profile alt` | Play signed in as someone else. Each profile is its own sign-in. |
-| `stacked profiles new alt` | Make a profile. `stacked profiles use alt` makes it the default. |
+| `stacked profiles new alt` | Make a profile. `profiles use alt` makes it the default, and `profiles remove alt` deletes it. |
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
-| `stacked update` | Download the newest Roblox build. |
+| `stacked update` | Download the newest Roblox build now. `stacked` also does this by itself when you press Play. |
+| `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import --sober` copies Sober's, and `import file.json` takes a Bloxstrap export. |
 | `stacked config` | List every setting and its current value. |
 | `stacked plugins install x.tar.zst` | Add a plugin. One that runs code starts switched off with no permissions. |
+| `stacked doctor` | Check this machine for problems, with the fix for each. |
 | `stacked diagnostics` | Print what a bug report needs. |
 
 **F11** toggles fullscreen. **Ctrl-C** in the terminal closes the game. Every command and setting is in [`docs/usage.md`](docs/usage.md).
@@ -87,10 +98,14 @@ stacked config set fullscreen_confine false # let the cursor leave a fullscreen 
 stacked config set theme system             # your desktop's colours instead of Stacked's
 ```
 
-FastFlags go in the file `stacked flags path` prints; see
-[`docs/fastflags.md`](docs/fastflags.md).
+FastFlags: `stacked flags set NAME VALUE`, checked against the flag's type;
+see [`docs/fastflags.md`](docs/fastflags.md).
 
 ## Troubleshooting
+
+Start with `stacked doctor`. It checks the display, Vulkan, sound, the
+keyring, the browser handler and the Roblox build, and says what to run about
+anything it finds.
 
 - **Pressing Play in the browser does nothing.** Run `stacked` in a terminal
   to see why. When it's started from the browser, Stacked also sends the
@@ -102,8 +117,9 @@ FastFlags go in the file `stacked flags path` prints; see
 - **No window appears at all** on COSMIC, KWin or some wlroots compositors.
   This is a known bug with no fix yet
   ([cordial#38](https://github.com/luohoa97/cordial/issues/38)).
-- **It closed on its own.** The output above the prompt is what it printed.
-  Include it, and `stacked diagnostics`, in a bug report.
+- **It closed on its own.** The output above the prompt is what it printed,
+  and `stacked logs` shows Roblox's own log. Include both, and
+  `stacked diagnostics`, in a bug report.
 
 ## Status
 
@@ -138,6 +154,13 @@ Wayland is the main target. X11 works but gets less attention.
 the same defaults Sober does: GameMode for the performance governor, MAILBOX
 rather than FIFO presentation, and no launcher left running while you play.
 Beyond that, it targets your screen's refresh rate rather than 60.
+
+**I use Sober. How do I switch?** Stacked starts from the Roblox build Sober
+already downloaded, and only downloads one when a newer build is out.
+`stacked flags import --sober` copies your FastFlags, and
+`stacked desktop install` makes the website's Play button open Stacked
+instead. You sign in again, once per
+profile. Sober keeps working alongside it.
 
 **I used Cordial. What carries over?** Everything: profiles, sign-ins,
 FastFlags, and settings. Stacked reads the same `~/.local/share/cordial` and

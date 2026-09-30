@@ -15,7 +15,7 @@ use std::io::Write;
 
 /// One line of progress, overwritten in place when stdout is a terminal and
 /// printed plainly otherwise, so a log captured from a pipe is readable.
-fn progress_printer() -> impl FnMut(Progress) {
+pub(crate) fn progress_printer() -> impl FnMut(Progress) {
     let tty = rustix_isatty();
     let mut last_percent = None;
     move |p: Progress| {
@@ -49,7 +49,7 @@ fn rustix_isatty() -> bool {
     unsafe { libc::isatty(1) == 1 }
 }
 
-fn end_progress_line() {
+pub(crate) fn end_progress_line() {
     if rustix_isatty() {
         println!();
     }
@@ -88,15 +88,39 @@ fn obtain(want: Want) -> u8 {
 /// already on disk and costs no request at all.
 pub fn install() -> u8 {
     let config = crate::shell_config::load(&crate::shell_config::path());
-    if let Ok(build) = crate::install::locate(&config.roblox) {
-        println!("Roblox is already here: {}", build.apk.display());
-        println!("`stacked update` fetches a newer build if there is one.");
-        return 0;
+    match crate::install::locate(&config.roblox) {
+        Ok(build) => {
+            println!("Roblox is already here: {}", build.apk.display());
+            println!("`stacked update` fetches a newer build if there is one.");
+            return 0;
+        }
+        // A build somebody named that cannot be used is not fixed by
+        // downloading another: the named one still outranks it, so the
+        // download would be 150 MB the next launch ignores, after a message
+        // saying it was ready.
+        Err(crate::install::NotFound::Unusable(why)) => {
+            if let Some((_, origin)) = crate::install::effective_apk(&config.roblox) {
+                if !crate::auto_update::manages(Some(origin)) {
+                    eprintln!("stacked: {why}");
+                    return 1;
+                }
+            }
+        }
+        Err(crate::install::NotFound::NoBuild) => {}
     }
     obtain(Want::Any)
 }
 
-pub fn update() -> u8 {
+pub fn update(args: &[String]) -> u8 {
+    let force = match args {
+        [] => false,
+        [flag] if flag == "--force" => true,
+        _ => {
+            let other = args.iter().find(|a| *a != "--force").unwrap_or(&args[0]);
+            eprintln!("stacked: unexpected argument {other:?}; update takes only --force");
+            return 2;
+        }
+    };
     let config = crate::shell_config::load(&crate::shell_config::path());
     // A build the user pointed at, or Sober's, is theirs and not this
     // launcher's to replace: installing a newer one beside it would not change
@@ -110,7 +134,44 @@ pub fn update() -> u8 {
             return 1;
         }
     }
+    // Asked before downloading, because `Want::Newest` does not compare with
+    // what is installed: it fetched and re-installed the same 150 MB whenever
+    // nothing was newer, and said "installed" as though something had changed.
+    if !force {
+        if let Ok(build) = crate::install::locate(&config.roblox) {
+            if let Some(installed) = cordial_update::engine::installed_version(&build.lib_dir) {
+                println!("checking for a build newer than {installed}");
+                match crate::auto_update::newest_online(std::time::Duration::from_secs(30)) {
+                    Some(newest) if !cordial_update::version::is_newer(&newest, &installed) => {
+                        println!("Roblox {installed} is the newest build on offer; nothing to download.");
+                        return 0;
+                    }
+                    Some(_) => {}
+                    None => println!("no source answered; trying to download anyway"),
+                }
+            }
+        }
+    }
     obtain(Want::Newest)
+}
+
+/// The store's own name for a build, if it keeps one matching `wanted`.
+///
+/// Matched by `version::same_build` as well as exactly, because the mirror and
+/// the store spell one build two ways -- `2.734.917` and `2.734.0.917` -- and
+/// `versions available` prints the first while `versions` prints the second.
+/// Exact names alone meant `stacked versions get 2.734.917` followed by
+/// `stacked pin 2.734.917` was refused as "not kept", with advice to download
+/// the same build again.
+fn kept_as(wanted: &str) -> Option<String> {
+    kept_entry(wanted).map(|e| e.version)
+}
+
+fn kept_entry(wanted: &str) -> Option<store::Entry> {
+    let entries = store::list();
+    let exact = entries.iter().position(|e| e.version == wanted);
+    let index = exact.or_else(|| entries.iter().position(|e| cordial_update::version::same_build(&e.version, wanted)))?;
+    entries.into_iter().nth(index)
 }
 
 pub fn versions(args: &[String]) -> u8 {
@@ -171,7 +232,19 @@ pub fn versions(args: &[String]) -> u8 {
                     return 1;
                 }
             };
-            let Some(version) = offered.into_iter().find(|v| &v.name == wanted) else {
+            // Only a complete entry counts as kept. One without its APK --
+            // keyed before archives were kept, or linked from another
+            // filesystem -- cannot run, and fetching it again is how it is
+            // repaired, so it falls through to the download.
+            if let Some(kept) = kept_entry(wanted).filter(|e| e.complete) {
+                let kept = kept.version;
+                println!("Roblox {kept} is already kept. `stacked pin {kept}` runs it on the current profile.");
+                return 0;
+            }
+            let Some(version) = offered
+                .into_iter()
+                .find(|v| &v.name == wanted || cordial_update::version::same_build(&v.name, wanted))
+            else {
                 eprintln!("stacked: {wanted} is not offered; `stacked versions available` lists what is");
                 return 1;
             };
@@ -191,10 +264,11 @@ pub fn versions(args: &[String]) -> u8 {
             }
         }
         Some("remove" | "rm" | "delete") => {
-            let Some(version) = args.get(1) else {
+            let Some(wanted) = args.get(1) else {
                 eprintln!("stacked: versions remove needs a VERSION");
                 return 2;
             };
+            let version = &kept_as(wanted).unwrap_or_else(|| wanted.clone());
             match store::remove_in(
                 &store::root(),
                 &crate::install::engine_cache(),
@@ -226,17 +300,34 @@ pub fn pin(args: &[String]) -> u8 {
             return 2;
         }
     };
-    let Some(version) = rest.first() else {
+    let Some(wanted) = rest.first() else {
         eprintln!("stacked: pin needs a VERSION; `stacked versions` lists the kept ones");
         return 2;
     };
     // Refused here rather than at the next launch: a pin to a build that is
     // not on disk stops the profile launching at all.
-    if !store::list().iter().any(|e| &e.version == version) {
-        eprintln!("stacked: {version} is not kept. `stacked versions get {version}` fetches it first.");
+    let Some(entry) = kept_entry(wanted) else {
+        eprintln!("stacked: {wanted} is not kept. `stacked versions get {wanted}` fetches it first.");
+        return 1;
+    };
+    // `install::apply_pin` refuses an entry without its APK at launch, so a
+    // pin to one would only move the failure to the next Play.
+    if !entry.complete {
+        eprintln!(
+            "stacked: {} is kept without its APK, so it cannot run. \
+             `stacked versions get {}` fetches it again.",
+            entry.version, entry.version
+        );
         return 1;
     }
-    set_pin(crate::chosen_profile(named), Some(version))
+    let version = entry.version;
+    match crate::existing_profile(named) {
+        Ok(name) => set_pin(name, Some(&version)),
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            1
+        }
+    }
 }
 
 pub fn unpin(args: &[String]) -> u8 {
@@ -247,7 +338,13 @@ pub fn unpin(args: &[String]) -> u8 {
             return 2;
         }
     };
-    set_pin(crate::chosen_profile(named), None)
+    match crate::existing_profile(named) {
+        Ok(name) => set_pin(name, None),
+        Err(e) => {
+            eprintln!("stacked: {e}");
+            1
+        }
+    }
 }
 
 fn set_pin(name: String, version: Option<&str>) -> u8 {
