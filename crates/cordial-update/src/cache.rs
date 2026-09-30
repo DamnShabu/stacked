@@ -180,6 +180,17 @@ pub fn record_signer(cache_dir: &Path, fingerprint: &str, apk: &Path) -> std::io
             format!("cannot stat {} to record who signed it", apk.display()),
         )
     })?;
+    record_signer_stamped(cache_dir, fingerprint, &stamp)
+}
+
+/// [`record_signer`], with the archive's [`stamp_for`] taken by the caller
+/// before it verified.
+///
+/// For a caller with work between verifying and recording: a stamp taken at
+/// record time would vouch for a file replaced in between, which is exactly
+/// the archive that was never checked. Taken first, a replacement makes the
+/// stamp stale and the next launch verifies again.
+pub fn record_signer_stamped(cache_dir: &Path, fingerprint: &str, stamp: &str) -> std::io::Result<()> {
     std::fs::create_dir_all(cache_dir)?;
     std::fs::write(
         cache_dir.join(SIGNER),

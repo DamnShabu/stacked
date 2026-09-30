@@ -130,8 +130,10 @@ fn checked_recently(memo: &Path, installed: &str, now: SystemTime) -> bool {
     let then = SystemTime::UNIX_EPOCH + Duration::from_secs(secs);
     // Keyed on the version too: a build that changed since the check -- a
     // `stacked versions` switch, Sober updating its own copy -- is a new
-    // question, not a remembered answer.
-    version.trim() == installed
+    // question, not a remembered answer. `same_build` because an update is
+    // remembered in the mirror's spelling and read back in the engine's.
+    let version = version.trim();
+    (version == installed || cordial_update::version::same_build(version, installed))
         && now.duration_since(then).is_ok_and(|age| age < RECHECK_AFTER)
 }
 
@@ -265,8 +267,16 @@ pub fn before_launch(build: &Build, origin: Origin, pinned: bool) -> bool {
                     remember_check(&memo, &newest, now);
                     true
                 }
+                // Remembered like a check that found nothing, so a failure that
+                // will recur -- a refused signature, a mirror that breaks part
+                // way -- costs one attempt every ten minutes rather than a
+                // download on every launch.
                 Err(e) => {
-                    eprintln!("stacked: the update failed ({e}); starting Roblox {installed}");
+                    eprintln!(
+                        "stacked: the update failed ({e}); starting Roblox {installed}. \
+                         It is tried again in ten minutes, or now with `stacked update`."
+                    );
+                    remember_check(&memo, &installed, now);
                     false
                 }
             }
@@ -280,9 +290,21 @@ pub fn manages(origin: Option<Origin>) -> bool {
     matches!(origin, None | Some(Origin::Managed | Origin::Sober))
 }
 
-/// The origin of the build `locate` would find, if any.
+/// The origin of the build `locate` would find, if any, as far as updating
+/// it is concerned.
+///
+/// **An engine named with `roblox.lib_dir` makes the build the user's**,
+/// whatever the APK's origin: `locate` runs that engine against whichever APK
+/// it finds, so installing a newer APK would pair new assets with the old
+/// engine -- the mismatch `cordial_update::cache` exists to prevent -- and the
+/// engine's version would never change, so the check would download again on
+/// every launch. Found by review, and reproduced through `locate_with`.
 pub fn origin_of(config: &crate::shell_config::ShellConfig) -> Option<Origin> {
-    install::effective_apk(&config.roblox).map(|(_, origin)| origin)
+    let origin = install::effective_apk(&config.roblox).map(|(_, origin)| origin);
+    match origin {
+        Some(Origin::Managed | Origin::Sober) if config.roblox.lib_dir.is_some() => Some(Origin::Chosen),
+        other => other,
+    }
 }
 
 #[cfg(test)]
@@ -353,6 +375,8 @@ mod tests {
         remember_check(&memo, "2.734.0.917", now);
         assert!(checked_recently(&memo, "2.734.0.917", now));
         assert!(!checked_recently(&memo, "2.735.0.1", now), "a different build is a new question");
+        remember_check(&memo, "2.735.1002", now);
+        assert!(checked_recently(&memo, "2.735.0.1002", now), "the mirror's spelling of the same build");
         assert!(!checked_recently(&memo, "2.734.0.917", now + RECHECK_AFTER + Duration::from_secs(1)));
         std::fs::write(&memo, "garbage").unwrap();
         assert!(!checked_recently(&memo, "2.734.0.917", now));

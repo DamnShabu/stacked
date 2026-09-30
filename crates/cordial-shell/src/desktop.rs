@@ -141,6 +141,17 @@ fn install() -> u8 {
 }
 
 fn write(path: &Path, bytes: &[u8]) -> Result<(), String> {
+    // Through a symlink to the file it names: a `mimeapps.list` managed by
+    // stow or home-manager is a link into the user's dotfiles, and renaming
+    // over the link replaced it with a plain file the dotfiles never saw.
+    let resolved;
+    let path = match std::fs::symlink_metadata(path) {
+        Ok(meta) if meta.file_type().is_symlink() => {
+            resolved = std::fs::canonicalize(path).map_err(|e| format!("{}: {e}", path.display()))?;
+            resolved.as_path()
+        }
+        _ => path,
+    };
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent).map_err(|e| format!("{}: {e}", parent.display()))?;
     }
@@ -258,11 +269,14 @@ fn remove() -> u8 {
     // Sober since is theirs.
     let list = config_home().join("mimeapps.list");
     if let Ok(text) = std::fs::read_to_string(&list) {
+        // Read as a default, from `[Default Applications]` only and with its
+        // list syntax: matching the raw line instead found a Stacked entry in
+        // `[Added Associations]` and then removed the *default*, Sober's, and
+        // missed `...Stacked.desktop;` spelled with the trailing separator.
         let ours = format!("{APP_ID}.desktop");
         let mut updated = text.clone();
         for scheme in SCHEMES {
-            let current = format!("{scheme}={ours}");
-            if updated.lines().any(|l| l.trim() == current) {
+            if default_in(&updated, scheme).as_deref() == Some(ours.as_str()) {
                 updated = with_default(&updated, scheme, None);
             }
         }
@@ -313,6 +327,28 @@ mod tests {
         let text = "[Added Associations]\nx-scheme-handler/roblox=a.desktop\n[Default Applications]\nx-scheme-handler/roblox=b.desktop;c.desktop;\n";
         assert_eq!(default_in(text, "x-scheme-handler/roblox").as_deref(), Some("b.desktop"));
         assert_eq!(default_in(text, "x-scheme-handler/roblox-player"), None);
+    }
+
+    #[test]
+    fn remove_touches_only_a_default_that_is_stacked() {
+        let ours = format!("{APP_ID}.desktop");
+        let text = format!(
+            "[Added Associations]\nx-scheme-handler/roblox={ours};\n[Default Applications]\nx-scheme-handler/roblox=org.vinegarhq.Sober.desktop\nx-scheme-handler/roblox-player={ours};\n"
+        );
+        assert_eq!(default_in(&text, "x-scheme-handler/roblox").as_deref(), Some("org.vinegarhq.Sober.desktop"));
+        assert_eq!(default_in(&text, "x-scheme-handler/roblox-player").as_deref(), Some(ours.as_str()));
+    }
+
+    #[test]
+    fn writing_through_a_symlink_updates_the_file_it_names() {
+        let dir = tempfile::tempdir().unwrap();
+        let real = dir.path().join("dotfiles-mimeapps.list");
+        let link = dir.path().join("mimeapps.list");
+        std::fs::write(&real, "old\n").unwrap();
+        std::os::unix::fs::symlink(&real, &link).unwrap();
+        write(&link, b"new\n").unwrap();
+        assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link must survive");
+        assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
     }
 
     #[test]

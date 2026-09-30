@@ -312,7 +312,14 @@ fn import_from_sober(path: &Path, replace: bool) -> u8 {
 /// half-finished edit -- saved, then abandoned -- reach the next launch as a
 /// malformed document, which the client ignores whole.
 fn edit(path: &Path) -> u8 {
-    let current = std::fs::read_to_string(path).unwrap_or_else(|_| "{\n}\n".to_string());
+    // Only a missing file starts from an empty document. Any other failure --
+    // bytes that are not UTF-8, a permission -- would otherwise put `{}` in
+    // the editor, and saving that unchanged wiped every flag in the file.
+    let current = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => "{\n}\n".to_string(),
+        Err(e) => return fail(&format!("{}: {e}. The flags were not changed.", path.display())),
+    };
     let draft = draft_path(path);
     if let Some(parent) = draft.parent() {
         if let Err(e) = std::fs::create_dir_all(parent) {

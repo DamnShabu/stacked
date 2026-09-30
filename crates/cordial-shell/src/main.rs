@@ -570,7 +570,9 @@ fn status(args: &[String]) -> u8 {
         None => println!("roblox:   none found -- `stacked` downloads one on first play"),
     }
     let origin = auto_update::origin_of(&config);
-    let updates = if !config.auto_update {
+    let updates = if config.roblox.lib_dir.is_some() {
+        "manual -- roblox.lib_dir names the engine, so Stacked will not replace the build".to_string()
+    } else if !config.auto_update {
         "manual -- `stacked update`; `stacked config set auto_update true` checks at every play".to_string()
     } else if auto_update::manages(origin) {
         "checked when you press Play".to_string()

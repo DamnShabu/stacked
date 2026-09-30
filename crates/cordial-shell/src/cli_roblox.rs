@@ -115,7 +115,8 @@ pub fn update(args: &[String]) -> u8 {
     let force = match args {
         [] => false,
         [flag] if flag == "--force" => true,
-        [other, ..] => {
+        _ => {
+            let other = args.iter().find(|a| *a != "--force").unwrap_or(&args[0]);
             eprintln!("stacked: unexpected argument {other:?}; update takes only --force");
             return 2;
         }
@@ -163,12 +164,14 @@ pub fn update(args: &[String]) -> u8 {
 /// `stacked pin 2.734.917` was refused as "not kept", with advice to download
 /// the same build again.
 fn kept_as(wanted: &str) -> Option<String> {
+    kept_entry(wanted).map(|e| e.version)
+}
+
+fn kept_entry(wanted: &str) -> Option<store::Entry> {
     let entries = store::list();
-    entries
-        .iter()
-        .find(|e| e.version == wanted)
-        .or_else(|| entries.iter().find(|e| cordial_update::version::same_build(&e.version, wanted)))
-        .map(|e| e.version.clone())
+    let exact = entries.iter().position(|e| e.version == wanted);
+    let index = exact.or_else(|| entries.iter().position(|e| cordial_update::version::same_build(&e.version, wanted)))?;
+    entries.into_iter().nth(index)
 }
 
 pub fn versions(args: &[String]) -> u8 {
@@ -229,7 +232,12 @@ pub fn versions(args: &[String]) -> u8 {
                     return 1;
                 }
             };
-            if let Some(kept) = kept_as(wanted) {
+            // Only a complete entry counts as kept. One without its APK --
+            // keyed before archives were kept, or linked from another
+            // filesystem -- cannot run, and fetching it again is how it is
+            // repaired, so it falls through to the download.
+            if let Some(kept) = kept_entry(wanted).filter(|e| e.complete) {
+                let kept = kept.version;
                 println!("Roblox {kept} is already kept. `stacked pin {kept}` runs it on the current profile.");
                 return 0;
             }
@@ -298,10 +306,21 @@ pub fn pin(args: &[String]) -> u8 {
     };
     // Refused here rather than at the next launch: a pin to a build that is
     // not on disk stops the profile launching at all.
-    let Some(version) = kept_as(wanted) else {
+    let Some(entry) = kept_entry(wanted) else {
         eprintln!("stacked: {wanted} is not kept. `stacked versions get {wanted}` fetches it first.");
         return 1;
     };
+    // `install::apply_pin` refuses an entry without its APK at launch, so a
+    // pin to one would only move the failure to the next Play.
+    if !entry.complete {
+        eprintln!(
+            "stacked: {} is kept without its APK, so it cannot run. \
+             `stacked versions get {}` fetches it again.",
+            entry.version, entry.version
+        );
+        return 1;
+    }
+    let version = entry.version;
     match crate::existing_profile(named) {
         Ok(name) => set_pin(name, Some(&version)),
         Err(e) => {

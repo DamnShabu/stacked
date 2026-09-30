@@ -303,15 +303,19 @@ pub fn apply_pin(build: Build, profile_dir: &Path) -> Result<Build, NotFound> {
 /// record once the engine directory has settled. Recording it here, before an
 /// extraction replaces that directory, wrote it into the build being replaced
 /// and cost a second verification on the next launch.
-fn verified_once(apk: &Path, cache: &Path) -> Result<Option<String>, NotFound> {
+///
+/// The fingerprint comes back with the archive's stamp as it was *before* the
+/// digest, so what is recorded describes the bytes that were checked.
+fn verified_once(apk: &Path, cache: &Path) -> Result<Option<(String, String)>, NotFound> {
     let pinned = cordial_update::apk_signature::pinned();
     if let Some(known) = cordial_update::cache::recorded_signer(cache, apk) {
         if pinned.iter().any(|p| p.eq_ignore_ascii_case(&known)) {
             return Ok(None);
         }
     }
+    let stamp = cordial_update::cache::stamp_for(apk);
     match cordial_update::apk_signature::verify_signed_by(apk, &pinned) {
-        Ok(signer) => Ok(Some(signer.certificate_sha256)),
+        Ok(signer) => Ok(stamp.map(|s| (signer.certificate_sha256, s))),
         Err(e) => Err(NotFound::Unusable(format!(
             "Stacked will not run {}: {e}.\n\nThis is the archive Stacked was pointed at, not \
              one it downloaded. `stacked config unset roblox.apk` lets Stacked find or fetch \
@@ -341,7 +345,7 @@ pub fn locate(configured: &RobloxInstall) -> Result<Build, NotFound> {
 /// `browser_account::profile::matching_profile_with`, for the same reason.
 fn locate_with(
     configured: &RobloxInstall,
-    verify: impl FnOnce(&Path, &Path) -> Result<Option<String>, NotFound>,
+    verify: impl FnOnce(&Path, &Path) -> Result<Option<(String, String)>, NotFound>,
 ) -> Result<Build, NotFound> {
     let Some((apk, _)) = effective_apk(configured) else {
         return Err(NotFound::NoBuild);
@@ -360,8 +364,8 @@ fn locate_with(
     // Not fatal if it cannot be written: the cost is verifying again next
     // launch, which is slow rather than wrong. The same shape as the version
     // and stamp writes in `locate_verified`.
-    if let Some(fingerprint) = fresh_signer {
-        if let Err(e) = cordial_update::cache::record_signer(&engine_cache(), &fingerprint, &build.apk) {
+    if let Some((fingerprint, stamp)) = fresh_signer {
+        if let Err(e) = cordial_update::cache::record_signer_stamped(&engine_cache(), &fingerprint, &stamp) {
             println!("  shell: verified {} but could not record it: {e}", build.apk.display());
         }
     }
@@ -537,11 +541,13 @@ fn key_into_store(store_root: &Path, cache: &Path, archives: &[&Path]) {
             for trouble in cordial_update::store::keep_archives(&entry, archives) {
                 println!("  shell: {keyed} is kept without its archives: {trouble}");
             }
-            let dropped = cordial_update::store::prune_in(
-                store_root,
-                cordial_update::store::KEEP,
-                &cordial_shell::profile::all_pinned_versions(),
-            );
+            // The build just keyed is the one about to run: pruning protected
+            // pins and not it, so keying a build older than the newest few
+            // deleted it at once, and every launch after extracted it again.
+            // Found by review.
+            let mut protect = cordial_shell::profile::all_pinned_versions();
+            protect.push(keyed.clone());
+            let dropped = cordial_update::store::prune_in(store_root, cordial_update::store::KEEP, &protect);
             if !dropped.is_empty() {
                 println!("  shell: removed older builds: {}", dropped.join(", "));
             }
