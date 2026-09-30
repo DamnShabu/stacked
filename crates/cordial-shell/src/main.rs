@@ -118,6 +118,8 @@ Plugins
   plugins enable|disable ID [--profile NAME]
   plugins grant|revoke ID CAPABILITY [--profile NAME]
                           Grant only what the plugin asks for; `plugins` lists it.
+  plugins prefs ID [KEY VALUE | --reset] [--profile NAME]
+                          Show or change a plugin's preferences.
   plugins deno            Install Deno, which plugins with code run on.
 
 Setting up

@@ -197,6 +197,13 @@ pub fn run(args: &[String]) -> u8 {
                 }
             }
         }
+        Some("prefs" | "preferences") => {
+            let Some(id) = arg(1) else {
+                eprintln!("stacked: plugins prefs needs an ID; `stacked plugins` lists them");
+                return 2;
+            };
+            prefs(&profile_dir, id, &rest[2..])
+        }
         Some("deno") => {
             // What the Plugins page's download button did: plugins with code
             // run on Deno, and a machine without one on `PATH` gets a pinned,
@@ -233,6 +240,126 @@ pub fn run(args: &[String]) -> u8 {
             eprintln!("stacked: unknown plugins command {other:?}. Try `stacked help`.");
             2
         }
+    }
+}
+
+/// `stacked plugins prefs ID [KEY VALUE | --reset]`: the preferences a plugin
+/// declares, which the Settings page used to draw as a form (ADR-020).
+///
+/// The validation is `preferences::Store::set`'s, the same check the page
+/// made, so a value refused here is one the plugin would never have been
+/// handed. What this adds is reading a typed word into the field's type:
+/// `on`, `yes` and `true` are all a boolean, and a choice is named by its
+/// value.
+fn prefs(profile_dir: &std::path::Path, id: &str, rest: &[String]) -> u8 {
+    use cordial_plugins::preferences::{Field, Store};
+    let Some(plugin) = installed().into_iter().find(|p| p.manifest.id == id) else {
+        eprintln!("stacked: no plugin {id:?} is installed");
+        return 1;
+    };
+    let fields = &plugin.manifest.preferences;
+    if fields.is_empty() {
+        println!("{id} has no preferences.");
+        return 0;
+    }
+    let store = Store::new(profile_dir);
+    match rest {
+        [] => {
+            let values = match store.effective_for(id, fields) {
+                Ok(v) => v,
+                Err(e) => {
+                    eprintln!("stacked: {e}");
+                    return 1;
+                }
+            };
+            for field in fields {
+                let value = values.get(&field.key).cloned().unwrap_or_else(|| field.field.default_value());
+                let accepts = match &field.field {
+                    Field::Bool { .. } => "true | false".to_string(),
+                    Field::Int { minimum, maximum, .. } => match (minimum, maximum) {
+                        (Some(lo), Some(hi)) => format!("{lo}-{hi}"),
+                        (Some(lo), None) => format!("{lo} or more"),
+                        (None, Some(hi)) => format!("up to {hi}"),
+                        (None, None) => "a whole number".into(),
+                    },
+                    Field::Choice { options, .. } => {
+                        options.iter().map(|o| o.value.as_str()).collect::<Vec<_>>().join(" | ")
+                    }
+                    Field::Text { .. } => "text".into(),
+                };
+                println!("{} = {}
+    {accepts}
+    {}", field.key, shown(&value), field.title);
+                if !field.description.is_empty() {
+                    println!("    {}", field.description);
+                }
+            }
+            0
+        }
+        [flag] if flag == "--reset" => match store.reset(id) {
+            Ok(()) => {
+                println!("{id}'s preferences are back to their defaults");
+                0
+            }
+            Err(e) => {
+                eprintln!("stacked: {e}");
+                1
+            }
+        },
+        [key, words @ ..] if !words.is_empty() => {
+            let Some(field) = fields.iter().find(|f| &f.key == key) else {
+                let keys: Vec<&str> = fields.iter().map(|f| f.key.as_str()).collect();
+                match crate::completions::suggest(key, keys.iter().copied()) {
+                    Some(near) => eprintln!("stacked: {id} has no preference {key:?}. Did you mean {near}?"),
+                    None => eprintln!("stacked: {id} has no preference {key:?}; it has {}", keys.join(", ")),
+                }
+                return 2;
+            };
+            let raw = words.join(" ");
+            let value = typed(&field.field, &raw);
+            match store.set(id, fields, key, value.clone()) {
+                Ok(()) => {
+                    println!("{key} = {}", shown(&value));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("stacked: {e}");
+                    2
+                }
+            }
+        }
+        _ => {
+            eprintln!("stacked: plugins prefs ID lists them; plugins prefs ID KEY VALUE sets one; --reset clears them");
+            2
+        }
+    }
+}
+
+/// A typed word, read as the kind of value `field` holds. Anything that does
+/// not read as that kind is passed through as text, so the store's own check
+/// refuses it with the field's type in the message.
+fn typed(field: &cordial_plugins::preferences::Field, raw: &str) -> serde_json::Value {
+    use cordial_plugins::preferences::Field;
+    let word = raw.trim();
+    match field {
+        Field::Bool { .. } => match word.to_ascii_lowercase().as_str() {
+            "true" | "on" | "yes" | "1" => serde_json::Value::Bool(true),
+            "false" | "off" | "no" | "0" => serde_json::Value::Bool(false),
+            _ => serde_json::Value::String(raw.to_string()),
+        },
+        Field::Int { .. } => word
+            .parse::<i64>()
+            .map(serde_json::Value::from)
+            .unwrap_or_else(|_| serde_json::Value::String(raw.to_string())),
+        Field::Choice { .. } | Field::Text { .. } => serde_json::Value::String(raw.to_string()),
+    }
+}
+
+fn shown(value: &serde_json::Value) -> String {
+    match value {
+        serde_json::Value::String(s) if s.is_empty() => "\"\"".into(),
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
     }
 }
 

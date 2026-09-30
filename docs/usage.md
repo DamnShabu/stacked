@@ -197,12 +197,16 @@ stacked plugins grant thing presence.set
 stacked plugins enable thing
 stacked plugins disable thing
 stacked plugins revoke thing presence.set
+stacked plugins prefs fps-flex mode mailbox
 stacked plugins remove thing
 ```
 
 `grant` accepts only the capabilities the plugin's manifest asks for;
-`stacked plugins` lists them. Plugin preferences have no command and are edited
-in the plugin's `preferences.json` ([plugins.md](plugins.md)).
+`stacked plugins` lists them.
+
+`stacked plugins prefs ID` lists a plugin's preferences with the values each
+accepts. `stacked plugins prefs ID KEY VALUE` changes one, and `--reset` puts
+them all back to their defaults. Like grants, preferences are per profile.
 
 A plugin with code starts switched off in every profile, including profiles
 you create later, and has to be enabled in each one where you want it.

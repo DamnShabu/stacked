@@ -75,7 +75,8 @@ the choice as `CORDIAL_THEME`, the same way it passes `CORDIAL_TITLE_BAR`.
 - **Plugin preferences.** The Settings page drew a form from each plugin's
   declared preferences. There is no command for them, so they are edited by
   hand in the plugin's `preferences.json`, and three of the four shipped
-  plugins declare some. A `stacked plugins prefs` is the obvious follow-up.
+  plugins declare some. A `stacked plugins prefs` is the obvious follow-up. *Done 2026-09-30:* `stacked plugins prefs ID [KEY VALUE | --reset]`, validated by
+  `preferences::Store::set` as the page was.
 - **The Deno download** is `stacked plugins deno` now, which was a button
   before.
 - **Consent.** The page only offered to grant capabilities a plugin

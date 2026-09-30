@@ -22,7 +22,7 @@ pub const COMMANDS: &[(&str, &[&str], &[&str])] = &[
     ("config", &["list", "get", "set", "unset", "path"], &[]),
     ("flags", &["list", "get", "set", "unset", "import", "edit", "clear", "path"], &["--profile"]),
     ("audio-outputs", &[], &[]),
-    ("plugins", &["list", "install", "remove", "enable", "disable", "grant", "revoke", "deno"], &["--profile"]),
+    ("plugins", &["list", "install", "remove", "enable", "disable", "grant", "revoke", "prefs", "deno"], &["--profile"]),
     ("doctor", &[], &["--offline"]),
     ("desktop", &["install", "remove", "status"], &[]),
     ("completions", &["bash", "zsh", "fish"], &[]),
