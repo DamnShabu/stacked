@@ -76,7 +76,7 @@ Stacked ships no part of Roblox.
 | `stacked profiles new alt` | Make a profile. `stacked profiles use alt` makes it the default. |
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
 | `stacked update` | Download the newest Roblox build now. `stacked` also does this by itself when you press Play. |
-| `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import file.json` takes a Bloxstrap export. |
+| `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import --sober` copies Sober's, and `import file.json` takes a Bloxstrap export. |
 | `stacked config` | List every setting and its current value. |
 | `stacked plugins install x.tar.zst` | Add a plugin. One that runs code starts switched off with no permissions. |
 | `stacked doctor` | Check this machine for problems, with the fix for each. |

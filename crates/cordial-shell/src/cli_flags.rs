@@ -66,9 +66,12 @@ pub fn run(args: &[String]) -> u8 {
         },
         Some("import") => {
             let replace = rest.iter().any(|a| a == "--replace");
-            match rest.iter().skip(1).find(|a| *a != "--replace") {
-                Some(file) => import(&path, file, replace),
-                None => usage("flags import needs a FILE, or - to read standard input"),
+            let sober = rest.iter().any(|a| a == "--sober");
+            match (sober, rest.iter().skip(1).find(|a| *a != "--replace" && *a != "--sober")) {
+                (true, None) => import_from_sober(&path, replace),
+                (false, Some(file)) => import(&path, file, replace),
+                (true, Some(_)) => usage("flags import takes a FILE or --sober, not both"),
+                (false, None) => usage("flags import needs a FILE, - to read standard input, or --sober"),
             }
         }
         Some("clear") => match flag_document::write(&path, &BTreeMap::new()) {
@@ -208,7 +211,11 @@ fn import(path: &Path, source: &str, replace: bool) -> u8 {
             Err(e) => return fail(&format!("{source}: {e}")),
         }
     };
-    let incoming = match flag_document::parse(&text) {
+    import_text(path, &text, source, replace)
+}
+
+fn import_text(path: &Path, text: &str, source: &str, replace: bool) -> u8 {
+    let incoming = match flag_document::parse(text) {
         Ok(f) => f,
         Err(e) => return fail(&format!("{source}: {e}")),
     };
@@ -243,6 +250,58 @@ fn import(path: &Path, source: &str, replace: bool) -> u8 {
             0
         }
         Err(e) => fail(&e),
+    }
+}
+
+/// Where Sober keeps its settings: the Flatpak's config directory, which is
+/// how VinegarHQ distributes it, then the XDG one a native install would use
+/// (`INFERRED` -- no native Sober install has been looked at).
+fn sober_configs() -> Vec<PathBuf> {
+    let home = std::env::var_os("HOME").map(PathBuf::from).unwrap_or_default();
+    let config = std::env::var_os("XDG_CONFIG_HOME")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(".config"));
+    vec![
+        home.join(".var/app/org.vinegarhq.Sober/config/sober/config.json"),
+        config.join("sober/config.json"),
+    ]
+}
+
+/// The FastFlags in a Sober `config.json`: its `fflags` object, which is what
+/// Sober applies, minus the `FFlagExample` placeholder a fresh install carries
+/// (seen as the whole block on a stock install; `docs/HANDOVER.md`).
+fn sober_flags(config_text: &str) -> Result<String, String> {
+    let config: serde_json::Value =
+        serde_json::from_str(config_text).map_err(|e| format!("not valid JSON: {e}"))?;
+    let mut flags = match config.get("fflags") {
+        Some(serde_json::Value::Object(map)) => map.clone(),
+        Some(_) => return Err("its \"fflags\" is not an object".into()),
+        None => serde_json::Map::new(),
+    };
+    flags.remove("FFlagExample");
+    Ok(serde_json::Value::Object(flags).to_string())
+}
+
+/// `flags import --sober`: bring across what somebody switching from Sober
+/// already tuned, rather than asking them to copy it out by hand.
+fn import_from_sober(path: &Path, replace: bool) -> u8 {
+    let Some(found) = sober_configs().into_iter().find(|p| p.is_file()) else {
+        return fail("no Sober settings found. Looked in ~/.var/app/org.vinegarhq.Sober/config/sober/config.json and ~/.config/sober/config.json");
+    };
+    let text = match std::fs::read_to_string(&found) {
+        Ok(t) => t,
+        Err(e) => return fail(&format!("{}: {e}", found.display())),
+    };
+    match sober_flags(&text) {
+        Ok(flags) if flags == "{}" => {
+            println!("Sober has no FastFlags set ({}); nothing to import.", found.display());
+            0
+        }
+        Ok(flags) => {
+            println!("importing Sober's FastFlags from {}", found.display());
+            import_text(path, &flags, &found.display().to_string(), replace)
+        }
+        Err(e) => fail(&format!("{}: {e}", found.display())),
     }
 }
 
@@ -442,6 +501,22 @@ mod tests {
     fn a_name_with_spaces_or_no_name_is_refused() {
         assert!(check("", "1").is_err());
         assert!(check("FFlag A", "True").is_err());
+    }
+
+    #[test]
+    fn sobers_fflags_block_is_what_is_imported_without_the_placeholder() {
+        let config = r#"{"use_opengl": false, "fflags": {"FFlagExample": true, "DFIntTaskSchedulerTargetFps": 144, "FFlagDebugDisplayFPS": true}}"#;
+        let flags = flag_document::parse(&sober_flags(config).unwrap()).unwrap();
+        assert_eq!(flags.len(), 2, "{flags:?}");
+        assert_eq!(flags.get("DFIntTaskSchedulerTargetFps").map(String::as_str), Some("144"));
+        assert_eq!(sober_flags(r#"{"fflags": {"FFlagExample": true}}"#).unwrap(), "{}");
+        assert_eq!(sober_flags(r#"{"use_opengl": true}"#).unwrap(), "{}");
+        assert!(sober_flags(r#"{"fflags": [1]}"#).is_err());
+
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("flags.json");
+        assert_eq!(import_text(&path, &sober_flags(config).unwrap(), "sober", false), 0);
+        assert_eq!(read(&path).unwrap().get("FFlagDebugDisplayFPS").map(String::as_str), Some("True"));
     }
 
     #[test]

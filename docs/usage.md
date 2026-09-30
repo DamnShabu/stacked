@@ -158,6 +158,7 @@ stacked flags set DFIntTaskSchedulerTargetFps 144
 stacked flags set FFlagDebugDisplayFPS true     # written as True
 stacked flags unset FFlagDebugDisplayFPS
 stacked flags import bloxstrap.json             # merge a Bloxstrap export; --replace to start over
+stacked flags import --sober                    # copy the fflags from Sober's config.json
 stacked flags edit                              # open it in $EDITOR
 stacked flags path                              # where the file is
 ```

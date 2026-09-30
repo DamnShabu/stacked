@@ -10,6 +10,14 @@ stacked flags import bloxstrap.json    # a Bloxstrap export pastes in unchanged
 stacked flags                          # what is set
 ```
 
+Coming from Sober, `stacked flags import --sober` copies the `fflags` from its
+`config.json`.
+
+Roblox said in 2025 that its desktop clients would only honour an allowlist of
+FastFlags. Whether that applies to the Android engine Stacked runs, and to the
+way Stacked hands flags to it, hasn't been measured here. `FLogGraphics=0` and
+`DFIntTaskSchedulerTargetFps` have both been seen to take effect.
+
 [usage.md](usage.md#fastflags) has every `stacked flags` command. Underneath,
 they edit `~/.local/share/cordial/profiles/<profile>/flags.json` (or the file
 `CORDIAL_FLAGS` names), a flat JSON object you can also write by hand.
