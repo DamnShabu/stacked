@@ -1227,23 +1227,26 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// have mishandled a stale image or a torn-down swapchain.
 ///
 /// `tools/sober-corpus`'s issue #2180 (`Crashes after SceneManager first
-/// resize when using Vulkan`) is independent evidence for a wider version of
-/// the same fault shape: Roblox's Android-targeted Vulkan renderer, run on
-/// Sober rather than Cordial, has repeatedly SIGSEGV'd immediately after a
-/// framebuffer resize on ordinary desktop Linux GPU drivers (NVIDIA 535
-/// through 550, Pascal through Ampere), with no Cordial-equivalent code
-/// involved at all — Sober's own maintainers concluded it is the engine's
-/// renderer disagreeing with the host driver, not anything in the launcher,
-/// and the confirmed workaround every reporter in that thread used is forcing
-/// the OpenGL/GLES path instead of Vulkan. Cordial already ships the same
-/// switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
+/// resize when using Vulkan due to Roblox incompatibility with NVIDIA driver
+/// 550`) is evidence for the same fault shape on **NVIDIA, and on NVIDIA only**:
+/// Roblox's Android-targeted Vulkan renderer, run on Sober rather than Cordial,
+/// SIGSEGVs right after a render-target resize on the 535 and 550 driver
+/// series (Pascal through Ampere), with no Cordial-equivalent code involved. A
+/// Sober maintainer's conclusion there was a driver incompatibility, fixed by
+/// changing driver version -- reporters on a GTX 1070 and 1070 Ti went from
+/// 535/550 to 580 and were running afterwards -- and the one workaround in the
+/// thread that was tried and worked is switching Sober to OpenGL. **It says
+/// nothing about AMD or Intel.** #35 is a Steam Deck (AMD, Mesa) and #39's GPU
+/// was never given, so this issue is not evidence about either of them; an
+/// earlier version of this comment offered it as if it were. Cordial has the
+/// same switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
 /// entirely, so the engine falls through to its own GLES3 renderer and none
 /// of this file's code ever runs. Confirmed still working on this build,
 /// 2026-09-15: `CORDIAL_GRAPHICS=gles` reached the Landing page cleanly,
 /// logging `[graphics] backend: GLES3 — Vulkan is being withheld
-/// deliberately`. That makes it a real mitigation to offer a reporter of #35
-/// or #39 today, not a fix for whatever is actually wrong with Roblox's
-/// Vulkan renderer here.
+/// deliberately`. That makes it something to *try* for a reporter of #35 or
+/// #39, not an established mitigation for their machines and not a fix for
+/// whatever is actually wrong with Roblox's Vulkan renderer here.
 extern "C" fn vk_create_swapchain_khr(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
