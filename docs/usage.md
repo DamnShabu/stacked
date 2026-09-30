@@ -143,7 +143,8 @@ It doesn't run when:
   won't replace that
 - the profile is pinned to a version (`stacked pin`)
 - NetworkManager says the connection is metered. Stacked tells you a newer
-  build exists, and `stacked update` gets it when you choose
+  build exists, and `stacked update` gets it when you choose. The first
+  download waits for `stacked install` in the same way
 - `auto_update` is `false`, or you pass `--no-update`
 
 `stacked status` says which of these applies.

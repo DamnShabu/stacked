@@ -48,7 +48,8 @@ The rules that keep this from making a launch worse are in
   decompressing the engine inside Sober's APK. The installed build's version
   comes from `cordial_update::engine::installed_version`, which the client
   already memoises beside the engine on every start.
-- **A metered connection holds the download back** when NetworkManager says,
+- **A metered connection holds the download back**, the first-run install
+  included (`stacked install` fetches it explicitly), when NetworkManager says,
   or guesses, that it is metered. An unknown answer does not, which is
   narrower than `cordial_update::metered::is_metered`. That reading was for a
   download nobody asked for. This one follows a press of Play, says how big

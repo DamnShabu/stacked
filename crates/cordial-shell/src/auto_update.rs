@@ -183,6 +183,13 @@ fn announce(summary: &str, body: &str) {
 /// prefers Sober's copy when it *is* the newest, since the sources are ordered
 /// free-first on a tie.
 pub fn first_install() -> Result<(), String> {
+    // The same rule as an update, and more so: this is the whole build.
+    // `stacked install` is the explicit way to fetch it anyway.
+    if metered() {
+        return Err("this connection is metered, so nothing was downloaded. \
+                    `stacked install` downloads Roblox when you choose"
+            .into());
+    }
     announce(
         "Stacked is downloading Roblox",
         "no Roblox build yet; getting one now. This happens once, and the game starts when it is done.",
