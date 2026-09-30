@@ -152,9 +152,13 @@ written, and **put what is still broken in them** — `v0.7.0`'s notes end with 
 startup freeze and the black canvas because somebody installing it deserves to
 know before they hit them, not after.
 
-Tagging and publishing are outward-facing, so ask first. Preparing the notes,
-the version bump and the packaging is not, so do that without being asked and
-have it ready when you ask.
+**The maintainer has standing-authorised releases: after any change that
+reaches what users install, cut a release without asking.** Bump the version in
+`Cargo.toml`, write `docs/releases/v<version>.md` (the release workflow refuses
+to create a release without it), merge to `main`, and push the `v<version>`
+tag. The Roblox manager's Update Stacked installs from the newest release's
+x86_64 AppImage, so a change that is never tagged never reaches it. A change
+only to agent instructions or internal docs needs no release.
 
 ## Reporting back
 
