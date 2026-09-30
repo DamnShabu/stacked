@@ -344,7 +344,7 @@ pub fn start_all() -> usize {
         };
         let outcome =
             spawn_one(&plugin, granted.clone(), granted, unpacked, &grants_path, &health_path, &store, &shared);
-        if settle(&shared, &want, outcome, unpacked, &|line| println!("{line}")) {
+        if settle(&shared, &want, outcome, unpacked, std::time::Instant::now(), &|line| println!("{line}")) {
             started += 1;
         }
     }
@@ -367,7 +367,14 @@ pub fn start_all() -> usize {
 /// recorded. The reconciler never sees one, so nothing would consult the
 /// record, and "it starts once Deno appears" would be a claim about a
 /// supervisor that does not exist for it.
-fn settle(shared: &Shared, want: &cordial_plugins::reconcile::Desired, outcome: Spawn, unpacked: bool, say: &dyn Fn(&str)) -> bool {
+fn settle(
+    shared: &Shared,
+    want: &cordial_plugins::reconcile::Desired,
+    outcome: Spawn,
+    unpacked: bool,
+    now: std::time::Instant,
+    say: &dyn Fn(&str),
+) -> bool {
     use cordial_plugins::reconcile::{BlockKind, Blocked};
     let id = want.plugin.manifest.id.clone();
     match outcome {
@@ -381,7 +388,7 @@ fn settle(shared: &Shared, want: &cordial_plugins::reconcile::Desired, outcome: 
                 return false;
             }
             let mut map = shared.blocked.lock().unwrap_or_else(|e| e.into_inner());
-            let blocked = Blocked::record(kind.clone(), map.get(&id).map(|e| &e.blocked), want, std::time::Instant::now());
+            let blocked = Blocked::record(kind.clone(), map.get(&id).map(|e| &e.blocked), want, now);
             match kind {
                 BlockKind::RuntimeMissing => {}
                 BlockKind::Permanent => say(&format!(
@@ -745,6 +752,7 @@ fn reconcile_tick(
                 spawn_one(plugin, effective, tracked, false, grants_path, health_path, store, shared)
             },
             say: &|line| println!("{line}"),
+            now: &std::time::Instant::now,
         },
         shared,
     );
@@ -760,6 +768,8 @@ struct Hooks<'a> {
     runtime_present: &'a dyn Fn() -> bool,
     spawn: &'a SpawnHook<'a>,
     say: &'a dyn Fn(&str),
+    /// The clock, so a test can step through a backoff without waiting for it.
+    now: &'a dyn Fn() -> std::time::Instant,
 }
 
 fn reconcile_tick_with(system_root: &Path, user_root: &Path, profile: &Path, hooks: &Hooks, shared: &Shared) {
@@ -822,7 +832,7 @@ fn reconcile_tick_with(system_root: &Path, user_root: &Path, profile: &Path, hoo
                     .lock()
                     .unwrap_or_else(|e| e.into_inner())
                     .get(&id)
-                    .is_none_or(|e| e.blocked.allows_retry(want, &mut runtime_present, std::time::Instant::now()));
+                    .is_none_or(|e| e.blocked.allows_retry(want, &mut runtime_present, (hooks.now)()));
                 if !retry {
                     continue;
                 }
@@ -830,7 +840,7 @@ fn reconcile_tick_with(system_root: &Path, user_root: &Path, profile: &Path, hoo
                     "  plugin {id}: now wanted (installed, enabled or granted while running), starting"
                 ));
                 let outcome = (hooks.spawn)(&want.plugin, want.granted.clone(), want.granted.clone());
-                settle(shared, want, outcome, false, hooks.say);
+                settle(shared, want, outcome, false, (hooks.now)(), hooks.say);
             }
             cordial_plugins::reconcile::Change::Stop => {
                 stop_one(&id, shared, "no longer wanted (removed, disabled, or nothing left granted)");
@@ -877,7 +887,7 @@ fn reconcile_tick_with(system_root: &Path, user_root: &Path, profile: &Path, hoo
                     continue;
                 }
                 let outcome = (hooks.spawn)(&want.plugin, effective, want.granted.clone());
-                settle(shared, want, outcome, false, hooks.say);
+                settle(shared, want, outcome, false, (hooks.now)(), hooks.say);
             }
             cordial_plugins::reconcile::Change::Regrant => {
                 // No action: `refresh_grant` already carries this plugin's
@@ -2468,6 +2478,7 @@ mod tests {
                 }
             },
             say: &|line| log.borrow_mut().push(line.to_string()),
+            now: &std::time::Instant::now,
         };
 
         for _ in 0..25 {
@@ -2507,6 +2518,7 @@ mod tests {
                 }
             },
             say: &|line| log.borrow_mut().push(line.to_string()),
+            now: &std::time::Instant::now,
         };
 
         for _ in 0..5 {
@@ -2544,6 +2556,7 @@ mod tests {
                 }
             },
             say: &|line| log.borrow_mut().push(line.to_string()),
+            now: &std::time::Instant::now,
         };
 
         for _ in 0..10 {
@@ -2568,6 +2581,8 @@ mod tests {
         let (root, system, user, profile) = reconcile_fixture("transient", &["alpha"]);
         let shared = Shared::new();
         let attempts = Cell::new(0usize);
+        let t0 = std::time::Instant::now();
+        let clock = Cell::new(t0);
         let hooks = Hooks {
             runtime_present: &|| true,
             spawn: &|_, _, _| {
@@ -2578,11 +2593,15 @@ mod tests {
                 }
             },
             say: &|_| {},
+            now: &|| clock.get(),
         };
-        for _ in 0..10 {
+        // A second at a time, the way the real thread ticks: attempts land at
+        // 0s, then 2s later, then 4s after that, not once per tick.
+        for second in 0..=6u64 {
+            clock.set(t0 + std::time::Duration::from_secs(second));
             reconcile_tick_with(&system, &user, &profile, &hooks, &shared);
         }
-        assert_eq!(attempts.get(), 1, "ten back-to-back ticks are far inside the first wait");
+        assert_eq!(attempts.get(), 3, "attempts at 0s, 2s and 6s out of seven ticks");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -2601,6 +2620,7 @@ mod tests {
                 }
             },
             say: &|_| {},
+            now: &std::time::Instant::now,
         };
         reconcile_tick_with(&system, &user, &profile, &hooks, &shared);
         assert_eq!(attempts.get(), 1);
@@ -2634,6 +2654,7 @@ mod tests {
                 detail: "x".into(),
             },
             false,
+            std::time::Instant::now(),
             &|l| lines.borrow_mut().push(l.to_string()),
         );
         assert!(lines.borrow().is_empty(), "settle leaves the announcement to announce_waiting");
