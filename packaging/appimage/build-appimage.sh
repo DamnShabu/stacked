@@ -101,10 +101,32 @@ done
 # mcpelauncher-linker's own nested bionic empty, and the first anyone hears of
 # it is cordial-linker-sys's build script panicking several minutes into the
 # cargo build. The pinned commits are already in the tree, so fetch them here.
-if [ ! -e third_party/mcpelauncher-linker/bionic/linker/linker.cpp ] \
-    || [ ! -e third_party/libjnivm/CMakeLists.txt ]; then
+#
+# versioning.h is checked through mcpelauncher-linker's include/ symlink
+# rather than at its real path, because that symlink is how the compiler
+# reaches it: a checkout whose symlinks did not survive, or whose bionic is at
+# some other commit, has linker.cpp present and still fails every file with
+# "'android/versioning.h' file not found".
+submodule_files=(
+    third_party/mcpelauncher-linker/bionic/linker/linker.cpp
+    third_party/mcpelauncher-linker/include/android/versioning.h
+    third_party/libjnivm/CMakeLists.txt
+)
+submodules_present() {
+    local f
+    for f in "${submodule_files[@]}"; do
+        [ -e "$f" ] || { echo "missing: $f" >&2; return 1; }
+    done
+}
+if ! submodules_present; then
     echo "==> checking out submodules"
-    git submodule update --init --recursive
+    git submodule update --init --recursive --force
+    submodules_present || {
+        echo "error: submodules are still incomplete after checkout." >&2
+        echo "Check that git keeps symlinks here (git config core.symlinks)" >&2
+        echo "and see git submodule status --recursive." >&2
+        exit 1
+    }
 fi
 
 # Where cargo will actually put the binaries. This used to be spelled `target/`
