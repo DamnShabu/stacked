@@ -1,0 +1,28 @@
+# Say hello on somebody's first issue or pull request, and point them at the
+# two things that decide whether it can be acted on: the diagnostics block and
+# the rule that a claim needs a measurement.
+#
+# `pull_request_target` so it can comment on a pull request from a fork. It
+# never checks out or runs that pull request's code.
+name: welcome
+
+on:
+  issues:
+    types: [opened]
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  welcome:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@1c4688942c71f71d4f5502a26ea67c331730fa4d # v3.1.0
+        with:
+          issue_message: |
+            Thanks for the report. If it is about the client, please make sure the output of `stacked diagnostics` is in it -- it says which build you are on and how it was installed, and a report without it usually cannot be acted on. See [SUPPORT.md](https://github.com/DamnShabu/stacked/blob/main/.github/SUPPORT.md) for what else helps.
+          pr_message: |
+            Thanks for the pull request. [CONTRIBUTING.md](https://github.com/DamnShabu/stacked/blob/main/CONTRIBUTING.md) is worth a read if you have not already: the short version is that a change says what was run and what it printed, and that if you could not build or test it, saying so is fine.

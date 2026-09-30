@@ -1,0 +1,41 @@
+# Path-to-label map for .github/workflows/labeler.yml. Every label named here
+# is defined in .github/labels.yml.
+"area: linker":
+  - changed-files:
+      - any-glob-to-any-file: ["crates/cordial-linker-sys/**", "third_party/mcpelauncher-linker", "patches/**"]
+"area: runtime":
+  - changed-files:
+      - any-glob-to-any-file: ["crates/cordial-runtime/**", "third_party/libjnivm"]
+"area: native":
+  - changed-files:
+      - any-glob-to-any-file: ["native/**"]
+"area: shell":
+  - changed-files:
+      - any-glob-to-any-file: ["crates/cordial-shell/**"]
+"area: plugins":
+  - changed-files:
+      - any-glob-to-any-file: ["crates/cordial-plugins/**", "plugins/**", "docs/plugin-api.md", "docs/plugins.md"]
+"area: update":
+  - changed-files:
+      - any-glob-to-any-file: ["crates/cordial-update/**"]
+"area: packaging":
+  - changed-files:
+      - any-glob-to-any-file: ["packaging/**", "flake.nix", "flake.lock"]
+"area: ci":
+  - changed-files:
+      - any-glob-to-any-file: [".github/**"]
+"area: issue-bridge":
+  - changed-files:
+      - any-glob-to-any-file: ["tools/discord-bridge/**", ".github/ISSUE_TEMPLATE/**"]
+"area: tools":
+  - changed-files:
+      - all-globs-to-any-file: ["tools/**", "!tools/discord-bridge/**"]
+"area: docs":
+  - changed-files:
+      - any-glob-to-any-file: ["docs/**", "*.md"]
+"area: site":
+  - changed-files:
+      - any-glob-to-any-file: ["site/**"]
+"type: dependencies":
+  - changed-files:
+      - any-glob-to-any-file: ["Cargo.lock", "tools/discord-bridge/package-lock.json"]

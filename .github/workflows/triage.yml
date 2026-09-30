@@ -1,0 +1,77 @@
+# First-pass triage for new issues. It labels and comments; it never closes,
+# locks or assigns anything.
+#
+# Every issue form applies its own `type:` label, including the ones filed
+# through the Discord bridge (ADR-030), which reads the same forms. This adds
+# `status: needs-triage` to a new issue, and `status: needs-info` when a
+# section the form marks required is empty -- the web form enforces that, but
+# an edit, the API or a bridge failure can still leave one blank. Editing the
+# issue to fill the section takes the label off again.
+#
+# The required fields are read from `.github/ISSUE_TEMPLATE/` on the default
+# branch rather than listed here, so a template edit cannot drift out of step
+# with this check. `issues` events always run the default branch's copy of this
+# file, never a fork's.
+name: triage issues
+
+on:
+  issues:
+    types: [opened, edited]
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  triage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          sparse-checkout: .github/ISSUE_TEMPLATE
+      # yq ships on GitHub's Ubuntu runners; github-script has no YAML parser.
+      - name: Read the issue forms
+        run: |
+          for f in .github/ISSUE_TEMPLATE/*.yml; do
+            [ "$(basename "$f")" = config.yml ] && continue
+            yq -o=json '.' "$f"
+          done | jq -s '.' > "$RUNNER_TEMP/forms.json"
+      - uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const fs = require("fs");
+            const forms = JSON.parse(fs.readFileSync(`${process.env.RUNNER_TEMP}/forms.json`, "utf8"));
+            const issue = context.payload.issue;
+            const ref = { owner: context.repo.owner, repo: context.repo.repo, issue_number: issue.number };
+            const labels = issue.labels.map((l) => l.name);
+
+            if (context.payload.action === "opened" && !labels.includes("status: needs-triage")) {
+              await github.rest.issues.addLabels({ ...ref, labels: ["status: needs-triage"] });
+            }
+
+            // Which form this came from: the one whose `type:` label it carries.
+            const form = forms.find((f) =>
+              (f.labels ?? []).some((l) => l.startsWith("type: ") && labels.includes(l)));
+            if (!form) return;
+
+            const body = issue.body ?? "";
+            const section = (label) => {
+              const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+              const m = body.match(new RegExp(`^###\\s+${escaped}\\s*$([\\s\\S]*?)(?=^###\\s|(?![\\s\\S]))`, "m"));
+              return m ? m[1].trim() : "";
+            };
+            const empty = (form.body ?? [])
+              .filter((b) => b.type !== "markdown" && b.validations?.required && b.attributes?.label)
+              .map((b) => b.attributes.label)
+              .filter((label) => { const s = section(label); return s === "" || s === "_No response_"; });
+
+            const flagged = labels.includes("status: needs-info");
+            if (empty.length && !flagged) {
+              await github.rest.issues.addLabels({ ...ref, labels: ["status: needs-info"] });
+              await github.rest.issues.createComment({ ...ref, body:
+                "These sections are required by the form and are empty, so this cannot be acted on yet:\n\n" +
+                empty.map((l) => `- **${l}**`).join("\n") +
+                "\n\nEdit the issue to fill them in and this label comes off by itself." });
+            } else if (!empty.length && flagged) {
+              await github.rest.issues.removeLabel({ ...ref, name: "status: needs-info" });
+            }

@@ -1,0 +1,36 @@
+# Version updates for every ecosystem in the tree, grouped so that minor and
+# patch bumps arrive as one pull request per ecosystem a week rather than one
+# per crate. Majors still come one at a time, because each is a change that
+# wants reading.
+#
+# Not covered, deliberately: the git submodules under third_party/. They are
+# pinned to the commits patches/ applies against, and a bump that moves them
+# breaks the patch set rather than updating anything.
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type: dependencies"]
+    groups:
+      cargo-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: npm
+    directory: /tools/discord-bridge
+    schedule:
+      interval: weekly
+    labels: ["type: dependencies", "area: issue-bridge"]
+    groups:
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    labels: ["type: dependencies", "area: ci"]
+    groups:
+      actions-minor-and-patch:
+        update-types: [minor, patch]

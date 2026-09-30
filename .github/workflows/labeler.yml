@@ -1,0 +1,40 @@
+# Label pull requests by the paths they touch and by how many lines they change.
+#
+# `pull_request_target` so a pull request from a fork can be labelled at all --
+# under `pull_request` its token is read-only. That trigger runs with this
+# repository's token, so **nothing here checks out or runs the pull request's
+# code**: the labeler reads the changed-file list from the API, and the size
+# step reads two numbers from the event payload. Keep it that way.
+name: label pull requests
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  label:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/labeler@b8dd2d9be0f68b860e7dae5dae7d772984eacd6d # v6.2.0
+        with:
+          sync-labels: false
+      - name: Size
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8.0.0
+        with:
+          script: |
+            const pr = context.payload.pull_request;
+            const lines = pr.additions + pr.deletions;
+            const size = lines < 10 ? "XS" : lines < 100 ? "S" : lines < 500 ? "M" : lines < 1000 ? "L" : "XL";
+            const want = `size: ${size}`;
+            const issue = { owner: context.repo.owner, repo: context.repo.repo, issue_number: pr.number };
+            // Only the size labels are touched; anything a person added stays.
+            for (const label of pr.labels.map((l) => l.name)) {
+              if (label.startsWith("size: ") && label !== want) {
+                await github.rest.issues.removeLabel({ ...issue, name: label });
+              }
+            }
+            await github.rest.issues.addLabels({ ...issue, labels: [want] });
