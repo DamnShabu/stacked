@@ -246,7 +246,7 @@ jobs:
       # fetches the triggering tag and fetch-tags asks for it a second time.
       # On a tag run the tag is present without it, so the step below still
       # finds it; only a push to main needs the extra tag fetch.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           submodules: false
           fetch-tags: ${{ github.ref_type != 'tag' }}
@@ -404,7 +404,7 @@ jobs:
       # objects — restoring a stale build cache is how a package ends up
       # shipping a binary nobody can account for.
       - name: Cache downloaded sources
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: .flatpak-builder/downloads
           key: flatpak-downloads-${{ hashFiles('Cargo.lock', 'packaging/io.github.damnshabu.Stacked.yml', 'packaging/cargo-sources.json') }}
@@ -592,7 +592,7 @@ jobs:
       # asking them to build it themselves is how packaging regressions reach a
       # release.
       - name: Upload the bundle as a workflow artefact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cordial-flatpak-bundle-${{ env.ARCH }}
           path: ${{ env.BUNDLE }}
@@ -606,7 +606,7 @@ jobs:
       # bundle is one ref packaged standalone, this is the whole local OSTree
       # repository this leg built, objects and refs together.
       - name: Upload this leg's OSTree repo, for the merge job to combine
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: flatpak-repo-${{ env.ARCH }}
           path: repo
@@ -641,7 +641,7 @@ jobs:
       # Only for the files "Assemble the Pages tree" below reads: the site,
       # the icons, and the two static repo-definition files. Same reasoning
       # as attach-to-release.yml's own sparse checkout.
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           submodules: false
@@ -698,7 +698,7 @@ jobs:
       # repositories and have to stay two separate `--repo=` arguments for
       # `ostree pull-local` below, not one merged directory tree.
       - name: Download both architectures' repos
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           pattern: flatpak-repo-*
           path: legs
@@ -823,7 +823,7 @@ jobs:
       - name: Download the apt repository
         if: steps.aptrepo.outputs.found == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cordial-apt-repo
           path: apt-repo
@@ -856,7 +856,7 @@ jobs:
       - name: Download the dnf repository
         if: steps.rpmrepo.outputs.found == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cordial-rpm-repo
           path: rpm-repo
@@ -883,7 +883,7 @@ jobs:
       - name: Download the pacman repository
         if: steps.pacmanrepo.outputs.found == 'true'
         continue-on-error: true
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: cordial-pacman-repo
           path: pacman-repo
@@ -1014,7 +1014,7 @@ jobs:
             exit 1
           fi
 
-      - uses: actions/upload-pages-artifact@v3
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:
           path: pages
 
@@ -1088,4 +1088,4 @@ jobs:
       id-token: write
     steps:
       - id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

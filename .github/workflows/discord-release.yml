@@ -124,7 +124,7 @@ jobs:
           fi
 
       - name: Check out, for the assembling script below
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           # This job reads one Python file and no history. `sparse-checkout`
           # rather than a full clone because a submodule-less shallow checkout

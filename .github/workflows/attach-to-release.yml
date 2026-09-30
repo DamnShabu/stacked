@@ -96,7 +96,7 @@ jobs:
       # Actions write; nothing here writes any other Actions state.
       actions: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           submodules: false
@@ -104,7 +104,7 @@ jobs:
           sparse-checkout-cone-mode: false
 
       - name: Collect what the caller built
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           path: dist
           pattern: ${{ inputs.artifact_pattern }}
@@ -186,7 +186,7 @@ jobs:
           printf '%s\n' "${files[@]}" > "$RUNNER_TEMP/attached.txt"
 
       - name: Install cosign
-        uses: sigstore/cosign-installer@v3
+        uses: sigstore/cosign-installer@7e8b541eb2e61bf99390e1afd4be13a184e9ebc5 # v3.10.1
 
       - name: Sign every attached file, and attach the signatures
         env:

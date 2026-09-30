@@ -194,7 +194,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           submodules: recursive
@@ -204,7 +204,7 @@ jobs:
         # to operate across that boundary.
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: actions/cache for the crate registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -259,7 +259,7 @@ jobs:
         # habit.
         run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/stacked
       - name: Upload the AppImage
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # Arch-suffixed so the two matrix legs' uploads do not collide --
           # upload-artifact@v4 refuses a second upload under a name already
@@ -313,14 +313,14 @@ jobs:
           curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs \
             | sh -s -- -y --profile minimal --default-toolchain stable
           echo "$HOME/.cargo/bin" >> "$GITHUB_PATH"
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           submodules: recursive
       - name: git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: actions/cache for the crate registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -349,7 +349,7 @@ jobs:
         # habit.
         run: ./packaging/check-glibc-floor.sh target/release/cordial-run target/release/stacked
       - name: Upload the .deb
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cordial-deb-${{ matrix.arch }}
           path: dist/deb/*.deb
@@ -382,14 +382,14 @@ jobs:
         run: |
           dnf install -y --setopt=install_weak_deps=False \
             git cargo rust rpm-build rpmdevtools zstd
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
           submodules: recursive
       - name: git safe.directory
         run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
       - name: actions/cache for the crate registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4.3.0
         with:
           path: |
             ~/.cargo/registry
@@ -401,7 +401,7 @@ jobs:
       - name: Build the binary RPM
         run: packaging/rpm/build-rpm.sh --outdir dist/rpm
       - name: Upload the RPM
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           # rpmbuild names the file after the host's own %{_arch} already
           # (e.g. stacked-0.17.0-1.fc44.aarch64.rpm), so the *filename* needed
@@ -430,7 +430,7 @@ jobs:
     container: archlinux:base-devel
     timeout-minutes: 75
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 1
           submodules: false
@@ -478,7 +478,7 @@ jobs:
           cp packaging/aur/stacked/*.pkg.tar.zst dist/arch/
           pacman -Qp dist/arch/*.pkg.tar.zst >/dev/null
       - name: Upload the Arch package
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: cordial-arch
           path: |
