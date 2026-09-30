@@ -298,23 +298,20 @@ pub fn apply_pin(build: Build, profile_dir: &Path) -> Result<Build, NotFound> {
 /// [`cordial_update::apk_signature::Refusal`] distinguishes "somebody changed
 /// this file" from "this is intact and is not Roblox's", and collapsing them
 /// into one shrug is what that type exists to prevent.
-fn verified_once(apk: &Path, cache: &Path) -> Result<(), NotFound> {
+///
+/// Returns the fingerprint when it had to verify, for [`locate_with`] to
+/// record once the engine directory has settled. Recording it here, before an
+/// extraction replaces that directory, wrote it into the build being replaced
+/// and cost a second verification on the next launch.
+fn verified_once(apk: &Path, cache: &Path) -> Result<Option<String>, NotFound> {
     let pinned = cordial_update::apk_signature::pinned();
-    if let Some(known) = cordial_update::cache::recorded_signer(cache) {
+    if let Some(known) = cordial_update::cache::recorded_signer(cache, apk) {
         if pinned.iter().any(|p| p.eq_ignore_ascii_case(&known)) {
-            return Ok(());
+            return Ok(None);
         }
     }
     match cordial_update::apk_signature::verify_signed_by(apk, &pinned) {
-        Ok(signer) => {
-            // Not fatal if it cannot be written: the cost is verifying again
-            // next launch, which is slow rather than wrong. The same shape as
-            // the version and stamp writes below.
-            if let Err(e) = cordial_update::cache::record_signer(cache, &signer.certificate_sha256) {
-                println!("  shell: verified {} but could not record it: {e}", apk.display());
-            }
-            Ok(())
-        }
+        Ok(signer) => Ok(Some(signer.certificate_sha256)),
         Err(e) => Err(NotFound::Unusable(format!(
             "Stacked will not run {}: {e}.\n\nThis is the archive Stacked was pointed at, not \
              one it downloaded. `stacked config unset roblox.apk` lets Stacked find or fetch \
@@ -344,7 +341,7 @@ pub fn locate(configured: &RobloxInstall) -> Result<Build, NotFound> {
 /// `browser_account::profile::matching_profile_with`, for the same reason.
 fn locate_with(
     configured: &RobloxInstall,
-    verify: impl FnOnce(&Path, &Path) -> Result<(), NotFound>,
+    verify: impl FnOnce(&Path, &Path) -> Result<Option<String>, NotFound>,
 ) -> Result<Build, NotFound> {
     let Some((apk, _)) = effective_apk(configured) else {
         return Err(NotFound::NoBuild);
@@ -358,7 +355,21 @@ fn locate_with(
     }
     // Before any of the four paths below returns a `Build`, so that none of
     // them can hand the loader an archive nobody established the origin of.
-    verify(&apk, &engine_cache())?;
+    let fresh_signer = verify(&apk, &engine_cache())?;
+    let build = locate_verified(configured, apk)?;
+    // Not fatal if it cannot be written: the cost is verifying again next
+    // launch, which is slow rather than wrong. The same shape as the version
+    // and stamp writes in `locate_verified`.
+    if let Some(fingerprint) = fresh_signer {
+        if let Err(e) = cordial_update::cache::record_signer(&engine_cache(), &fingerprint, &build.apk) {
+            println!("  shell: verified {} but could not record it: {e}", build.apk.display());
+        }
+    }
+    Ok(build)
+}
+
+/// The rest of [`locate_with`], once the archive's signature is established.
+fn locate_verified(configured: &RobloxInstall, apk: PathBuf) -> Result<Build, NotFound> {
 
     // An explicit --lib-dir wins and is not second-guessed: someone who set it
     // has a reason, and quietly extracting over the top of it would hide a
@@ -452,12 +463,12 @@ fn locate_with(
             }
             // **And the version, or this build can never be updated.**
             //
-            // `Checked::installed` reads `cache::recorded_version`, and
-            // `update_available` is deliberately both-or-nothing: an unknown
-            // installed version is not an old one. So a cache with no recorded
-            // version makes "is there an update" answer no, for ever -- the
-            // badge never lights, and pressing the button re-checks and returns
-            // to the same place.
+            // The store keys entries on `cache::recorded_version`, and the
+            // launch-time update check (`auto_update.rs`) is deliberately
+            // both-or-nothing: an unknown installed version is not an old one.
+            // So an engine with no readable version is never offered an update.
+            // (This named the GTK launcher's `Checked::installed` and
+            // `update_available` until both were deleted with it.)
             //
             // Until now the only writer was `cordial_update::install::adopt`,
             // which runs when *Cordial* downloaded the build. Everyone whose
@@ -768,13 +779,13 @@ mod tests {
         std::fs::write(&apk, apk_holding(b"the old engine")).unwrap();
         let install = RobloxInstall { apk: Some(apk.clone()), lib_dir: None };
 
-        let first = locate_with(&install, |_, _| Ok(())).unwrap();
+        let first = locate_with(&install, |_, _| Ok(None)).unwrap();
         assert_eq!(std::fs::read(first.lib_dir.join(LIBRARY)).unwrap(), b"the old engine");
 
         // A new Roblox build lands at the same path, which is exactly what
         // Sober updating does.
         std::fs::write(&apk, apk_holding(b"the new engine, which is longer")).unwrap();
-        let second = locate_with(&install, |_, _| Ok(())).unwrap();
+        let second = locate_with(&install, |_, _| Ok(None)).unwrap();
         let got = std::fs::read(second.lib_dir.join(LIBRARY)).unwrap();
 
         match previous {
@@ -803,11 +814,11 @@ mod tests {
         std::fs::write(&apk, apk_holding(b"the engine")).unwrap();
         let install = RobloxInstall { apk: Some(apk.clone()), lib_dir: None };
 
-        let build = locate_with(&install, |_, _| Ok(())).unwrap();
+        let build = locate_with(&install, |_, _| Ok(None)).unwrap();
         // Something no extraction would ever produce, so its survival is proof
         // the second call did not extract.
         std::fs::write(build.lib_dir.join(LIBRARY), b"left alone").unwrap();
-        let again = locate_with(&install, |_, _| Ok(())).unwrap();
+        let again = locate_with(&install, |_, _| Ok(None)).unwrap();
         let got = std::fs::read(again.lib_dir.join(LIBRARY)).unwrap();
 
         match previous {

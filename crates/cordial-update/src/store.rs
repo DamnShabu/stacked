@@ -272,11 +272,12 @@ fn hash_file(path: &Path) -> io::Result<Sha256Hash> {
 /// one calls this itself. See
 /// [ADR-037](../../../docs/adr/ADR-037-one-lock-and-a-content-hash-for-the-build-store.md).
 ///
-/// **The cache-hit path is the whole reason this is cheap to call on every
-/// launch.** `adopt_current` runs every time Cordial starts, to keep the
-/// single-slot path pointed at the current entry, and this would make every
-/// one of those launches hash a 100+ MB file if it re-hashed rather than
-/// trusted what is already on disk.
+/// **The cache-hit path is what makes this safe to call wherever a build is
+/// keyed**, rather than hashing a 100+ MB file each time. This used to say
+/// `adopt_current` reaches it on every launch; it does not, because once the
+/// single-slot path is a link `adopt_current` returns before getting here. An
+/// entry keyed before this existed therefore has no hash until it is keyed
+/// again, which ADR-037 now says too.
 ///
 /// Failure is reported to the caller and is not fatal to keying the build --
 /// an entry with no recorded hash is exactly what one predating this feature
@@ -467,6 +468,21 @@ pub fn adopt_current(root: &Path, live: &Path) -> io::Result<Option<String>> {
         // complete. Removed only after the entry is confirmed to hold an
         // engine, so a half-written entry cannot cost somebody the one they had.
         if into.join(crate::engine::LIBRARY).is_file() {
+            // The provenance comes with it, though. The entry's stamp names
+            // the archive it was first extracted from; `live`'s names the one
+            // that was just extracted and is about to be run, and it is the
+            // one the next launch compares against. Keeping the entry's made
+            // every launch after this one find the cache stale and extract
+            // again. A record `live` lacks is removed from the entry rather
+            // than left beside a stamp it does not describe.
+            for record in [crate::cache::STAMP, crate::cache::SIGNER] {
+                let (fresh, kept) = (live.join(record), into.join(record));
+                if fresh.is_file() {
+                    std::fs::rename(&fresh, &kept)?;
+                } else {
+                    let _ = std::fs::remove_file(&kept);
+                }
+            }
             std::fs::remove_dir_all(live)?;
             point_current_at(live, &into)?;
             ensure_content_hash(&into);
@@ -892,6 +908,42 @@ mod tests {
         assert_eq!(
             content_hash(&root.join("2.738.0.1393")),
             Some(Sha256Hash::of(b"the adopted engine"))
+        );
+    }
+
+    /// **A second extraction of a version the store already keeps must leave
+    /// the entry stamped for the archive it was just extracted from.** Before
+    /// this, the fresh directory -- stamp and all -- was deleted in favour of
+    /// the entry, which kept the stamp of the *previous* archive. The next
+    /// launch then found the cache stale and extracted 116 MB again, and so on
+    /// every launch after. It happens whenever the archive's identity changes
+    /// without its version doing so: `stacked update` re-installing the same
+    /// build, a build moving from Sober's directory to Stacked's, or Sober
+    /// re-downloading one.
+    #[test]
+    fn re_adopting_a_kept_version_carries_the_new_stamp_and_signer_into_the_entry() {
+        let scratch = Scratch::new("readopt-stamp");
+        let root = scratch.path().join("builds");
+        let live = scratch.path().join("lib/x86_64");
+        std::fs::create_dir_all(&live).unwrap();
+        std::fs::write(live.join(crate::engine::LIBRARY), b"engine").unwrap();
+        crate::cache::record_version(&live, "2.738.0.1393").unwrap();
+        std::fs::write(live.join(crate::cache::STAMP), "old archive").unwrap();
+        std::fs::write(live.join(crate::cache::SIGNER), "old signer").unwrap();
+        adopt_current(&root, &live).unwrap();
+
+        // What `locate` does when the stamp no longer matches: detach, extract
+        // afresh, stamp, and key again.
+        detach(&live).unwrap();
+        std::fs::write(live.join(crate::engine::LIBRARY), b"engine").unwrap();
+        crate::cache::record_version(&live, "2.738.0.1393").unwrap();
+        std::fs::write(live.join(crate::cache::STAMP), "new archive").unwrap();
+        assert_eq!(adopt_current(&root, &live).unwrap().as_deref(), Some("2.738.0.1393"));
+
+        assert_eq!(crate::cache::stamp_of(&live).as_deref(), Some("new archive"));
+        assert!(
+            !live.join(crate::cache::SIGNER).exists(),
+            "a signer recorded for the old archive must not survive beside the new stamp"
         );
     }
 
