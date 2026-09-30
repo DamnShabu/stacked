@@ -1,9 +1,20 @@
 # Changing FastFlags
 
 Roblox is configured by FastFlags, and Stacked lets you override any of them.
-Create `~/.local/share/cordial/profiles/<profile>/flags.json` (or point
-`CORDIAL_FLAGS` at another file) with a flat object. `stacked flags path`
-prints that path for the current profile, and `--profile NAME` for another. In
+The quickest way is the command line, which checks each value against the
+flag's type before saving it:
+
+```bash
+stacked flags set FIntTaskSchedulerAutoThreadLimit 8
+stacked flags import bloxstrap.json    # a Bloxstrap export pastes in unchanged
+stacked flags                          # what is set
+```
+
+[usage.md](usage.md#fastflags) has every `stacked flags` command. Underneath,
+they edit `~/.local/share/cordial/profiles/<profile>/flags.json` (or the file
+`CORDIAL_FLAGS` names), a flat JSON object you can also write by hand.
+`stacked flags path` prints that path for the current profile, and
+`--profile NAME` for another. In
 a Flatpak you built yourself the sandbox moves `~/.local/share` to
 `~/.var/app/io.github.damnshabu.Stacked/data`, so the same file is
 `~/.var/app/io.github.damnshabu.Stacked/data/cordial/profiles/<profile>/flags.json`

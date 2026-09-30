@@ -16,6 +16,7 @@ use serde_json::{Map, Value};
 /// `stacked config` prints, and the set of keys `set` accepts.
 const KEYS: &[(&str, &str, &str)] = &[
     ("profile", "NAME", "Which profile `stacked` plays on. Also `stacked profiles use`."),
+    ("auto_update", "true | false", "Install a newer Roblox build, if there is one, when you press Play."),
     ("theme", "stacked | system", "The game window's colours. `system` follows the desktop."),
     ("title_bar", "default | compact | hidden", "The game window's title bar. Hidden in fullscreen either way."),
     ("fullscreen_confine", "true | false", "Keep the cursor on the window in fullscreen."),

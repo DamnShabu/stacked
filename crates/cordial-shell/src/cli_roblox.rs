@@ -15,7 +15,7 @@ use std::io::Write;
 
 /// One line of progress, overwritten in place when stdout is a terminal and
 /// printed plainly otherwise, so a log captured from a pipe is readable.
-fn progress_printer() -> impl FnMut(Progress) {
+pub(crate) fn progress_printer() -> impl FnMut(Progress) {
     let tty = rustix_isatty();
     let mut last_percent = None;
     move |p: Progress| {
@@ -49,7 +49,7 @@ fn rustix_isatty() -> bool {
     unsafe { libc::isatty(1) == 1 }
 }
 
-fn end_progress_line() {
+pub(crate) fn end_progress_line() {
     if rustix_isatty() {
         println!();
     }

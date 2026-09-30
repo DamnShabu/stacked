@@ -30,8 +30,10 @@
 #![allow(unsafe_code)]
 
 mod audio_devices;
+mod auto_update;
 mod browser_account;
 mod cli_config;
+mod cli_flags;
 mod cli_plugins;
 mod cli_roblox;
 mod crash;
@@ -64,8 +66,10 @@ roblox: link on its own joins that experience, which is what a browser hands
 over when you press Play on the website.
 
 Playing
-  play [--profile NAME] [--run SECS] [LINK]
-                          Start Roblox. --run stops it after SECS seconds.
+  play [--profile NAME] [--no-update] [--run SECS] [LINK]
+                          Start Roblox. A newer Roblox build is installed
+                          first unless --no-update (or `auto_update false`);
+                          --run stops it after SECS seconds.
   status                  Which Roblox build and profile a launch would use.
 
 Roblox builds
@@ -90,7 +94,17 @@ Settings
   config set KEY VALUE    Change a setting. `stacked config` lists the keys.
   config unset KEY        Put a setting back to its default.
   config path             Where the settings file is.
-  flags path [--profile NAME]    Where a profile's FastFlags file is.
+
+FastFlags (each takes --profile NAME; changes apply at the next start)
+  flags                   List this profile's FastFlags.
+  flags set NAME VALUE    Set one. The value is checked against the name's type.
+  flags get NAME          Show one.
+  flags unset NAME        Remove one.
+  flags import FILE       Merge a Bloxstrap-style JSON export; - reads stdin.
+                          --replace drops the flags that were there.
+  flags edit              Edit the file in $EDITOR; saved only if it is valid.
+  flags clear             Remove every flag.
+  flags path              Where the file is.
   audio-outputs           List the audio outputs `audio_output` can name.
 
 Plugins
@@ -149,7 +163,7 @@ fn main() -> ExitCode {
                 "unpin" => cli_roblox::unpin(rest),
                 "profiles" | "profile" => profiles(rest),
                 "config" => cli_config::run(rest),
-                "flags" => flags(rest),
+                "flags" | "flag" | "fflags" => cli_flags::run(rest),
                 "audio-outputs" => {
                     for sink in audio_devices::sinks() {
                         println!("{}", audio_devices::row_label(&sink));
@@ -216,9 +230,11 @@ fn play(args: &[String]) -> u8 {
     };
     let mut run_seconds = None;
     let mut link = None;
+    let mut no_update = false;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
+            "--no-update" | "--offline" => no_update = true,
             "--run" => match it.next().and_then(|s| s.parse::<u64>().ok()) {
                 Some(n) => run_seconds = Some(n),
                 None => {
@@ -226,6 +242,12 @@ fn play(args: &[String]) -> u8 {
                     return 2;
                 }
             },
+            // Before the link arm, or a mistyped option is taken for a link
+            // and refused as one, which names the wrong mistake.
+            other if other.starts_with("--") => {
+                eprintln!("stacked: unknown option {other:?}. Try `stacked help`.");
+                return 2;
+            }
             other if link.is_none() => link = Some(other.to_string()),
             other => {
                 eprintln!("stacked: unexpected argument {other:?}");
@@ -280,8 +302,34 @@ fn play(args: &[String]) -> u8 {
         eprintln!("stacked: {}", root_warning::WARNING);
     }
 
-    let build = match install::locate(&config.roblox) {
+    // ADR-044: the build is fetched when there is none, and brought up to date
+    // when there is a newer one, unless the user has said not to. Neither can
+    // stop a launch that has a build to start; see `auto_update.rs`.
+    let may_fetch = config.auto_update && !no_update;
+    let mut just_installed = false;
+    let mut build = match install::locate(&config.roblox) {
         Ok(build) => build,
+        Err(install::NotFound::NoBuild) if may_fetch => {
+            if let Err(e) = auto_update::first_install() {
+                report(&format!(
+                    "there is no Roblox build yet, and downloading one failed: {e}\n\
+                     `stacked install` tries again."
+                ));
+                return 1;
+            }
+            just_installed = true;
+            match install::locate(&config.roblox) {
+                Ok(build) => build,
+                Err(install::NotFound::NoBuild) => {
+                    report("Roblox was installed and then could not be found. `stacked status` shows where Stacked looked.");
+                    return 1;
+                }
+                Err(install::NotFound::Unusable(message)) => {
+                    report(&message);
+                    return 1;
+                }
+            }
+        }
         Err(install::NotFound::NoBuild) => {
             report(
                 "no Roblox build found. `stacked install` downloads one, or uses the copy \
@@ -294,6 +342,24 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
+    if may_fetch && !just_installed {
+        let pinned = profile::dir(&profile_name).ok().and_then(|d| profile::pinned_version(&d)).is_some();
+        if let Some(origin) = auto_update::origin_of(&config) {
+            if auto_update::before_launch(&build, origin, pinned) {
+                build = match install::locate(&config.roblox) {
+                    Ok(build) => build,
+                    Err(install::NotFound::NoBuild) => {
+                        report("Roblox was updated and then could not be found. `stacked status` shows where Stacked looked.");
+                        return 1;
+                    }
+                    Err(install::NotFound::Unusable(message)) => {
+                        report(&message);
+                        return 1;
+                    }
+                };
+            }
+        }
+    }
     // A profile that names a Roblox version gets that one, whatever the
     // current build is -- and a pin that cannot be honoured refuses the launch
     // rather than quietly running the build it was pinned away from.
@@ -435,8 +501,17 @@ fn status(args: &[String]) -> u8 {
             println!("roblox:   {}", apk.display());
             println!("          {}", origin.describe());
         }
-        None => println!("roblox:   none found -- `stacked install` gets one"),
+        None => println!("roblox:   none found -- `stacked` downloads one on first play"),
     }
+    let origin = auto_update::origin_of(&config);
+    let updates = if !config.auto_update {
+        "manual -- `stacked update`; `stacked config set auto_update true` checks at every play".to_string()
+    } else if auto_update::manages(origin) {
+        "checked when you press Play".to_string()
+    } else {
+        origin.and_then(install::Origin::why_not_updatable).unwrap_or_default().to_string()
+    };
+    println!("updates:  {updates}");
     if profile::is_held(&name) {
         println!("running:  yes");
     }
@@ -507,40 +582,6 @@ fn profiles(args: &[String]) -> u8 {
         }
         Some(other) => {
             eprintln!("stacked: unknown profiles command {other:?}. Try `stacked help`.");
-            2
-        }
-    }
-}
-
-fn flags(args: &[String]) -> u8 {
-    let (named, rest) = match take_profile(args) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("stacked: {e}");
-            return 2;
-        }
-    };
-    match rest.first().map(String::as_str) {
-        None | Some("path") => {
-            let name = chosen_profile(named);
-            match profile::dir(&name) {
-                // The runtime reads `<profile>/flags.json` unless
-                // `CORDIAL_FLAGS` points elsewhere; see `docs/fastflags.md`.
-                Ok(dir) => {
-                    match std::env::var_os("CORDIAL_FLAGS") {
-                        Some(over) => println!("{}", std::path::Path::new(&over).display()),
-                        None => println!("{}", cordial_plugins::flag_document::path_in(&dir).display()),
-                    }
-                    0
-                }
-                Err(e) => {
-                    eprintln!("stacked: {e}");
-                    1
-                }
-            }
-        }
-        Some(other) => {
-            eprintln!("stacked: unknown flags command {other:?}. Try `stacked help`.");
             2
         }
     }

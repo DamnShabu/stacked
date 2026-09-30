@@ -60,18 +60,21 @@ update-desktop-database ~/.local/share/applications
 ## Use
 
 ```bash
-stacked install    # get Roblox: Sober's copy if you have one, otherwise a download checked against Roblox's signature
 stacked            # play
 ```
 
-Stacked ships no part of Roblox; `stacked install` gets it for you.
+The first time, that downloads Roblox, using Sober's copy if you have one, and
+checks it against Roblox's own signature. After that, each launch installs a
+newer build first if there is one, because Roblox turns old clients away.
+Stacked ships no part of Roblox.
 
 | | |
 |---|---|
 | `stacked play --profile alt` | Play signed in as someone else. Each profile is its own sign-in. |
 | `stacked profiles new alt` | Make a profile. `stacked profiles use alt` makes it the default. |
 | `stacked "roblox-player:…"` | Join a link. This is what the browser runs. |
-| `stacked update` | Download the newest Roblox build. |
+| `stacked update` | Download the newest Roblox build now. `stacked` also does this by itself when you press Play. |
+| `stacked flags set NAME VALUE` | Set a FastFlag. `stacked flags import file.json` takes a Bloxstrap export. |
 | `stacked config` | List every setting and its current value. |
 | `stacked plugins install x.tar.zst` | Add a plugin. One that runs code starts switched off with no permissions. |
 | `stacked diagnostics` | Print what a bug report needs. |
@@ -87,8 +90,8 @@ stacked config set fullscreen_confine false # let the cursor leave a fullscreen 
 stacked config set theme system             # your desktop's colours instead of Stacked's
 ```
 
-FastFlags go in the file `stacked flags path` prints; see
-[`docs/fastflags.md`](docs/fastflags.md).
+FastFlags: `stacked flags set NAME VALUE`, checked against the flag's type;
+see [`docs/fastflags.md`](docs/fastflags.md).
 
 ## Troubleshooting
 

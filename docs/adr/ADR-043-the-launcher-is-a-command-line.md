@@ -1,6 +1,6 @@
 # ADR-043: The launcher is a command line, and the game's window is the only window
 
-**Status:** Accepted
+**Status:** Accepted; the "Background updates" item is superseded by [ADR-044](ADR-044-updates-happen-at-launch.md)
 **Date:** 2026-09-29
 **Supersedes:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md) (the core shell's chooser and settings fallback), [ADR-031](ADR-031-the-launcher-outlives-its-window.md) in part (the launcher is no longer a window, so it no longer has one to outlive)
 **Related:** [ADR-011](ADR-011-wayland-and-libadwaita.md), [ADR-012](ADR-012-profiles-and-instances.md), [ADR-035](ADR-035-browser-account-routing.md)
@@ -67,9 +67,11 @@ the choice as `CORDIAL_THEME`, the same way it passes `CORDIAL_TITLE_BAR`.
   terminal. On a crash, the CLI prints `crash::describe` and the command line
   that was run.
 - **Background updates.** There is no resident process left to run a timer.
-  `stacked update` is manual, and so are the `automatic_updates` and
-  `download_on` keys, which were removed from `shell.json`. An older file that
-  still contains them loads normally, and the next save drops them.
+  The `automatic_updates` and `download_on` keys were removed from
+  `shell.json`. An older file that still contains them loads normally, and the
+  next save drops them. *Superseded by [ADR-044](ADR-044-updates-happen-at-launch.md):
+  `stacked play` now checks for a newer build and installs it before the game
+  starts, instead of leaving `stacked update` as the only way.*
 - **Plugin preferences.** The Settings page drew a form from each plugin's
   declared preferences. There is no command for them, so they are edited by
   hand in the plugin's `preferences.json`, and three of the four shipped

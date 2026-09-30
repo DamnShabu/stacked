@@ -564,6 +564,12 @@ pub struct ShellConfig {
     /// user's own `flags.json` -- see `flags.rs`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub fps_cap: Option<u32>,
+    /// Check for a newer Roblox build when a launch starts, and install it
+    /// before the game opens. Default on, because Roblox refuses clients below
+    /// a minimum version it moves about weekly and a user who has to remember
+    /// `stacked update` finds out at the join screen. See ADR-044 and
+    /// `auto_update.rs`, which is why a check can never stop a launch.
+    pub auto_update: bool,
 }
 
 impl Default for ShellConfig {
@@ -588,6 +594,7 @@ impl Default for ShellConfig {
             theme: Theme::default(),
             fullscreen_confine: true,
             fps_cap: None,
+            auto_update: true,
         }
     }
 }
