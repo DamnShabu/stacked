@@ -22,9 +22,9 @@ name. That check earned its keep; nothing else would have noticed.
 | `Cargo.toml` (`[workspace.package] version`) | The one true version. `crates/cordial-shell/src/version.rs` reads it, the window title shows it, `cordial-update` sends it in the User-Agent. A CI gate refuses a tag that disagrees with it. |
 | `Cargo.lock` | Holds all five workspace crates' versions. `cargo update --workspace` rewrites them; `cargo metadata` alone does **not**. |
 | `docs/releases/vX.Y.Z.md` | The notes. |
-| `packaging/aur/cordial/PKGBUILD` (`pkgver`) | Its `source=` pins `#tag=v$pkgver`, so a stale value publishes the wrong release. |
-| `packaging/aur/cordial/.SRCINFO` (`pkgver` **and** the `source =` line) | Hand-maintained deliberately — there is no `makepkg` on the development host. Two lines, not one. See [PUBLISHING.md](../../packaging/aur/PUBLISHING.md). |
-| `packaging/io.github.luohoa97.Cordial.metainfo.xml` | AppStream shows the newest `<release>` as "what's new", so the top entry is the one that is read. |
+| `packaging/aur/stacked/PKGBUILD` (`pkgver`) | Its `source=` pins `#tag=v$pkgver`, so a stale value publishes the wrong release. |
+| `packaging/aur/stacked/.SRCINFO` (`pkgver` **and** the `source =` line) | Hand-maintained deliberately — there is no `makepkg` on the development host. Two lines, not one. See [PUBLISHING.md](../../packaging/aur/PUBLISHING.md). |
+| `packaging/io.github.damnshabu.Stacked.metainfo.xml` | AppStream shows the newest `<release>` as "what's new", so the top entry is the one that is read. |
 
 `CHANGELOG.md` is **not** in this list. It stops at 0.6.0 by design; everything
 from 0.7.0 onward lives here instead.
@@ -45,15 +45,42 @@ failure. The Flatpak remote is the exception and still follows `main`, because
 its Pages environment carries a deployment branch policy naming `main`; moving
 it needs a `v*` policy added there first.
 
+**A pushed tag is not a release, and neither is a release page.** Stacked's
+first two tags, v0.21.0 and v0.21.1, reached GitHub and started no workflow run
+at all -- `gh run list` has no entry for either, and why was never
+established. A "v0.21.0" release was then created by hand in the web UI. It
+had no files, and it was marked Latest, which is the release Update Stacked
+reads the AppImage from. So for a day the fork had two tags and a release and
+nothing anybody could install. **Never create the release by hand**:
+`attach-to-release.yml` creates it from the notes when the first build
+finishes, and uploads to it. A release only counts once it has all nine packages
+on it: `release.yml` attaches seven (AppImage, .deb and .rpm for x86_64 and
+aarch64, plus the Arch package) and `flatpak.yml` attaches two Flatpak bundles.
+Each one has a `.cosign.bundle` beside it.
+
+**If a tag started nothing, bump to the next patch version instead of moving
+the tag.** That is how v0.21.2 was made. Moving a tag that is already on GitHub
+needs a force-push that deletes it and pushes it again. A fresh version needs
+neither, and its commit touches `Cargo.toml` and `Cargo.lock`, so it clears the
+`paths` filter above.
+
 ## The order that works
 
 1. Bump the six files; write the notes.
 2. Commit, then **check the commit touches what you expect and nothing from a
    submodule**.
 3. Tag and push the commit and the tag.
-4. Watch `Native packages`, `Flatpak` and `Publish Arch packaging` on the tag.
-   The three publishers should run for the tag and skip for `main`.
-5. Avoid pushing again to `main` while those are in flight — each push
+4. **Within a minute, check that the tag started something:**
+   `gh run list --branch vX.Y.Z` should list `Native packages`, `Flatpak` and
+   `Publish Arch packaging`. An empty list means go to the next patch version,
+   as above.
+5. Watch them finish. The three publishers should run for the tag and skip for
+   `main`.
+6. **Check that the files are on the release:** `gh release view vX.Y.Z` should
+   show nine packages and nine `.cosign.bundle` files. A release with some
+   packages missing is caught by the attach job, but a release with no files
+   at all can only be caught here.
+7. Avoid pushing again to `main` while those are in flight — each push
    supersedes the previous run through its concurrency group, and a runs list
    full of `cancelled` reads exactly like breakage.
 

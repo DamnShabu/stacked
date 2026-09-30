@@ -160,6 +160,15 @@ tag. The Roblox manager's Update Stacked installs from the newest release's
 x86_64 AppImage, so a change that is never tagged never reaches it. A change
 only to agent instructions or internal docs needs no release.
 
+**Follow [docs/releases/README.md](docs/releases/README.md) for the mechanics,
+and do not report a release until its files are on it.** The version is in six
+files, not just `Cargo.toml`. On this fork, v0.21.0 and v0.21.1 were pushed as
+tags that started no build, and a release page made by hand with no files sat
+as Latest. Pushing the tag is not the finish line. It is done when
+`gh run list --branch v<version>` shows the builds and `gh release view
+v<version>` lists nine packages. If a tag starts nothing, bump to the next
+patch version rather than force-pushing the tag again.
+
 ## Reporting back
 
 The rule in AGENTS.md about never stating an unobserved result applies hardest
