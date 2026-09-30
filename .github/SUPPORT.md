@@ -32,9 +32,6 @@ that is wrong, a finding. **A question that is not yet any of those** — "is
 this expected?", "does anyone run it on X?" — belongs in
 [Discussions](https://github.com/DamnShabu/stacked/discussions): Q&A for
 questions, Ideas for something not yet a feature request.
-<!-- TODO(maintainer): the Discord bridge (ADR-030) files issues from a Discord
-     server, but no invite link is written down anywhere in the repository.
-     Add it here if the server is public. -->
 
 If you are not sure, open the issue. Moving one is cheap.
 

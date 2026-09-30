@@ -105,10 +105,8 @@ rather than assumed.
 
 What a reporter can expect is a best effort at:
 
-<!-- TODO(maintainer): confirm or change these targets. -->
-
 | | Target |
 |---|---|
-| Acknowledging a report | TODO(maintainer) |
-| A first assessment | TODO(maintainer) |
-| A fix released, for a confirmed issue | TODO(maintainer) |
+| Acknowledging a report | 7 days |
+| A first assessment | 14 days |
+| A fix released, for a confirmed issue | 90 days |
