@@ -36,11 +36,13 @@ need no release of their own.
 ### Added
 
 - A Code of Conduct (Contributor Covenant 3.0), a documentation issue form,
-  and a label scheme in `.github/labels.yml` applied by `scripts/setup-repo.sh`.
+  and a label scheme in `.github/labels.yml`.
 - Workflows that label pull requests by path and size, triage new issues, and
   welcome first-time contributors. None of them closes or locks anything.
 - Dependabot version updates for Cargo, npm and GitHub Actions, and a
   `CODEOWNERS` file.
+- Discussions, with forms for Q&A, Ideas and Show and tell, linked from the
+  new-issue page and `.github/SUPPORT.md`.
 
 ### Changed
 

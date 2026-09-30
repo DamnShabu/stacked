@@ -29,12 +29,9 @@ guess what to include.
 
 **An issue is for something that should change**: a bug, a feature, a document
 that is wrong, a finding. **A question that is not yet any of those** — "is
-this expected?", "does anyone run it on X?" — belongs in Discussions, once
-they are open.
-
-<!-- TODO(maintainer): Discussions are not enabled yet; scripts/setup-repo.sh
-     turns them on. Link them here when they are:
-     https://github.com/DamnShabu/stacked/discussions -->
+this expected?", "does anyone run it on X?" — belongs in
+[Discussions](https://github.com/DamnShabu/stacked/discussions): Q&A for
+questions, Ideas for something not yet a feature request.
 <!-- TODO(maintainer): the Discord bridge (ADR-030) files issues from a Discord
      server, but no invite link is written down anywhere in the repository.
      Add it here if the server is public. -->

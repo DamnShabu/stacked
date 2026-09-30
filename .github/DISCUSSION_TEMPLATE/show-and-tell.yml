@@ -1,0 +1,8 @@
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What you made
+      description: A plugin, an asset overlay, a package for another distribution. Link its source if it has one.
+    validations:
+      required: true

@@ -1,0 +1,17 @@
+# An idea that has settled into something concrete belongs in the feature
+# form, where it gets a `type: feature` label and someone can pick it up.
+body:
+  - type: textarea
+    id: idea
+    attributes:
+      label: The idea
+      description: What you would like Stacked to do, and the situation where you wanted it.
+    validations:
+      required: true
+  - type: checkboxes
+    id: scope
+    attributes:
+      label: Scope
+      options:
+        - label: This does not need code running inside the Roblox process (ADR-001, ADR-003 rule that out permanently).
+          required: true

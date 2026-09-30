@@ -1,8 +1,8 @@
-# The label scheme, and the only place it is defined. `scripts/setup-repo.sh`
-# applies it: a label listed with `from:` is renamed from that old name with
-# `gh label edit --name`, so every issue already carrying it keeps it. Nothing
-# is ever deleted -- a label dropped from this file is left on GitHub for a
-# person to retire by hand.
+# The label scheme, and the only place it is defined. Apply a change with `gh
+# label create` or `gh label edit`; a label listed with `from:` was renamed from
+# that old name with `gh label edit --name`, so every issue already carrying it
+# kept it. Never delete one that is in use -- a label dropped from this file is
+# left on GitHub for a person to retire by hand.
 #
 # One colour family per prefix: type purple, priority red, status amber, size
 # green, area blue. The issue forms, `.github/labeler.yml`, the triage

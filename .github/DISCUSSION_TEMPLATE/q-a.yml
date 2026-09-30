@@ -1,0 +1,17 @@
+# The filename matches the Q&A category's slug, which is how GitHub finds it.
+# Diagnostics is asked for but not required: a question is often asked before
+# anything is installed, and a form that refuses it sends the asker to an issue.
+body:
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: What you want to know, and what you already tried or read.
+    validations:
+      required: true
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: If it is about a running install, paste the output of `stacked diagnostics` (see the bug form for the Flatpak and AppImage spellings).
+      render: text
