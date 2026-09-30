@@ -38,6 +38,7 @@ order a newcomer would want it.
 | [ADR-016](adr/ADR-016-per-profile-network-egress.md) | Why a profile can require a VPN, and what that does and does not guarantee |
 | [ADR-017](adr/ADR-017-sober-issue-corpus.md) | Why the local Sober issue corpus exists and what it deliberately drops |
 | [ADR-018](adr/ADR-018-plugin-sub-sandboxing.md) | A kernel sandbox under Deno, why it cannot replace the broker, and the Flatpak grant not taken |
+| [ADR-047](adr/ADR-047-the-canvas-is-lowered-only-under-a-presented-frame.md) | The canvas is lowered under GTK only once GTK has presented a frame, so a stalled GTK never leaves a grey screen |
 
 ## Design notes
 

@@ -347,6 +347,23 @@ pub struct HostWindow {
     /// so [`input_region`] must not punch the canvas out either. See
     /// [`Self::set_pointer_constrained`].
     pointer_constrained: std::cell::Cell<bool>,
+    /// The frame clock's counter when a lowering was last prepared, and whether
+    /// `after-paint` has fired since. `None` when no lowering is being
+    /// prepared. See [`HostWindow::arm_present_probe`].
+    present_probe: std::cell::RefCell<Option<PresentProbe>>,
+}
+
+/// What [`HostWindow::arm_present_probe`] remembers between ticks.
+struct PresentProbe {
+    /// The last frame that had begun when the probe was armed. Any frame with a
+    /// higher counter was laid out after the window was made transparent, so it
+    /// carries the new background.
+    counter: i64,
+    /// Set by the frame clock's `after-paint`. Weaker than a presentation
+    /// report -- see [`HostWindow::present_probe_committed`] -- and only the
+    /// answer when the compositor cannot report presentation at all.
+    painted: std::rc::Rc<std::cell::Cell<bool>>,
+    handler: glib::SignalHandlerId,
 }
 
 /// The Android editor rectangle Roblox asks the platform to paint over its
@@ -1027,6 +1044,7 @@ impl HostWindow {
             canvas_rect: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
             pointer_constrained: std::cell::Cell::new(false),
+            present_probe: std::cell::RefCell::new(None),
             editor_seeding,
             editor_changed,
             editor_font_family: std::cell::RefCell::new(None),
@@ -1893,7 +1911,8 @@ impl HostWindow {
     }
 
     /// The toplevel's whole state, for the instrumented run that established
-    /// what [`Self::visible`] can actually see. Not used by anything else.
+    /// what [`Self::visible`] can actually see, and for the line
+    /// [`Self::present_probe_report`] prints when a frame does not arrive.
     pub fn toplevel_state(&self) -> Option<gtk::gdk::ToplevelState> {
         let surface = self.window.surface()?;
         Some(surface.downcast::<gtk::gdk::Toplevel>().ok()?.state())
@@ -2009,6 +2028,12 @@ impl HostWindow {
     /// repaint the window, which reads as a stuck or torn canvas.
     /// Repaint the toplevel now, rather than on GTK's next frame.
     ///
+    /// **Since issue #53 this is only the `CORDIAL_STACKING_GATE=off` path**,
+    /// kept as the control for showing what the gate changes; the restack now
+    /// waits for a committed frame through [`Self::arm_present_probe`]
+    /// instead of for 40 ms. What follows describes the wait as it was, and
+    /// its failure -- the timeout branch's log line is the one #53 quoted.
+    ///
     /// Exists for one caller: restacking the engine's subsurface. Lowering it
     /// and turning the background transparent have to reach the compositor in
     /// the same breath, and they do not by default -- a CSS class change is
@@ -2106,6 +2131,137 @@ impl HostWindow {
         } else if std::env::var_os("CORDIAL_TRACE_TEXT").is_some() {
             eprintln!("[shell] repaint_now: painted after {:?}", started.elapsed());
         }
+    }
+
+    /// Start preparing the window for the canvas to be lowered beneath it, and
+    /// begin waiting for the proof that the compositor holds the result.
+    ///
+    /// **This replaces waiting 40 ms in [`Self::repaint_now`] and lowering
+    /// whatever happened** -- issue #53. On a KWin session GTK started a frame
+    /// after every one of those timeouts and then attached nothing to the
+    /// window surface for the two seconds the box stayed focused, while the
+    /// restack had already gone out: the compositor kept showing the last GTK
+    /// buffer, painted with the canvas above and opaque across the whole
+    /// window, with the canvas now underneath it. Grey, until the box blurred.
+    /// `repaint_now`'s own log line said so three times in that report and
+    /// nothing acted on it.
+    ///
+    /// So this only *prepares* -- transparent background, both regions, a
+    /// redraw request, the frame clock kept ticking -- and leaves the canvas
+    /// where it is. The caller polls [`Self::present_probe_committed`] and
+    /// restacks only when that says a frame painted after this call has
+    /// reached the compositor, or calls [`Self::disarm_present_probe`] if it
+    /// never does. While waiting the canvas is still on top and covering, so
+    /// the transparency cannot show.
+    pub fn arm_present_probe(&self) {
+        // A second arming without a disarm would leak the first handler and the
+        // `begin_updating` it holds.
+        self.disarm_present_probe(false);
+        self.set_canvas_see_through(true);
+        self.window.queue_draw();
+        let Some(clock) = self.window.frame_clock() else { return };
+        let painted = std::rc::Rc::new(std::cell::Cell::new(false));
+        let handler = {
+            let painted = painted.clone();
+            clock.connect_after_paint(move |_| painted.set(true))
+        };
+        // The clock does not tick when nothing else is animating, and the
+        // whole point of this call is that a tick be produced.
+        clock.begin_updating();
+        *self.present_probe.borrow_mut() =
+            Some(PresentProbe { counter: clock.frame_counter(), painted, handler });
+    }
+
+    /// Whether GTK has committed a frame, laid out after
+    /// [`Self::arm_present_probe`], that the compositor has presented.
+    ///
+    /// **`after-paint` is not that, and this used to be exactly that.** The
+    /// frame clock emits it once GTK has finished with a frame, including a
+    /// frame whose render was skipped: GDK sends the frame's window-geometry,
+    /// opaque-region, frame-callback and presentation-feedback requests before
+    /// GSK decides whether there is anything to draw, and in #53's log a frame
+    /// of exactly that shape went out and no `attach` followed. GTK had
+    /// "painted" and the compositor had been given nothing.
+    ///
+    /// What cannot happen without a commit is the compositor *presenting* the
+    /// frame, and GDK records that: a frame's timings gain a presentation time
+    /// only when `wp_presentation_feedback.presented` arrives. Nothing else
+    /// resolves it while the caller sends no parent commit of its own, which
+    /// is why the lowering, whose commit would do so, waits for this.
+    ///
+    /// With `presentation_reported` false -- the compositor has no
+    /// `wp_presentation`, so GDK never asks -- the timings can say nothing and
+    /// `after-paint` is all there is; that is the weaker old answer, used only
+    /// there.
+    ///
+    /// INFERRED: that a frame with a presentation time necessarily attached a
+    /// buffer. It follows from the protocol (feedback is delivered for a
+    /// commit, and GDK's GL path commits by attaching), and it matches
+    /// #53's log, where the feedback for the stalled frame was delivered only
+    /// after Cordial's own commit.
+    pub fn present_probe_committed(&self, presentation_reported: bool) -> bool {
+        let probe = self.present_probe.borrow();
+        let Some(probe) = probe.as_ref() else { return false };
+        let Some(clock) = self.window.frame_clock() else { return false };
+        if !presentation_reported {
+            return probe.painted.get();
+        }
+        ((probe.counter + 1)..=clock.frame_counter()).any(|n| {
+            clock
+                .timings(n)
+                .is_some_and(|t| t.is_complete() && t.presentation_time() > 0)
+        })
+    }
+
+    /// Whether [`Self::arm_present_probe`] has run and not been disarmed.
+    pub fn is_probe_armed(&self) -> bool {
+        self.present_probe.borrow().is_some()
+    }
+
+    /// Stop preparing. With `revert`, also give the window its background
+    /// back, which is right when the lowering was abandoned and wrong when it
+    /// went ahead.
+    pub fn disarm_present_probe(&self, revert: bool) {
+        if let Some(probe) = self.present_probe.borrow_mut().take() {
+            if let Some(clock) = self.window.frame_clock() {
+                clock.disconnect(probe.handler);
+                clock.end_updating();
+            }
+        }
+        if revert {
+            self.set_canvas_see_through(false);
+        }
+    }
+
+    /// One line of what GTK's frame clock has been doing, for the log line that
+    /// says a frame did not arrive. Reading `toplevel_state` here is the check
+    /// on the compositor having told the window it is suspended.
+    pub fn present_probe_report(&self) -> String {
+        let probe = self.present_probe.borrow();
+        let Some(clock) = self.window.frame_clock() else { return "no frame clock".into() };
+        let armed = probe.as_ref().map_or(-1, |p| p.counter);
+        let now = clock.frame_counter();
+        let painted = probe.as_ref().is_some_and(|p| p.painted.get());
+        let (mut complete, mut presented) = (0, 0);
+        for n in (armed + 1).max(clock.history_start())..=now {
+            if let Some(t) = clock.timings(n) {
+                complete += usize::from(t.is_complete());
+                presented += usize::from(t.presentation_time() > 0);
+            }
+        }
+        // The renderer is the first thing to know when this line is read: GTK on
+        // its GL renderer inside a process whose engine is running GLES is what
+        // never presented in #53, and cairo presented from the same binary.
+        let renderer = self
+            .window
+            .native()
+            .and_then(|n| n.renderer())
+            .map_or_else(|| "none".to_string(), |r| r.type_().name().to_string());
+        format!(
+            "renderer {renderer}, frames since arming {}, after-paint seen {painted}, complete {complete}, presented {presented}, toplevel state {:?}",
+            now - armed,
+            self.toplevel_state()
+        )
     }
 
     pub fn queue_commit(&self) {

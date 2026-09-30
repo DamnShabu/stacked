@@ -47,6 +47,7 @@ pub mod network;
 // vendor gate and driver decode the launcher could use for its diagnostics.
 pub mod nvidia;
 pub mod profile;
+pub mod stacking_gate;
 pub mod theme;
 pub mod title_bar;
 // Not pulled in by `host_window` or `network` -- registered here on its own
