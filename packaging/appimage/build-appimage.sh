@@ -97,6 +97,16 @@ for tool in cargo clang rsvg-convert readelf glib-compile-schemas patchelf; do
     need "$tool"
 done
 
+# A plain `git clone`, or a non-recursive `submodule update`, leaves
+# mcpelauncher-linker's own nested bionic empty, and the first anyone hears of
+# it is cordial-linker-sys's build script panicking several minutes into the
+# cargo build. The pinned commits are already in the tree, so fetch them here.
+if [ ! -e third_party/mcpelauncher-linker/bionic/linker/linker.cpp ] \
+    || [ ! -e third_party/libjnivm/CMakeLists.txt ]; then
+    echo "==> checking out submodules"
+    git submodule update --init --recursive
+fi
+
 # Where cargo will actually put the binaries. This used to be spelled `target/`
 # at every use, which is right only when nothing exported CARGO_TARGET_DIR --
 # and CLAUDE.md tells every agent working in a worktree to export one, because
