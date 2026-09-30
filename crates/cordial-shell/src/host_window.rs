@@ -343,6 +343,10 @@ pub struct HostWindow {
     /// Separate from `canvas_see_through`, which both the editor and a dialog
     /// set: those two want opposite answers here. See `input_region`.
     dialog_up: std::cell::Cell<bool>,
+    /// Whether the engine holds a pointer lock or confinement on this toplevel,
+    /// so [`input_region`] must not punch the canvas out either. See
+    /// [`Self::set_pointer_constrained`].
+    pointer_constrained: std::cell::Cell<bool>,
 }
 
 /// The Android editor rectangle Roblox asks the platform to paint over its
@@ -1022,6 +1026,7 @@ impl HostWindow {
             opaque_unsized: std::cell::Cell::new(false),
             canvas_rect: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
+            pointer_constrained: std::cell::Cell::new(false),
             editor_seeding,
             editor_changed,
             editor_font_family: std::cell::RefCell::new(None),
@@ -1575,6 +1580,31 @@ impl HostWindow {
         self.refresh_input_region();
     }
 
+    /// A pointer lock or confinement was placed on, or taken off, this
+    /// toplevel's own surface.
+    ///
+    /// **A constraint only applies inside the surface's input region**, which
+    /// the pointer-constraints protocol says outright and KWin implements
+    /// literally: `SurfaceInterfacePrivate::applyState` intersects the lock
+    /// region with `inputRegion`, and `updatePointerConstraints` activates the
+    /// lock only when the pointer is inside the result. The ordinary region
+    /// has the canvas punched out, so a lock on the toplevel could activate
+    /// over the header bar and nowhere else -- never over the game it was
+    /// taken for. That was pointer lock on KDE Plasma: requested, never
+    /// `locked`, and the cursor free.
+    ///
+    /// Claiming the canvas back costs the engine nothing while this is set.
+    /// The canvas subsurface is stacked above the parent whenever a constraint
+    /// is wanted -- `sync_pointer_lock` drops both while a dialog or the editor
+    /// has lowered it -- so pointer focus over the canvas is still the
+    /// subsurface's.
+    pub fn set_pointer_constrained(&self, on: bool) {
+        if self.pointer_constrained.replace(on) == on {
+            return;
+        }
+        self.refresh_input_region();
+    }
+
     pub fn set_canvas_see_through(&self, on: bool) {
         if on {
             // **Every layer, not just the window.** Making the toplevel
@@ -1615,7 +1645,7 @@ impl HostWindow {
             (surface.width(), surface.height()),
             canvas,
             self.editor_rect.get(),
-            self.dialog_up.get(),
+            self.dialog_up.get() || self.pointer_constrained.get(),
         );
         surface.set_input_region(Some(&region));
     }
@@ -2147,6 +2177,9 @@ fn input_region(
     // already punched in the parent nothing else claimed it either, so clicks
     // fell through Cordial's window and raised whatever was behind. Reverted in
     // 73c74eb.
+    //
+    // A pointer constraint held on this toplevel takes the same branch, for a
+    // different reason -- see `HostWindow::set_pointer_constrained`.
     if modal {
         return region;
     }

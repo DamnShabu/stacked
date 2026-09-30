@@ -12,8 +12,10 @@ releases of its own yet.
 - **Reliable mouse capture on Wayland and X11.** Right-drag and first-person
   camera control now constrain the desktop cursor to the gameplay window. On
   Wayland the constraint is attached to GTK/GDK's real pointer and to the
-  toplevel surface, which fixes the cursor escaping on KWin while Roblox's
-  internal pointer remained centred. Relative, unaccelerated motion and side
+  toplevel surface, which is the only surface KWin consults. KWin also needs
+  the canvas inside that surface's input region and a commit to apply the lock;
+  both were missing and are now sent, unverified on Plasma -- see
+  [known issues](known-issues.md). Relative, unaccelerated motion and side
   mouse buttons are carried through the Android input bridge as well.
 - **Visible text entry.** A native GTK overlay mirrors the focused Android text
   field, including caret movement, editing operations and Wayland IME preedit,

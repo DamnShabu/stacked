@@ -573,6 +573,9 @@ const WL_SURFACE_COMMIT: u32 = 6;
 /// `wl_surface.set_opaque_region`. Sent by Cordial directly, not through GDK --
 /// see `set_engine_stacking`.
 const WL_SURFACE_SET_OPAQUE_REGION: u32 = 4;
+/// `wl_surface.set_input_region`. Sent directly for the same reason as the
+/// opaque region, by `parent_constraint_changed`.
+const WL_SURFACE_SET_INPUT_REGION: u32 = 5;
 /// `wl_region.destroy`/`wl_region.add`. No `subtract` -- the rectangles
 /// `HostWindow::opaque_region_rects` hands back are already the finished,
 /// non-overlapping shape, so only `add` is ever needed to reproduce it.
@@ -4641,11 +4644,14 @@ fn constrain_toplevel() -> bool {
         // Reported as "his contribution to cursor lock broke my cursor lock" on
         // GNOME, where the KWin path below was being taken unconditionally.
         //
-        // The KWin workaround it came from is real and stays: KWin acknowledges
-        // a constraint made against a subsurface and, on affected versions,
-        // still lets the physical cursor leave it (KDE bug 463088). Native game
-        // windows such as Sober's SDL3 window constrain their xdg_toplevel and
-        // do not hit that path.
+        // The KWin workaround it came from is real and stays. KWin creates a
+        // constraint against a subsurface and never activates it:
+        // `updatePointerConstraints` only consults the window's main surface,
+        // `focus()->surface()` (KWin master, read 2026-09-30; KDE bug 463088).
+        // Native game windows such as Sober's SDL3 window constrain their
+        // xdg_toplevel and do not hit that path. What the toplevel lock then
+        // needs to engage over the canvas at all is in
+        // `parent_constraint_changed`.
         //
         // So the two halves of 3d67e59 are separated, because only one of them
         // was ever about the surface. Using **GDK's** pointer rather than
@@ -4693,6 +4699,10 @@ fn constrain_toplevel() -> bool {
             (self.wl.flush)(self.display);
         }
         *slot = lp;
+        drop(slot);
+        if on_toplevel {
+            self.parent_constraint_changed();
+        }
         *self.lock_requested_at.lock().unwrap_or_else(|e| e.into_inner()) =
             Some(std::time::Instant::now());
         if super::input::trace_mouse() {
@@ -4716,6 +4726,17 @@ fn constrain_toplevel() -> bool {
             return;
         }
         let (x, y) = self.pointer_position();
+        // The hint is in the constrained surface's coordinates, and the engine's
+        // position is the canvas's. On the toplevel that is a header bar's
+        // height out, so the cursor came back that far above where the engine
+        // had drawn it.
+        let on_toplevel = Self::constrain_toplevel();
+        let (hx, hy) = if on_toplevel {
+            let (ox, oy) = *self.placed_at.lock().unwrap_or_else(|e| e.into_inner());
+            (x + ox as f32, y + oy as f32)
+        } else {
+            (x, y)
+        };
         // SAFETY: `*slot` is the live locked-pointer proxy; the two calls match
         // `set_cursor_position_hint`'s "ff" and `destroy`'s empty signature,
         // the latter sent with the destroy flag its `type="destructor"`
@@ -4727,8 +4748,8 @@ fn constrain_toplevel() -> bool {
                 std::ptr::null(),
                 1,
                 0,
-                f32_to_fixed(x),
-                f32_to_fixed(y),
+                f32_to_fixed(hx),
+                f32_to_fixed(hy),
             );
             (self.wl.marshal_flags)(
                 *slot,
@@ -4740,6 +4761,10 @@ fn constrain_toplevel() -> bool {
             (self.wl.flush)(self.display);
         }
         *slot = std::ptr::null_mut();
+        drop(slot);
+        if on_toplevel {
+            self.parent_constraint_changed();
+        }
         POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
         *self.lock_requested_at.lock().unwrap_or_else(|e| e.into_inner()) = None;
         // The cursor is about to be somewhere again, and where it went is not a
@@ -4829,6 +4854,10 @@ fn constrain_toplevel() -> bool {
             (self.wl.flush)(self.display);
         }
         *slot = cp;
+        drop(slot);
+        if on_toplevel {
+            self.parent_constraint_changed();
+        }
         if super::input::trace_mouse() {
             eprintln!("[cordial] pointer confine: requested for fullscreen");
         }
@@ -4855,10 +4884,66 @@ fn constrain_toplevel() -> bool {
             (self.wl.flush)(self.display);
         }
         *slot = std::ptr::null_mut();
+        drop(slot);
+        if Self::constrain_toplevel() || is_hyprland() {
+            self.parent_constraint_changed();
+        }
         POINTER_CONFINE_ACTIVE.store(false, Ordering::Release);
         *CONFINE_INACTIVE_SINCE.lock().unwrap_or_else(|e| e.into_inner()) = None;
         if super::input::trace_mouse() {
             eprintln!("[cordial] pointer confine: released");
+        }
+    }
+
+    /// A lock or confinement on GTK's toplevel was just created or destroyed.
+    /// Make it take effect now, over the canvas.
+    ///
+    /// **Two things stood between a toplevel lock and the game on KWin, and
+    /// neither is visible from the client.** Both are read off KWin's own
+    /// source (`src/wayland/surface.cpp`, `pointerconstraints_v1.cpp` and
+    /// `pointer_input.cpp`, master as of 2026-09-30), not run here.
+    ///
+    /// The constraint is pending surface state. KWin stores a new lock -- and
+    /// the removal of a destroyed one, with its cursor-position hint -- in the
+    /// surface's pending state and applies it on the next `wl_surface.commit`.
+    /// Cordial only flushed, and the toplevel commits when GTK repaints, which
+    /// in a game with still chrome can be never. So a lock could wait
+    /// indefinitely to engage and, worse, a released one could stay engaged
+    /// with the cursor frozen until something happened to redraw the header
+    /// bar.
+    ///
+    /// And the constraint is clipped to the input region, which has the canvas
+    /// punched out -- see `HostWindow::set_pointer_constrained`. The region is
+    /// sent raw here as well as through GDK so it lands in this same commit
+    /// rather than on GTK's next frame; the null region is "infinite", the
+    /// same answer GDK will give once it catches up.
+    fn parent_constraint_changed(&self) {
+        let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null()
+            && Self::constrain_toplevel()
+            || !self.confined_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null()
+                && (Self::constrain_toplevel() || is_hyprland());
+        self.host.0.set_pointer_constrained(held);
+        // SAFETY: `parent_surface` is GTK's toplevel `wl_surface`, live for the
+        // process's lifetime. `set_input_region`'s signature is "?o", so null
+        // is a valid argument meaning an infinite region; `commit` takes none.
+        unsafe {
+            if held {
+                (self.wl.marshal_flags)(
+                    self.parent_surface,
+                    WL_SURFACE_SET_INPUT_REGION,
+                    std::ptr::null(),
+                    1,
+                    0,
+                    std::ptr::null_mut::<c_void>(),
+                );
+            }
+            (self.wl.marshal_flags)(self.parent_surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
+            (self.wl.flush)(self.display);
+        }
+        // Released: GDK has the punched region again but sends it on its own
+        // next frame, so ask for one rather than leave the canvas claimed.
+        if !held {
+            self.host.0.queue_commit();
         }
     }
 
