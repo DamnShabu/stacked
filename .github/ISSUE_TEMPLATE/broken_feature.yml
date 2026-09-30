@@ -1,5 +1,7 @@
 name: A Roblox feature does not work
 description: Something the client does on Android that does nothing, or does the wrong thing, on Stacked
+labels:
+  - "type: broken-feature"
 body:
   - type: markdown
     attributes:

@@ -1,0 +1,148 @@
+# The label scheme, and the only place it is defined. `scripts/setup-repo.sh`
+# applies it: a label listed with `from:` is renamed from that old name with
+# `gh label edit --name`, so every issue already carrying it keeps it. Nothing
+# is ever deleted -- a label dropped from this file is left on GitHub for a
+# person to retire by hand.
+#
+# One colour family per prefix: type purple, priority red, status amber, size
+# green, area blue. The issue forms, `.github/labeler.yml`, the triage
+# workflow and `.github/dependabot.yml` all name labels from this file.
+
+# type: -- what kind of thing it is. The issue forms apply these.
+- name: "type: bug"
+  from: bug
+  color: "6f42c1"
+  description: Something Stacked already does, done wrong
+- name: "type: feature"
+  from: enhancement
+  color: "8a63d2"
+  description: Something Stacked or a plugin should be able to do
+- name: "type: broken-feature"
+  color: "7e57c2"
+  description: An Android expectation goes unanswered, so a Roblox feature silently does nothing
+- name: "type: roblox-update"
+  color: "5a32a3"
+  description: A new Roblox build fails to load or needs a symbol Stacked lacks
+- name: "type: finding"
+  color: "9a7fd6"
+  description: Something established or disproved; the output is knowledge, not code
+- name: "type: docs"
+  from: documentation
+  color: "b39ddb"
+  description: A document is wrong, missing or unclear
+- name: "type: question"
+  from: question
+  color: "d1c4e9"
+  description: A question rather than a report
+- name: "type: dependencies"
+  color: "c5b3e6"
+  description: A dependency update
+
+# priority:
+- name: "priority: critical"
+  color: "b60205"
+  description: Breaks the client for everyone, or a security issue
+- name: "priority: high"
+  color: "d93f0b"
+  description: Breaks something most users hit
+- name: "priority: medium"
+  color: "e99695"
+  description: Worth doing soon
+- name: "priority: low"
+  color: "f9d0c4"
+  description: Worth doing eventually
+
+# status:
+- name: "status: needs-triage"
+  color: "fbca04"
+  description: Not yet looked at by a maintainer
+- name: "status: needs-info"
+  color: "f9a825"
+  description: A required section is empty; waiting on the reporter
+- name: "status: blocked"
+  color: "e4a11b"
+  description: Waiting on something outside this issue
+- name: "status: in-progress"
+  color: "fef2c0"
+  description: Somebody is working on it
+- name: "status: duplicate"
+  from: duplicate
+  color: "d4c5a0"
+  description: Already reported elsewhere
+- name: "status: invalid"
+  from: invalid
+  color: "e6dcb8"
+  description: Not a Stacked problem, or not reproducible as described
+- name: "status: wontfix"
+  from: wontfix
+  color: "f5eed6"
+  description: Understood and deliberately not changed
+
+# size: -- applied to pull requests by .github/workflows/labeler.yml from the
+# number of changed lines.
+- name: "size: XS"
+  color: "c2e0c6"
+  description: Under 10 changed lines
+- name: "size: S"
+  color: "a2d9a8"
+  description: 10 to 99 changed lines
+- name: "size: M"
+  color: "7cc47f"
+  description: 100 to 499 changed lines
+- name: "size: L"
+  color: "4caf50"
+  description: 500 to 999 changed lines
+- name: "size: XL"
+  color: "2e7d32"
+  description: 1000 or more changed lines
+
+# area: -- from the directory layout. .github/labeler.yml maps paths to these.
+- name: "area: linker"
+  color: "0052cc"
+  description: crates/cordial-linker-sys and the ported bionic linker
+- name: "area: runtime"
+  color: "1d76db"
+  description: crates/cordial-runtime, the JNI and framework layer
+- name: "area: native"
+  color: "0e6fbf"
+  description: native/, the bionic/glibc shims and C++ platform code
+- name: "area: shell"
+  color: "2f81f7"
+  description: crates/cordial-shell, the stacked command and game window
+- name: "area: plugins"
+  color: "3d8bfd"
+  description: crates/cordial-plugins, plugins/ and the plugin API
+- name: "area: update"
+  color: "5aa0f2"
+  description: crates/cordial-update, fetching Roblox and Stacked updates
+- name: "area: packaging"
+  color: "6cb6ff"
+  description: packaging/, AppImage, Flatpak, deb, rpm and Arch
+- name: "area: ci"
+  color: "84c1ff"
+  description: .github/ workflows and repository automation
+- name: "area: issue-bridge"
+  color: "9ecbff"
+  description: tools/discord-bridge, the Discord issue bridge
+- name: "area: tools"
+  color: "b6d8ff"
+  description: tools/, development and debugging tooling
+- name: "area: docs"
+  color: "c8e1ff"
+  description: docs/, README and the other top-level documents
+- name: "area: site"
+  color: "dbedff"
+  description: site/, the project website
+- name: "area: accessibility"
+  from: accessibility
+  color: "005cc5"
+  description: Accessibility, including the AT-SPI bridge
+
+# Kept under GitHub's default names, which GitHub's own contributor pages
+# look for.
+- name: good first issue
+  color: "7057ff"
+  description: A contained first change for a new contributor
+- name: help wanted
+  color: "008672"
+  description: A maintainer would welcome somebody taking this

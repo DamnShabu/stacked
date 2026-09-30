@@ -1,5 +1,5 @@
 # blank_issues_enabled is false so every new issue goes through one of the
-# five templates above — which is where the required Diagnostics block
+# six templates above — which is where the required Diagnostics block
 # lives. A blank issue cannot ask for it, and this project has already
 # learned what a report without a build number or an install method costs.
 blank_issues_enabled: false
@@ -13,3 +13,9 @@ contact_links:
   - name: Licence questions
     url: https://github.com/DamnShabu/stacked/blob/main/CONTRIBUTING.md#the-licence-is-settled
     about: Stacked is GPL-3.0-or-later and that is settled — relicensing requests are closed with a link to this, not argued. A third-party notice that is wrong or missing IS a bug and does belong in an issue.
+  # TODO(maintainer): once scripts/setup-repo.sh has enabled Discussions, add a
+  # link for questions that are not reports:
+  #   - name: Questions and ideas
+  #     url: https://github.com/DamnShabu/stacked/discussions
+  #     about: Ask, or float an idea, before it is an issue.
+  # It is left out until then because a contact link to a disabled feature 404s.

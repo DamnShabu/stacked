@@ -2,7 +2,7 @@ name: Bug report
 description: Something behaves differently from what you expected
 title: "[Bug]: "
 labels:
-  - bug
+  - "type: bug"
 body:
   - type: textarea
     id: what-happened

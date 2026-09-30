@@ -1,5 +1,7 @@
 name: Finding
 description: Something you established about the engine — including something that turned out to be wrong
+labels:
+  - "type: finding"
 body:
   - type: textarea
     id: what-you-established

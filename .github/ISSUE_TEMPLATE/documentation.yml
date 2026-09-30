@@ -1,0 +1,46 @@
+name: Documentation
+description: A document is wrong, out of date, missing, or cannot be followed
+labels:
+  - "type: docs"
+body:
+  - type: input
+    id: where
+    attributes:
+      label: Which document
+      description: A path or a link, and the heading if it is a long one — `README.md#install`, `docs/install.md`, a release note.
+      placeholder: docs/install.md
+    validations:
+      required: true
+
+  - type: dropdown
+    id: what-kind
+    attributes:
+      label: What is wrong with it
+      options:
+        - "It says something that is not true"
+        - "It is out of date — it was true once"
+        - "It is missing — I had to ask, guess, or read the code"
+        - "It is true but I could not follow it"
+    validations:
+      required: true
+
+  - type: textarea
+    id: what-it-says
+    attributes:
+      label: What it says, and what actually happens
+      description: Quote the line, then say what you ran or saw instead. "Settings has no such button" is exactly the kind of answer that helps.
+    validations:
+      required: true
+
+  - type: textarea
+    id: diagnostics
+    attributes:
+      label: Diagnostics
+      description: Only if the document is about installing or running Stacked. Paste the output of `stacked diagnostics` — see the bug report form for where to find it on each install type.
+      render: text
+
+  - type: textarea
+    id: suggestion
+    attributes:
+      label: What it should say
+      description: Optional. A rough sentence is plenty; nobody expects finished prose.

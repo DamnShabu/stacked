@@ -91,7 +91,7 @@ Deno.test("submitting the form defers, then files the issue and pairs the thread
   assertEquals(created.args[0], "[Bug]: Black window.");
   assertStringIncludes(created.args[1] as string, "### What happened");
   assertStringIncludes(created.args[1] as string, "Someone");
-  assertEquals(created.args[2], ["bug"]);
+  assertEquals(created.args[2], ["type: bug"]);
 
   // The pairing is written back only after the thread exists, which is the
   // whole reason for the second write.

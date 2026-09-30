@@ -1,5 +1,7 @@
 name: Roblox updated and something broke
 description: A new Roblox build fails to load, or needs symbols Stacked does not provide
+labels:
+  - "type: roblox-update"
 body:
   - type: markdown
     attributes:

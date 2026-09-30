@@ -1,7 +1,7 @@
 name: Feature or capability
 description: Something Stacked should be able to do, or something a plugin should be able to ask for
 labels:
-  - enhancement
+  - "type: feature"
 body:
   - type: textarea
     id: what-should-be-possible
