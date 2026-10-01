@@ -1448,59 +1448,114 @@ static HOST_GET_SURFACE_CAPS: std::sync::atomic::AtomicUsize = std::sync::atomic
 const VK_WHOLE_SIZE_UNDEFINED_EXTENT: u32 = 0xFFFF_FFFF;
 
 /// How long a raw extent must stop changing before
-/// [`settle_resize_extent`] hands it to the engine.
+/// [`settle_resize_extent`] hands it to the engine, however recently the last
+/// commit was.
 ///
 /// [Issue #39](https://github.com/luohoa97/cordial/issues/39) logged a
-/// fullscreen transition as nine extent steps in well under half a second —
-/// two consecutive steps were 48 ms apart — with a swapchain rebuilt at each
+/// fullscreen transition as nine extent steps in well under half a second --
+/// two consecutive steps were 48 ms apart -- with a swapchain rebuilt at each
 /// one, because this file handed the engine whatever `geometry()` returned on
 /// every call. 120 ms is comfortably longer than the 48 ms gap actually
-/// observed between animation steps, so a single Mutter resize collapses to
-/// one settled extent, while still being far short of the time a user holds a
-/// window at a size they chose by dragging.
+/// observed between animation steps, so the tail of a Mutter resize still
+/// collapses to one settled extent.
+///
+/// That crash is no longer what this guards against. It was root-caused in
+/// PR #72 as `vkAcquireNextImageKHR` returning `VK_SUBOPTIMAL_KHR`, which the
+/// engine answered with a barrier on a null `VkImage`; Cordial now reports
+/// that status as success (see [`vk_acquire_next_image_khr`]). The commit that
+/// introduced this constant was an `INFERRED` guess at the storm and was never
+/// run live. What remains is cost: a swapchain rebuilt every compositor frame
+/// is wasted work, so extent changes are still rate-limited, by
+/// [`RESIZE_MAX_LAG`], not suppressed.
 const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
 
-/// State for [`settle_resize_extent`]: the extent last handed to the engine,
-/// the most recent raw extent observed, and when that raw extent was first
-/// seen.
+/// The longest a changed extent is held back from the engine while it keeps
+/// changing, since the previous commit.
+///
+/// As a pure debounce, [`RESIZE_SETTLE`] alone never committed during an
+/// interactive drag, because the compositor delivers a new size every frame
+/// and each one restarted the clock: the game kept its old size until the
+/// pointer paused, then jumped. 100 ms is the number that gives about ten
+/// rebuilds a second under a continuous drag, which reads as live, while
+/// staying above the 48 ms step gap of issue #39's fullscreen animation so
+/// that storm still collapses to a handful of commits rather than nine. It is
+/// a judgement and not a measurement of what the engine tolerates; below about
+/// 50 ms it stops being a rate limit at all. `CORDIAL_RESIZE_MAX_LAG_MS`
+/// overrides it, so that a very large value restores the old debounce for a
+/// same-session comparison.
+const RESIZE_MAX_LAG: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// [`RESIZE_MAX_LAG`], or `CORDIAL_RESIZE_MAX_LAG_MS` if set, read once.
+fn resize_max_lag() -> std::time::Duration {
+    static LAG: OnceLock<std::time::Duration> = OnceLock::new();
+    *LAG.get_or_init(|| {
+        std::env::var("CORDIAL_RESIZE_MAX_LAG_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(RESIZE_MAX_LAG)
+    })
+}
+
+/// State for [`settle_resize_extent`]: the extent last handed to the engine
+/// and when, the most recent raw extent observed, and when that raw extent
+/// was first seen.
 #[derive(Clone, Copy)]
 struct ResizeSettleState {
     committed: (u32, u32),
+    committed_at: std::time::Instant,
     pending: (u32, u32),
     pending_since: std::time::Instant,
 }
 
-/// The debounce state behind [`vk_get_physical_device_surface_capabilities_khr`].
+/// The throttle state behind [`vk_get_physical_device_surface_capabilities_khr`].
 /// `None` until the first call, so the very first extent this process ever
 /// reports needs no settling.
 static RESIZE_SETTLE_STATE: std::sync::Mutex<Option<ResizeSettleState>> = std::sync::Mutex::new(None);
 
-/// Collapse a storm of raw extents into one commit per settled size.
+/// Rate-limit the extents handed to the engine: one commit per settled size,
+/// and during continuous change one per `max_lag`.
 ///
-/// A pure step over `(previous state, raw extent, now)` -> `(reported extent,
-/// next state)`, so the coalescing behaviour that fixes issue #39 can be
-/// tested without a Wayland compositor animating a resize. The caller owns
-/// the actual mutable state ([`RESIZE_SETTLE_STATE`]); this function only
-/// decides what to do with it.
+/// A pure step over `(previous state, raw extent, now, max_lag)` ->
+/// `(reported extent, next state)`, so the behaviour can be tested without a
+/// compositor animating a resize. The caller owns the actual mutable state
+/// ([`RESIZE_SETTLE_STATE`]); this function only decides what to do with it.
 ///
-/// While `raw` keeps changing from one call to the next, `pending` chases it
-/// and `committed` — what gets reported — stays put, because every change
-/// resets the settle clock. Once `raw` stops moving for [`RESIZE_SETTLE`],
-/// `committed` jumps straight to it. The engine sees exactly one extent change
-/// per settled resize instead of one per animation frame, and never sees an
-/// extent Cordial's window did not end up at.
+/// `pending` always chases `raw`. `committed` -- what gets reported -- takes
+/// the pending extent when either `raw` has been still for [`RESIZE_SETTLE`]
+/// (a resize has finished, so the engine ends at the size the window is) or
+/// `max_lag` has passed since the last commit (a resize is still going, so the
+/// engine follows it a step behind rather than not at all). The engine
+/// therefore never sees more than one extent per `max_lag` once a resize is
+/// under way, always ends on the final size, and never sees an extent the
+/// window did not actually have. A change after a long quiet spell commits at
+/// once, since the last commit is then old; that costs one early rebuild at an
+/// intermediate size and removes `max_lag` of latency on the first step.
+///
+/// This only advances when it is called, so the rate is also bounded by how
+/// often the engine asks `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`.
 fn settle_resize_extent(
     state: Option<ResizeSettleState>,
     raw: (u32, u32),
     now: std::time::Instant,
+    max_lag: std::time::Duration,
 ) -> ((u32, u32), ResizeSettleState) {
-    let mut state = state.unwrap_or(ResizeSettleState { committed: raw, pending: raw, pending_since: now });
+    let mut state = state.unwrap_or(ResizeSettleState {
+        committed: raw,
+        committed_at: now,
+        pending: raw,
+        pending_since: now,
+    });
     if raw != state.pending {
         state.pending = raw;
         state.pending_since = now;
     }
-    if state.pending != state.committed && now.duration_since(state.pending_since) >= RESIZE_SETTLE {
+    if state.pending != state.committed
+        && (now.duration_since(state.pending_since) >= RESIZE_SETTLE
+            || now.duration_since(state.committed_at) >= max_lag)
+    {
         state.committed = state.pending;
+        state.committed_at = now;
     }
     (state.committed, state)
 }
@@ -1888,13 +1943,14 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
                 clamp(width, caps.min_image_extent.width, caps.max_image_extent.width),
                 clamp(height, caps.min_image_extent.height, caps.max_image_extent.height),
             );
-            // Settled, not raw -- see `settle_resize_extent`. Reporting every
-            // intermediate size of an animated resize is issue #39: a
-            // fullscreen transition produced nine extents in well under half a
-            // second and the engine rebuilt its swapchain at each one.
+            // Throttled, not raw -- see `settle_resize_extent`. Reporting every
+            // intermediate size of an animated resize made the engine rebuild
+            // its swapchain at each one (issue #39: nine in under half a
+            // second); holding all of them back until the pointer paused left
+            // an interactive drag showing the old size.
             let settled = {
                 let mut guard = RESIZE_SETTLE_STATE.lock().unwrap();
-                let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now());
+                let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now(), resize_max_lag());
                 *guard = Some(next);
                 reported
             };
@@ -2338,11 +2394,14 @@ mod tests {
         assert!(PRESENT_MODE_KEY.starts_with("Cordial"));
     }
 
+    const LAG: std::time::Duration = RESIZE_MAX_LAG;
+
     /// Issue #39's storm, replayed against the pure step function: nine
-    /// extents 48 ms apart, the closest gap actually logged. Every
-    /// intermediate one must be swallowed and only the last reported.
+    /// extents 48 ms apart, the closest gap actually logged. The engine used
+    /// to be handed all nine; now it gets a handful, each one a size the
+    /// window really had, and the last one is the final size once still.
     #[test]
-    fn a_storm_of_extents_48ms_apart_settles_to_only_the_last_one() {
+    fn a_storm_of_extents_48ms_apart_collapses_to_a_handful() {
         let steps: [(u32, u32); 9] = [
             (1920, 1034),
             (1920, 1049),
@@ -2359,48 +2418,105 @@ mod tests {
         let mut reports = Vec::new();
         for (i, &extent) in steps.iter().enumerate() {
             let now = start + std::time::Duration::from_millis(48 * i as u64);
-            let (reported, next) = settle_resize_extent(state, extent, now);
+            let (reported, next) = settle_resize_extent(state, extent, now, LAG);
             state = Some(next);
             reports.push(reported);
         }
-        // None of the nine calls made during the storm ever reports anything
-        // but the size the window started at -- the storm never stops moving
-        // for a whole `RESIZE_SETTLE`, so nothing commits mid-animation.
-        assert!(reports.iter().all(|&r| r == steps[0]));
+        assert!(reports.iter().all(|r| steps.contains(r)));
+        let mut distinct = reports.clone();
+        distinct.dedup();
+        assert!(distinct.len() < steps.len() / 2 + 1, "reported {distinct:?}");
 
-        // Only once the extent stops changing for `RESIZE_SETTLE` does the
-        // final size get reported -- one commit, not nine.
         let settle_time = start
             + std::time::Duration::from_millis(48 * (steps.len() as u64 - 1))
             + RESIZE_SETTLE;
-        let (reported, _) = settle_resize_extent(state, *steps.last().unwrap(), settle_time);
+        let (reported, _) = settle_resize_extent(state, *steps.last().unwrap(), settle_time, LAG);
         assert_eq!(reported, *steps.last().unwrap());
     }
 
+    /// The bug this change exists for: a drag delivers a new size every
+    /// compositor frame, and the pure debounce never committed during it. A
+    /// drag sampled every 16 ms for a second must now commit about every
+    /// 100 ms, each commit being the newest size seen, and finish on the final
+    /// size once the pointer stops.
+    #[test]
+    fn a_continuous_drag_commits_about_every_max_lag() {
+        let start = std::time::Instant::now();
+        let mut state = None;
+        let mut last = (0, 0);
+        let mut commits: Vec<(u64, (u32, u32))> = Vec::new();
+        let mut final_raw = (0, 0);
+        for i in 0..63u64 {
+            let ms = 16 * i;
+            final_raw = (800 + 8 * i as u32, 600);
+            let now = start + std::time::Duration::from_millis(ms);
+            let (reported, next) = settle_resize_extent(state, final_raw, now, LAG);
+            state = Some(next);
+            if reported != last {
+                // The first call commits the starting size; only changes after
+                // it are rebuilds the engine would be asked to do.
+                if i > 0 {
+                    commits.push((ms, reported));
+                    // The newest size at the moment of commit, never a stale one.
+                    assert_eq!(reported, final_raw);
+                }
+                last = reported;
+            }
+        }
+        assert!((8..=10).contains(&commits.len()), "commits {commits:?}");
+        for pair in commits.windows(2) {
+            let gap = pair[1].0 - pair[0].0;
+            assert!((100..=116).contains(&gap), "gap {gap} ms in {commits:?}");
+        }
+        let still = start + std::time::Duration::from_millis(16 * 62) + RESIZE_SETTLE;
+        let (reported, _) = settle_resize_extent(state, final_raw, still, LAG);
+        assert_eq!(reported, final_raw);
+    }
+
+    /// With the lag set far beyond a drag's length the throttle degenerates
+    /// to the old debounce: nothing commits mid-drag. This is the control the
+    /// `CORDIAL_RESIZE_MAX_LAG_MS` override exists to provide.
+    #[test]
+    fn an_enormous_max_lag_restores_the_pure_debounce() {
+        let huge = std::time::Duration::from_secs(100_000);
+        let start = std::time::Instant::now();
+        let mut state = None;
+        for i in 0..63u64 {
+            let now = start + std::time::Duration::from_millis(16 * i);
+            let (reported, next) = settle_resize_extent(state, (800 + 8 * i as u32, 600), now, huge);
+            state = Some(next);
+            assert_eq!(reported, (800, 600));
+        }
+    }
+
     /// The very first extent a process ever reports needs no settling --
-    /// there is nothing to debounce against yet, and the engine's first
+    /// there is nothing to throttle against yet, and the engine's first
     /// swapchain must be built at the window's real starting size.
     #[test]
     fn the_first_extent_reports_immediately() {
-        let (reported, _) = settle_resize_extent(None, (1280, 720), std::time::Instant::now());
+        let (reported, _) = settle_resize_extent(None, (1280, 720), std::time::Instant::now(), LAG);
         assert_eq!(reported, (1280, 720));
     }
 
-    /// A deliberate resize the user holds for longer than `RESIZE_SETTLE`
-    /// (dragging a window edge, say) must still be reported once it stops --
-    /// this is a debounce, not a permanent lock to the first size seen.
+    /// A single deliberate resize that then holds still is reported once it
+    /// has been still for `RESIZE_SETTLE`, and exactly once: a quarter of a
+    /// second later it is still the same committed size, not a repeat.
     #[test]
     fn a_resize_that_holds_past_the_settle_window_is_reported() {
         let start = std::time::Instant::now();
-        let (_, state) = settle_resize_extent(None, (1280, 720), start);
-        let (_, state) =
-            settle_resize_extent(Some(state), (1600, 900), start + std::time::Duration::from_millis(10));
-        let (reported, _) = settle_resize_extent(
+        let (_, state) = settle_resize_extent(None, (1280, 720), start, LAG);
+        let at = start + std::time::Duration::from_millis(10);
+        let (held, state) = settle_resize_extent(Some(state), (1600, 900), at, LAG);
+        assert_eq!(held, (1280, 720));
+        let (reported, state) = settle_resize_extent(Some(state), (1600, 900), at + RESIZE_SETTLE, LAG);
+        assert_eq!(reported, (1600, 900));
+        let (again, _) = settle_resize_extent(
             Some(state),
             (1600, 900),
-            start + std::time::Duration::from_millis(10) + RESIZE_SETTLE,
+            at + RESIZE_SETTLE + std::time::Duration::from_millis(250),
+            LAG,
         );
-        assert_eq!(reported, (1600, 900));
+        assert_eq!(again, (1600, 900));
     }
 
     /// Boundary values for each `VkFormat` range `format_family` groups, read
