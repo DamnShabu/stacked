@@ -4491,6 +4491,20 @@ fn main() -> ExitCode {
                                             }
                                         }
 
+                                        // Kept so the development control socket's
+                                        // `updatesurface` can deliver them again
+                                        // into a client already in the state under
+                                        // investigation (`android::surface_params`).
+                                        cordial_runtime::android::surface_params::register(
+                                            lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2UpdateSurfaceAppWithPlatformParams")
+                                                .unwrap_or(std::ptr::null_mut()),
+                                            lib.symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativeAppBridgeV2UpdateSurfaceGameWithPlatformParams")
+                                                .unwrap_or(std::ptr::null_mut()),
+                                            &apk_path,
+                                            width,
+                                            height,
+                                        );
+
                                         report_disk(&data_root, DiskMoment::BeforeLaunch);
                                         match linker::game_activity::start(
                                             handle, width, height, format,
