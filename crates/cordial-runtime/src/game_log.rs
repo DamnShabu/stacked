@@ -87,9 +87,13 @@ pub enum Event {
     /// Passed through rather than parsed here so that this module stays "what
     /// the log said" and the protocol stays in the module that documents it.
     Rpc(String),
+    /// The engine's `DynamicFastVariableReloader` fetched Roblox's settings
+    /// and put them in place of the ones Cordial handed over, which it does
+    /// every two minutes. See [`crate::client_settings::reassert_after_reload`].
+    FlagsReloaded,
 }
 
-/// One log line, or `None` if it is not one of the four.
+/// One log line, or `None` if it is not one of these.
 ///
 /// Pure, and the whole of the format knowledge. Every field is found by name
 /// rather than by position: the join line has eight comma-separated fields
@@ -98,6 +102,9 @@ pub enum Event {
 pub fn parse_line(line: &str) -> Option<Event> {
     if line.contains(crate::bloxstrap_rpc::MARKER) {
         return Some(Event::Rpc(line.to_owned()));
+    }
+    if line.contains("[FLog::DynamicFastVariableReloader] DynamicFastVariableReloader finished flag fetch") {
+        return Some(Event::FlagsReloaded);
     }
     if line.contains("[FLog::SingleSurfaceApp] leaveUGCGameInternal") {
         return Some(Event::Left);
@@ -547,6 +554,7 @@ pub fn poll() {
                     crate::android::looper::request_quit();
                 }
             }
+            Event::FlagsReloaded => crate::client_settings::reassert_after_reload(),
             Event::Rpc(line) => match crate::bloxstrap_rpc::parse_line(&line) {
                 // **This is the first caller `bloxstrap_rpc` has ever had.**
                 // Everything below the parse is still unwired: the presence
@@ -622,6 +630,15 @@ mod tests {
          UDMUX Address = 128.116.51.33, Port = 50363 | RCC Server Address = 10.60.2.168, Port = 50363";
     const LEAVE: &str =
         "2026-08-31T03:14:53.310Z,194.310760,bd3bd6c0,6 [FLog::SingleSurfaceApp] leaveUGCGameInternal";
+
+    /// Verbatim from a Stacked session's own Player log, 2.738.0.1397.
+    #[test]
+    fn the_engines_flag_reload_is_recognised() {
+        let line = "2026-10-01T18:55:54.220Z,120.220055,a8c306c0,6,Info \
+             [FLog::DynamicFastVariableReloader] DynamicFastVariableReloader finished flag fetch. \
+             Tombstone status: valid";
+        assert_eq!(parse_line(line), Some(Event::FlagsReloaded));
+    }
 
     #[test]
     fn a_join_yields_every_id_on_the_line() {
@@ -810,6 +827,7 @@ mod tests {
                     println!("leave");
                 }
                 Some(Event::Rpc(_)) => rpc += 1,
+                Some(Event::FlagsReloaded) => println!("flag reload"),
                 None => {}
             }
         }

@@ -806,6 +806,9 @@ extern "C" fn run_bootstrap() {
             Ok(code) => println!("    nativeInitClientSettings -> {code}"),
             Err(e) => println!("    nativeInitClientSettings failed: {e}"),
         }
+        cordial_runtime::client_settings::remember_native(
+            plan.settings_native as *mut std::ffi::c_void,
+        );
         // The delivery attempt is over, one way or the other -- this is the
         // signal `wait_for_settings_delivery` blocks on. Set here, before the
         // optional resettle experiment below, because that is unrelated extra

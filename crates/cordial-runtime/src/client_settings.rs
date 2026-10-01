@@ -428,9 +428,10 @@ fn is_roblox_flag(key: &str) -> bool {
 /// `CORDIAL_EXPERIMENT_RESETTLE_MS` in `bin/load.rs` is the hook this was run
 /// with. It is deliberately not wired to anything a user can press.
 ///
-/// **Not established:** whether the reloader merges or replaces, and whether a
-/// later fetch (one was seen at 120.1 s) reverts an override a second time
-/// after something else had changed it. Neither was tested.
+/// **The later fetch is periodic, every 120 s, and appears to replace rather
+/// than merge** -- it drops overrides for keys Roblox's document does not even
+/// contain. [`reassert_after_reload`] hands the document back after each one
+/// and records the evidence.
 fn apply_overrides(doc: String) -> String {
     let resolved = crate::flags::resolve(crate::flags::collect());
     if resolved.is_empty() {
@@ -793,4 +794,99 @@ mod tests {
             _ => panic!("expected Source::Nothing, got a different source"),
         }
     }
+}
+
+/// `nativeInitClientSettings`, kept so the settings can be handed over again
+/// after the engine's own reloader has thrown Cordial's away. Zero until the
+/// launch path has delivered them once. An address rather than a pointer
+/// because a raw pointer is not `Send`; it names an export of a library that
+/// stays loaded for the life of the process.
+static SETTINGS_NATIVE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// When the settings were first delivered. The log watcher starts on whichever
+/// Player log is newest, which before this session has written its own is the
+/// previous session's, read from the top -- so a reload line inside the first
+/// minute is a replay, the real first one arriving at 120 s.
+static DELIVERED_AT: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+/// Remember the native that took the settings at launch, for
+/// [`reassert_after_reload`].
+pub fn remember_native(native: *mut std::ffi::c_void) {
+    let _ = DELIVERED_AT.set(std::time::Instant::now());
+    SETTINGS_NATIVE.store(native as usize, std::sync::atomic::Ordering::Release);
+}
+
+/// Hand the engine Cordial's settings document again, because its
+/// `DynamicFastVariableReloader` has just replaced it.
+///
+/// **The reloader runs every 120 s and drops every `DF*` override, including
+/// ones for keys Roblox's document does not contain.** That last part is what
+/// [`apply_overrides`] left unestablished. Two readings point the same way:
+/// `DFLogHttpTrace`, absent from Roblox's document, logged until 120.1 s and
+/// stopped; and `DFIntTaskSchedulerTargetFps`, also absent, set to a 165 Hz
+/// display's rate at launch, gave 165 fps for about two minutes and the
+/// engine's own 60 afterwards (reported on a real session, not yet measured
+/// with a control). The engine's logs here show `finished flag fetch` at
+/// 120.2 s and 240.8 s, and 88 of them across a 10,668 s session, so it is
+/// periodic and not a one-off.
+///
+/// The whole document is sent rather than only the overrides because the
+/// reloader looks to replace rather than merge (`INFERRED`, from the above): a
+/// document of overrides alone would then take Roblox's own values with it. A second call mid-run is the
+/// mechanism measured to work in [`apply_overrides`]'s three-arm experiment.
+///
+/// Off its own thread because [`load`] may fetch over HTTP, and this is called
+/// from the main thread's pump. Skipped when no `DF*` override is in force,
+/// since then there is nothing the reloader took away.
+pub fn reassert_after_reload() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    static BUSY: AtomicBool = AtomicBool::new(false);
+
+    let native = SETTINGS_NATIVE.load(Ordering::Acquire);
+    if native == 0 {
+        return;
+    }
+    if DELIVERED_AT.get().is_none_or(|t| t.elapsed() < Duration::from_secs(60)) {
+        return;
+    }
+    // The control for the measurement above: with it off, the reloader's
+    // revert is what you get.
+    if std::env::var("CORDIAL_REASSERT_FLAGS").is_ok_and(|v| v == "0") {
+        println!("  flags: engine reloaded its settings; CORDIAL_REASSERT_FLAGS=0, leaving them");
+        return;
+    }
+    let resolved = crate::flags::resolve(crate::flags::collect());
+    if !resolved.keys().any(|k| k.starts_with("DF") && is_roblox_flag(k)) {
+        return;
+    }
+    if BUSY.swap(true, Ordering::AcqRel) {
+        return;
+    }
+    std::thread::spawn(move || {
+        // Not straight away. Sent as soon as the line appeared, the document
+        // reached the engine 50 ms after the fetch finished and still lost to
+        // it on one reload in two: a `CORDIAL_FPS_CAP=5` run went to the
+        // uncapped idle rate after the 120 s reload and back to 5 after the
+        // 240 s one, both re-sends answering 0. The reloader evidently applies
+        // what it fetched a little after saying it finished.
+        std::thread::sleep(Duration::from_secs(5));
+        if let Some(settings) = load(None) {
+            // SAFETY: `native` is the address of `nativeInitClientSettings`,
+            // resolved against the loaded libroblox.so, which is never unloaded.
+            match unsafe {
+                cordial_linker_sys::game_activity::init_client_settings(
+                    native as *mut std::ffi::c_void,
+                    &settings,
+                    "",
+                    "",
+                )
+            } {
+                Ok(code) => println!(
+                    "  flags: engine reloaded its settings; overrides handed back -> {code}"
+                ),
+                Err(e) => println!("  flags: engine reloaded its settings; handing overrides back failed: {e}"),
+            }
+        }
+        BUSY.store(false, Ordering::Release);
+    });
 }
