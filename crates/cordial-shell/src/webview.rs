@@ -463,6 +463,17 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
         return None;
     }
 
+    // Before anything WebKit can spawn from. WebKitGTK answers a helper it
+    // cannot start with `g_error`, which took the whole client down in v0.21.3
+    // when the AppImage's helpers were not where its library looked -- see
+    // `webkit_helpers`. Run on every open rather than once, because a /tmp
+    // cleaner can remove the staged copies under a client that has been up for
+    // days, and putting them back costs a few small file reads.
+    if let Err(reason) = helpers_ready() {
+        eprintln!("[webview] cannot open a web window: {reason}");
+        return None;
+    }
+
     // Ephemeral, deliberately: a `NetworkSession` built without a data
     // directory keeps its cookie jar in memory and writes nothing to disk.
     // ADR-012 already made Cordial's session store the desktop secret
@@ -1229,6 +1240,20 @@ fn bridge_shim() -> String {
 }})();"#,
         a = BRIDGE_EXECUTE_ROBLOX,
     )
+}
+
+/// [`crate::webkit_helpers::prepare`], with the staging directory said once per
+/// process: it is the line that tells a reader of a log which WebKit helpers
+/// this client was going to run.
+fn helpers_ready() -> Result<(), String> {
+    static SAID: std::sync::Once = std::sync::Once::new();
+    match crate::webkit_helpers::prepare()? {
+        crate::webkit_helpers::Helpers::Staged(dir) => SAID.call_once(|| {
+            eprintln!("[webview] WebKit helper processes staged at {}", dir.display());
+        }),
+        crate::webkit_helpers::Helpers::System => {}
+    }
+    Ok(())
 }
 
 /// `CORDIAL_WEBVIEW_CONSOLE_LOG=1` -- ask WebKitGTK to write the page's own

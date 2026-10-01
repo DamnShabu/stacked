@@ -1310,9 +1310,10 @@ fn install_webview_presenter() {
                         cordial_runtime::webview::report_window_closed();
                     });
                 }
-                None => println!(
-                    "[webview] openWindow request was refused by policy before it could be presented"
-                ),
+                // `open` says why on its own line: the address failed the
+                // policy, or WebKitGTK could not have started its helpers and
+                // was not asked to, rather than being left to abort the client.
+                None => println!("[webview] openWindow request was not presented (see the line above)"),
             }
         });
     });

@@ -7,8 +7,8 @@
 //! distribution and the package format matter because Cordial ships in five and
 //! they fail differently: a `.deb` could not start on Ubuntu 24.04 at all
 //! until the GTK feature floor came down from 4.20 to 4.12, which the LTS's
-//! 4.14.5 clears (ADR-032), the AppImage's web view needs WebKitGTK on the
-//! host while the Flatpak carries its own, and one glibc symbol made the
+//! 4.14.5 clears (ADR-032), the AppImage's web view runs a WebKitGTK of its
+//! own from helpers it stages in /tmp (ADR-045), and one glibc symbol made the
 //! `.rpm` uninstallable on everything but rawhide. None of those is
 //! diagnosable from "it doesn't work on Linux".
 //!

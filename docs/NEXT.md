@@ -968,6 +968,14 @@ its own `PT_INTERP` -- a loader shim at the AppRun boundary only ever
 intercepts the first process, leaving those broken while every top-level
 smoke test passes. That failure shape is worse than the bug it fixes.
 
+**Superseded 2026-10-01 by ADR-045**: the bind never reached the Roblox
+manager, whose clients run inside its Flatpak, and v0.21.3 aborted there on
+"Servers". The bundled library is now patched to look where the client stages
+its helpers; the EGL error below did not appear in the manager's Flatpak or a
+Fedora 44 root. Still open from that work: HTTPS fails in the web view on
+non-Debian hosts, because the bundled libgio looks for its TLS module only
+under /usr/lib/x86_64-linux-gnu (ADR-045, Consequences).
+
 **The web view's mount-namespace bind was re-measured with a real display,
 and it is a fix and a new open question, not a fix and a close.** Ubuntu's
 `libwebkitgtk-6.0.so` bakes in a single directory for both the helper

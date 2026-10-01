@@ -59,3 +59,18 @@ they have changed. Cordial's derived work states its origin in its own header
 rather than only here, because a NOTICE at the repository root is not where
 somebody reading a source file looks.
 -------------------------------------------------------------------------------
+WebKitGTK (in the AppImage only)
+Licensed under the GNU Lesser General Public License v2.1 or later, and BSD
+licences for parts. https://webkitgtk.org
+
+The AppImage bundles Ubuntu 24.04's libwebkitgtk-6.0-4 binary package, and the
+build modifies it: packaging/appimage/build-appimage.sh overwrites every
+occurrence of the C string /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 in
+libwebkitgtk-6.0.so.4 with an equally long /tmp/.stacked-webkit-<hash>, so the
+library looks for its helper processes where Stacked stages them (ADR-045,
+crates/cordial-shell/src/webkit_helpers.rs). Nothing else in it is changed. The
+source is Ubuntu's webkitgtk source package of the bundled version; the
+AppImage states the version and the change in
+usr/share/licenses/stacked/webkitgtk-MODIFIED.txt. The other packages
+(.deb, .rpm, Arch, Flatpak) use the distribution's WebKitGTK unmodified.
+-------------------------------------------------------------------------------

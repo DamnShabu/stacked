@@ -12,10 +12,13 @@
 # own sandbox are reached through absolute paths baked into
 # libwebkitgtk-6.0.so, and GSettings schemas are found by path rather than by
 # symbol. All of those are bundled below by hand rather than by the bundler.
-# Making the baked-in paths *resolve* on a host that has never installed
-# WebKitGTK is AppRun's job, and it is a mount namespace rather than an
-# environment variable, because WebKitGTK 2.52 offers no environment variable
-# for them -- AppRun carries the measurement and the offsets.
+# **Corrected 2026-10-01**: this used to say that making the baked-in paths
+# resolve was AppRun's job, by mount namespace. That never reached the Roblox
+# manager, which execs usr/bin/cordial-run directly and inside its own
+# Flatpak, where no namespace can be made; v0.21.3 aborted the client there.
+# The helper directory is now rewritten in the bundled library and staged by
+# the client itself (see "pointing the bundled WebKitGTK" below, ADR-045).
+# AppRun's namespace is left planting bwrap and xdg-dbus-proxy only.
 #
 # This paragraph used to end "nobody has launched one yet". Somebody has, on
 # 2026-08-27: the shell starts and draws on Fedora 44 (Bluefin, GNOME,
@@ -435,10 +438,12 @@ echo "==> laying out what WebKitGTK reaches by absolute path"
 # linuxdeploy was just given each helper as an --executable so their own
 # library dependencies land in usr/lib, but linuxdeploy places binaries named
 # as --executable next to usr/bin, not back where WebKitGTK's ProcessLauncher
-# expects to find them. The layout below is not decoration: AppRun binds each
-# of these directories over the path baked into libwebkitgtk-6.0.so, in a
-# mount namespace of its own, and it binds them *by these names*. Change one
-# here and change it there.
+# expects to find them. The layout below is not decoration:
+# crates/cordial-shell/src/webkit_helpers.rs copies the helpers and the
+# injected bundle out of these two directories *by these names*, and AppRun
+# plants the two sandbox tools from usr/bin. Change one here and change it
+# there. (The arrows below are the Fedora-era binds AppRun used to make; they
+# are history, kept with the measurement that follows.)
 #
 #   usr/libexec/webkitgtk-6.0          -> /usr/libexec/webkitgtk-6.0
 #   usr/lib/webkitgtk-6.0/injected-bundle
@@ -492,6 +497,48 @@ if [ -n "$webkit_share" ] && [ -d "$webkit_share" ]; then
     install -d "$appdir/usr/share/webkitgtk-6.0"
     cp -a "$webkit_share/." "$appdir/usr/share/webkitgtk-6.0/"
 fi
+
+echo "==> pointing the bundled WebKitGTK at a helper directory Stacked stages"
+# The directory string compiled into libwebkitgtk-6.0.so is the only thing
+# WebKitGTK consults for its helpers (WEBKIT_EXEC_PATH is developer-mode only),
+# and the paths above exist on almost no host this AppImage runs on -- v0.21.3
+# aborted the client on "Servers" for want of one, inside the Roblox manager's
+# Flatpak, where no mount namespace could have made it exist. So the string is
+# rewritten, same length, to /tmp/.stacked-webkit-<hash of the helpers>, and
+# the client copies the helpers there before its first web view
+# (crates/cordial-shell/src/webkit_helpers.rs, ADR-045). Recorded in NOTICE and
+# in the licence directory, because it is a modification of an LGPL library.
+#
+# Debian's layout is assumed and checked rather than guessed at: one merged
+# directory holding the helpers with injected-bundle inside it, so one string
+# prefix covers both. The patcher refuses unless that prefix occurs only as
+# whole strings, and the build stops if it refuses.
+if [ "$webkit_bundle" != "$webkit_libexec/injected-bundle" ]; then
+    echo "error: WebKitGTK's injected bundle ($webkit_bundle) is not inside its helper" >&2
+    echo "  directory ($webkit_libexec); the helper-dir patch assumes Debian's merged layout" >&2
+    exit 1
+fi
+webkit_lib="$appdir/usr/lib/libwebkitgtk-6.0.so.4"
+helper_key=$(cat "$appdir"/usr/libexec/webkitgtk-6.0/WebKit*Process \
+    "$appdir"/usr/lib/webkitgtk-6.0/injected-bundle/*.so | sha256sum | cut -d' ' -f1)
+staged_dir=$(cargo run --release --locked -p cordial-shell --example patch_webkit_helper_dir -- \
+    "$webkit_lib" "$webkit_libexec" "$helper_key")
+install -d "$appdir/usr/share/stacked"
+printf '%s\n' "$staged_dir" > "$appdir/usr/share/stacked/webkit-helper-dir"
+{
+    echo "libwebkitgtk-6.0.so.4 in this AppImage is Ubuntu's libwebkitgtk-6.0-4"
+    echo "$(dpkg-query -W -f='${Version}' libwebkitgtk-6.0-4 2>/dev/null || echo '(version unknown)'),"
+    echo "LGPL-2.1+/BSD, modified by the Stacked build: every occurrence of the C string"
+    echo "  $webkit_libexec"
+    echo "was overwritten in place with the equally long"
+    echo "  $staged_dir"
+    echo "so the library looks for its helper processes where Stacked puts them."
+    echo "Nothing else was changed. The source is Ubuntu's webkitgtk source package"
+    echo "of that version; the change is packaging/appimage/build-appimage.sh and"
+    echo "crates/cordial-shell/src/webkit_helpers.rs in Stacked's own source."
+} > "$licdir/webkitgtk-MODIFIED.txt"
+webkit_copyright=/usr/share/doc/libwebkitgtk-6.0-4/copyright
+[ -f "$webkit_copyright" ] && install -Dm644 "$webkit_copyright" "$licdir/webkitgtk-copyright.txt"
 
 echo "==> completing the dependency closure linuxdeploy's excludelist dropped"
 # linuxdeploy carries its own fixed list of libraries it assumes every host
@@ -685,15 +732,8 @@ echo "Not yet launched: no AppImage has been run since \`stacked\` replaced the"
 echo "GTK launcher. The last image that was, on 2026-08-27, was Fedora-built and"
 echo "predates ADR-032 moving the base to ubuntu:24.04."
 echo
-echo "The web view's mount-namespace trick (AppRun binding WebKitGTK's helper"
-echo "processes, injected bundle, bwrap and xdg-dbus-proxy over the absolute"
-echo "paths baked into libwebkitgtk-6.0.so) was measured 2026-09-02 against a"
-echo "Fedora-built copy of that library, whose baked-in path was"
-echo "/usr/libexec/webkitgtk-6.0. Ubuntu 24.04's build of the same library"
-echo "bakes in /usr/lib/x86_64-linux-gnu/webkitgtk-6.0 instead, and AppRun now"
-echo "binds that path too, re-measured 2026-09-13 with a live Wayland display:"
-echo "WebKitNetworkProcess, which failed to spawn at all with only the Fedora"
-echo "binds, now starts. The WebProcess it hands off to aborts on its own"
-echo "straight after, \"Could not create default EGL display: EGL_BAD_PARAMETER\","
-echo "for a reason not yet established. Treat the web view as UNVERIFIED on"
-echo "this AppImage -- the spawn-path defect is fixed, the EGL one is not."
+echo "The web view: the bundled libwebkitgtk-6.0.so is patched to look for its"
+echo "helper processes in /tmp/.stacked-webkit-<hash>, which the client stages"
+echo "before its first web view (ADR-045). Measured 2026-10-01 inside the Roblox"
+echo "manager's Flatpak and a Fedora 44 root. Still broken: HTTPS in the web view"
+echo "on non-Debian hosts, where the bundled libgio finds no TLS module."

@@ -197,6 +197,8 @@ covered by any of those four, and was checked separately, below.
 
 ## The web view's mount-namespace bind needed the same kind of fix, and only half worked
 
+**Superseded by [ADR-045](ADR-045-the-appimage-webkit-looks-for-its-helpers-where-stacked-puts-them.md).** The bind below never reached the Roblox manager, which execs `cordial-run` directly inside its own Flatpak, and bound nothing on hosts without `/usr/lib/x86_64-linux-gnu`. The bundled library is now patched to look where the client stages its helpers. The `EGL_BAD_PARAMETER` below did not appear in either environment ADR-045 was measured in.
+
 The section above already flagged that AppRun's bwrap binds still targeted
 Fedora's split WebKitGTK layout while this base bundles Ubuntu's merged one.
 Checked directly, 2026-09-13, on this host's own live Wayland session with

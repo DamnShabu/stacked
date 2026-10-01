@@ -72,6 +72,10 @@ pub mod secrets;
 pub mod version;
 pub mod window_state;
 pub mod webview_policy;
+// Not behind `webview` for the same reason as `webview_policy`: it is plain
+// file handling, its tests run everywhere, and `build-appimage.sh` runs its
+// patcher from an example built without the WebKitGTK headers.
+pub mod webkit_helpers;
 #[cfg(feature = "webview")]
 pub mod webview;
 
