@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.3" date="2026-10-01">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.3</url>
+      <description>
+        <p>
+          Fixes the AppImage opening to an empty window with nothing drawn on
+          systems with a recent Mesa. It no longer bundles its own Wayland
+          libraries, which stopped the graphics driver loading.
+        </p>
+      </description>
+    </release>
     <release version="0.21.2" date="2026-10-01">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.2</url>
       <description>

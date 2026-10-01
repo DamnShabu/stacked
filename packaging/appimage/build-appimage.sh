@@ -550,7 +550,14 @@ if [ -z "$ld_linux" ]; then
     echo "error: could not read the ELF interpreter out of stacked's .interp section" >&2
     exit 1
 fi
-never_bundle_libs="libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1 $ld_linux libstdc++.so.6 libgcc_s.so.1"
+#
+# libwayland-* belongs to that family and was missed until v0.21.2. The host's
+# Mesa links against the host's libwayland, and AppRun's LD_LIBRARY_PATH puts
+# a bundled copy ahead of it: v0.21.2 shipped ubuntu:24.04's 1.22, Mesa 26
+# built against 1.24 needs `wl_fixes_interface`, and every Vulkan ICD and
+# Mesa's EGL failed to load with `undefined symbol: wl_fixes_interface`. The
+# engine got no device and the window stayed an empty canvas, 0 presents.
+never_bundle_libs="libEGL.so.1 libGLX.so.0 libGL.so.1 libOpenGL.so.0 libGLdispatch.so.0 libgbm.so.1 libdrm.so.2 libGLESv2.so.2 libwayland-client.so.0 libwayland-egl.so.1 libwayland-cursor.so.0 libwayland-server.so.0 libc.so.6 libm.so.6 libdl.so.2 libpthread.so.0 librt.so.1 libresolv.so.2 libutil.so.1 libnsl.so.1 libanl.so.1 libcrypt.so.1 $ld_linux libstdc++.so.6 libgcc_s.so.1"
 is_never_bundled() {
     local name="$1" g
     for g in $never_bundle_libs; do
@@ -558,6 +565,15 @@ is_never_bundled() {
     done
     return 1
 }
+
+# The list above only stops the closure pass copying these in; linuxdeploy's
+# own walk copied libwayland-* before it ran, so remove what is already there.
+for lib in $never_bundle_libs; do
+    if [ -e "$appdir/usr/lib/$lib" ]; then
+        rm -f "$appdir/usr/lib/$lib"
+        echo "  removed $lib: the host's graphics stack must load its own"
+    fi
+done
 
 pass=0
 added=1
