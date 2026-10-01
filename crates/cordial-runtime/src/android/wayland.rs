@@ -2303,6 +2303,13 @@ impl WaylandWindow {
         // Unconditional rather than gated on the 0-to-1 edge, and cheap: the
         // setter returns immediately when the flag has not changed.
         self.host.0.set_dialog_up(true);
+        // **Claiming the parent is not enough on niri**, which goes on picking
+        // the lowered canvas for pointer focus -- see `set_canvas_takes_input`.
+        // On the 0-to-1 edge only, and regardless of the text overlay: the
+        // overlay decides stacking, but a dialog needs the clicks either way.
+        if self.open_web_view_dialogs.load(Ordering::SeqCst) == 1 {
+            self.set_canvas_takes_input(false);
+        }
         // A `relative_motion` sample can already be sitting in
         // `PENDING_UNLOCKED_DELTA`, waiting for the `wl_pointer.motion` that
         // drains it, at the exact moment this runs -- this is invoked from a
@@ -2335,7 +2342,10 @@ impl WaylandWindow {
         // Only on the last close. With two dialogs up, closing one must leave
         // the window claimed for the other -- the same edge the restack above
         // uses, and for the same reason.
+        // The canvas takes input back before GDK punches the parent's hole
+        // again, so the point is never nobody's -- see `set_canvas_takes_input`.
         if self.open_web_view_dialogs.load(Ordering::SeqCst) == 0 {
+            self.set_canvas_takes_input(true);
             self.host.0.set_dialog_up(false);
         }
         // Nothing should have accumulated while a dialog was in front — see
@@ -3082,35 +3092,104 @@ impl WaylandWindow {
         );
     }
 
-    // **An empty input region on the canvas was tried here, and reverted.**
-    //
-    // 07564e2 gave the engine's subsurface an empty `wl_surface.set_input_region`
-    // while a web-view dialog was up, on the theory that the canvas was eating
-    // pointer events aimed at the dialog. What that produced was worse than
-    // what it was meant to fix: a click anywhere over the canvas fell through
-    // Cordial's window entirely and raised whatever was behind it -- reported
-    // as "as soon as we press anything it selects the window behind and focuses
-    // it ... my terminal gets focused".
-    //
-    // That is what an empty input region means. It does not say "give this to
-    // the parent", it says "this surface is not present for input", and when
-    // nothing else of the window claims that point the compositor gives the
-    // click to the next window down. Lowering the canvas below the parent in
-    // `set_engine_stacking` is already what routes a dialog's clicks to GTK.
-    //
-    // **The premise was never measured either.** "The canvas eats the clicks"
-    // was inferred from a report and from reading this file. The likelier
-    // reading now is that the original "I cant click on the webview's items"
-    // was the invisible cursor -- fixed separately in the same commit -- making
-    // it impossible to see what was being pointed at.
-    //
-    // Before reaching for this again, answer the question that was skipped:
-    // does a click over a dialog reach GTK at all with the canvas merely
-    // lowered? That is one `CORDIAL_TRACE_MOUSE=1` session.
-    //
-    // Nothing here is the text editor's path. `update_text_overlay` uses
-    // `set_engine_stacking` and never touched this, so none of the above
-    // reaches typing.
+    /// Take the canvas out of pointer picking while a web-view dialog is up,
+    /// or put it back.
+    ///
+    /// **On niri, lowering the canvas moves its pixels and not its input.**
+    /// Measured 2026-10-01 in a nested niri 26.04 with the Servers dialog up:
+    /// `place_below` committed, the parent's input region committed as the
+    /// whole surface, the dialog drawn on top -- and the compositor still sent
+    /// `wl_pointer.enter` for the engine's `wl_surface`, not GTK's, with every
+    /// motion and click after it. So Cordial hid the cursor (`pointer_enter`
+    /// believed it was over the game), `dialog_in_front` withheld the clicks
+    /// from the engine, and nothing reached the dialog either. Reported as the
+    /// cursor being "behind" the popup: the only cursor left on screen was the
+    /// one Roblox draws into the canvas, under the dialog.
+    ///
+    /// **An empty region on its own was tried, and it was the wrong half.**
+    /// 07564e2 did this while the parent still had the canvas punched out of
+    /// its input region, so no surface of Cordial's claimed the point and
+    /// clicks fell through to the window behind -- "my terminal gets focused",
+    /// reverted in 73c74eb. That reasoning is about the parent's hole, not the
+    /// empty region: since 2b3503a the parent claims the whole surface while a
+    /// dialog is up, and the two together are what "pass through to the
+    /// dialog" actually means. So the parent is claimed first, raw and in its
+    /// own commit, before the canvas lets go -- GDK sends the same answer
+    /// through `set_dialog_up`, but only on GTK's next frame, and the canvas
+    /// must never be empty over a hole. The null region is "infinite".
+    ///
+    /// Going back the order reverses: the canvas takes input again before GDK
+    /// punches the parent's hole back in, so there is no instant where the
+    /// point belongs to nobody.
+    ///
+    /// The canvas commit is a commit of the engine's own surface from this
+    /// thread, between whatever the Vulkan swapchain is doing. It carries no
+    /// buffer of ours, and a desync subsurface applies it at once rather than
+    /// waiting for an idle engine's next present -- which at the idle
+    /// throttle's one frame a second is a second of dead clicks.
+    fn set_canvas_takes_input(&self, takes: bool) {
+        // SAFETY: `parent_surface` and `surface` are live proxies for the
+        // process's lifetime and `compositor` is GTK's bound proxy.
+        // `set_input_region` is "?o", so null (infinite) is valid;
+        // `create_region` is "n", `destroy` and `commit` take no arguments, and
+        // the destroy carries `WL_MARSHAL_FLAG_DESTROY` to free the proxy.
+        unsafe {
+            if !takes {
+                (self.wl.marshal_flags)(
+                    self.parent_surface,
+                    WL_SURFACE_SET_INPUT_REGION,
+                    std::ptr::null(),
+                    1,
+                    0,
+                    std::ptr::null_mut::<c_void>(),
+                );
+                (self.wl.marshal_flags)(self.parent_surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
+            }
+            let region = if takes {
+                std::ptr::null_mut::<c_void>()
+            } else {
+                (self.wl.marshal_flags)(
+                    self.compositor,
+                    WL_COMPOSITOR_CREATE_REGION,
+                    self.wl.region_interface,
+                    1,
+                    0,
+                    std::ptr::null_mut::<c_void>(),
+                )
+            };
+            if !takes && region.is_null() {
+                eprintln!(
+                    "[android] wayland: could not create an empty wl_region; clicks over a \
+                     web-view dialog may still go to the game on this compositor"
+                );
+                return;
+            }
+            (self.wl.marshal_flags)(
+                self.surface,
+                WL_SURFACE_SET_INPUT_REGION,
+                std::ptr::null(),
+                1,
+                0,
+                region,
+            );
+            (self.wl.marshal_flags)(self.surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
+            if !region.is_null() {
+                (self.wl.marshal_flags)(
+                    region,
+                    WL_REGION_DESTROY,
+                    std::ptr::null(),
+                    1,
+                    WL_MARSHAL_FLAG_DESTROY,
+                    std::ptr::null_mut::<c_void>(),
+                );
+            }
+            (self.wl.flush)(self.display);
+        }
+        println!(
+            "[android] wayland: engine canvas {} pointer input",
+            if takes { "takes" } else { "passes through" }
+        );
+    }
 
     pub fn geometry(&self) -> (i32, i32, i32) {
         let g = self.buffers.lock().unwrap_or_else(|e| e.into_inner());
@@ -3559,8 +3638,9 @@ unsafe extern "C" fn pointer_enter(
     //
     // No `cordial_ui_in_front` check, and that is deliberate rather than a
     // simplification. While a web-view dialog is up the parent claims the whole
-    // surface (see `webview_dialog_opened`), so pointer focus never reaches
-    // this subsurface and this never fires -- the dialog gets an ordinary
+    // surface and the canvas gives up its input region (see
+    // `webview_dialog_opened`), so pointer focus never reaches this subsurface
+    // and this never fires -- the dialog gets an ordinary
     // cursor from GTK because GTK genuinely owns the pointer there. Gating
     // this as well would be a second answer to a question already answered one
     // layer down, and the two could disagree.

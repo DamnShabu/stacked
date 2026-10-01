@@ -2171,12 +2171,17 @@ fn input_region(
     // forwarding side. Claiming the whole surface says the same thing to the
     // compositor.
     //
-    // **The other way round was tried first and was much worse.** 07564e2 gave
-    // the *canvas* an empty input region instead, which does not hand the click
-    // to the parent -- it says no surface here wants it, and with this hole
-    // already punched in the parent nothing else claimed it either, so clicks
-    // fell through Cordial's window and raised whatever was behind. Reverted in
-    // 73c74eb.
+    // **The other way round was tried first, alone, and was much worse.**
+    // 07564e2 gave the *canvas* an empty input region instead, which does not
+    // hand the click to the parent -- it says no surface here wants it, and
+    // with this hole still punched in the parent nothing else claimed it
+    // either, so clicks fell through Cordial's window and raised whatever was
+    // behind. Reverted in 73c74eb.
+    //
+    // **And this alone is not enough on niri**, which keeps giving pointer
+    // focus to the lowered canvas over a parent that claims every pixel. So
+    // the canvas's empty region is back, *on top of* this rather than instead
+    // of it -- see `wayland::WaylandWindow::set_canvas_takes_input`.
     //
     // A pointer constraint held on this toplevel takes the same branch, for a
     // different reason -- see `HostWindow::set_pointer_constrained`.
