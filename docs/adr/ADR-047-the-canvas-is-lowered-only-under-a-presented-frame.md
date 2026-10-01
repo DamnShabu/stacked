@@ -65,16 +65,58 @@ break it), presents normally: the window surface attaches, `repaint_now` reports
   Would end the dependency for the editor but not for dialogs, and changes
   focus and input-method behaviour. Not attempted.
 
-## What this does not fix
+## What the gate did not fix, and what chooses cairo (2026-10-01)
 
-In the failing configuration GTK presents nothing, so the editor is still not
-visible; the game is. The cause is GTK's GL renderer sharing a process with the
-engine's GLES. `GSK_RENDERER=cairo` cures it (measured above). Choosing cairo
-automatically when the engine will run without Vulkan is not done, because
-Cordial has no probe for that before GTK initialises.
+In the failing configuration GTK presents nothing, so the gate alone leaves the
+game visible and the editor invisible. The cause is GTK's GL renderer sharing a
+process with the engine's GLES; `GSK_RENDERER=cairo` cures it.
+
+`cordial_shell::gtk_renderer` now chooses cairo for the machines that would
+otherwise get nothing. `cordial-run` starts the Vulkan probe of
+[`vulkan_probe`](../../crates/cordial-shell/src/vulkan_probe.rs) in a background
+thread right after the Graphics line is printed, and collects it in
+`wayland::open` before `init_wayland`, which is before GTK realises the window
+and reads the variable. The rule:
+
+| Situation | `GSK_RENDERER` |
+|---|---|
+| set by the user, non-empty | untouched, and the probe is never started |
+| a non-CPU Vulkan device exists | untouched (GTK renders through Vulkan) |
+| no loader, `vkCreateInstance` fails, no devices, or only a CPU renderer | `cairo` |
+| the probe timed out or crashed | untouched, and a line says so |
+
+One line is logged either way, `[gtk] renderer: ...`, naming the reason and how
+long the launch waited for the probe.
+
+**The Graphics setting is not an input.** `CORDIAL_GRAPHICS=gles` was measured
+on this machine with working Vulkan and GTK stayed on `GskVulkanRenderer`,
+presented, and lowered 3 of 3, so forcing GLES is not by itself a reason; the
+probe is. The probe runs in a child of `cordial-run`
+(`cordial-run --vulkan-probe`, handled before the profile is claimed), so a
+driver that faults at load costs the probe and not the client.
+
+Measured on the #53 reproduction (nested KWin 6.7, signed out, `fakefocus` three
+times; `GSK_RENDERER=ngl` set by the user is the "before", on the same binary):
+
+| Run | Renderer GTK reported | Lowerings under a presented frame | Window-surface attaches after arming |
+|---|---|---|---|
+| no Vulkan, user sets `ngl` | GskGLRenderer | 0 of 3 (gate holds) | 0 |
+| no Vulkan, nothing set | GskCairoRenderer, chosen by the log line | 3 of 3 | 257 |
+| Vulkan, nothing set | GskVulkanRenderer, left alone | 3 of 3 | 266 |
+| Vulkan, `CORDIAL_GRAPHICS=gles` | GskVulkanRenderer, left alone | 3 of 3 | 269 |
+
+The probe takes about 60 ms on a working Vulkan stack and 29 ms with no
+driver (10 runs each, a child of `cordial-run`), and `settle` waited 0 to 10 ms
+for it because it runs while the engine loads.
 
 INFERRED: that this is the reporter's cause. It reproduces their log signature
-on a second KWin with the same trigger; their GPU stack was not seen. The claim
-that a presentation time implies an attached buffer follows from the protocol
-and matches every trace here, and was not tested against a compositor that
-withholds feedback.
+on a second KWin with the same trigger; their GPU stack was not seen. Also
+INFERRED: that the editor is then *visible*. What was observed is that GTK
+presents under cairo and the restack lowers under presented frames; the
+editor is a GTK widget the engine's screenshot cannot see, and no compositor
+capture of the nested session was taken. The claim that a presentation time
+implies an attached buffer follows from the protocol and matches every trace
+here, and was not tested against a compositor that withholds feedback. That
+cairo is needed when the only Vulkan device is a CPU renderer is a choice made
+on the brief and not measured: the GL conflict was only reproduced with the
+engine on GLES.

@@ -1651,6 +1651,15 @@ enum DiskMoment {
 }
 
 fn main() -> ExitCode {
+    // What `cordial_shell::gtk_renderer` runs in a child of this binary to ask
+    // Vulkan for its devices without loading a driver into the client. First,
+    // before the profile is claimed or anything else is read: the child must
+    // not be refused the profile its parent holds, and it has no business
+    // anywhere near one.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--vulkan-probe") {
+        return ExitCode::from(cordial_shell::vulkan_probe::run_probe_mode());
+    }
+
     // Desktop GPUs without ETC2 (RADV on this host) make the engine log
     // `ETC1 0 ETC2 0` where Sober, on the same card, logs `ETC1 1 ETC2 1` and
     // `using emulated fast ETC2 support` -- and Sober's textures are the crisp
@@ -1747,6 +1756,11 @@ fn main() -> ExitCode {
     // those get asked from a support thread rather than from a terminal somebody
     // is willing to re-run with a trace variable set.
     cordial_runtime::graphics::report();
+
+    // Start asking Vulkan what it can drive, so that GTK's renderer can be
+    // chosen before the window exists. Concurrent with the load below, and
+    // collected in `wayland::open`; see `cordial_shell::gtk_renderer`.
+    cordial_shell::gtk_renderer::begin();
 
     // Before anything can resolve a path: Android's `/system`, served from a
     // directory Cordial builds out of the host's fonts. Roblox asks for

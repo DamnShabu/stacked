@@ -76,6 +76,8 @@ pub mod secrets;
 /// because the window Roblox runs in is built by `cordial-runtime`, which
 /// depends on this crate and has to read and write the same records.
 pub mod version;
+pub mod gtk_renderer;
+pub mod vulkan_probe;
 pub mod window_state;
 pub mod webview_policy;
 // Not behind `webview` for the same reason as `webview_policy`: it is plain

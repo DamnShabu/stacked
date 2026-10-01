@@ -21,6 +21,21 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Stacked picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
+
+The remaining half of #53. `cordial_shell::gtk_renderer` decides from the Vulkan
+probe, started in `cordial-run`'s `main` and collected in `wayland::open` before
+GTK realises the window, so a healthy machine waits 0-10 ms (the probe is about
+60 ms and runs while the engine loads). No loader, `vkCreateInstance` failing, no
+devices or only a CPU renderer sets `GSK_RENDERER=cairo`; a user's own value is
+never touched or probed; a probe that hangs or crashes changes nothing.
+`CORDIAL_GRAPHICS=gles` with working Vulkan is deliberately **not** a trigger:
+GTK stayed on Vulkan and presented. On the #53 reproduction (nested KWin, no
+Vulkan, `fakefocus` x3) the user-set `ngl` control lowered 0 of 3 and the
+automatic choice 3 of 3 under presented frames. **Not observed**: the editor
+being drawn, which no capture here can see; and anything on the reporter's own
+machine. See ADR-047.
+
 ## Fixed in part: the grey screen of #53 reproduces with no Vulkan, and the restack is now gated, 2026-09-30
 
 Nested KWin, `VK_ICD_FILENAMES=/nonexistent`, signed out, `fakefocus`: the engine
@@ -30,10 +45,10 @@ to the window surface again (`gdk_gl_context_make_current() failed` every 15 s,
 canvas regardless, three times out of three, over the last opaque buffer. With
 Vulkan present, or with `GSK_RENDERER=cairo`, GTK presents and nothing is wrong.
 The restack now waits for a presented GTK frame and otherwise keeps the canvas
-above; see ADR-047. **The editor is still invisible in that configuration**; the
-remaining work is choosing cairo automatically when the engine will have no
-Vulkan. This also corrects the 2026-09-23 note that forcing `repaint_now`'s miss
-did not reproduce it: that forced the timeout on a GTK that then painted late,
+above; see ADR-047. **The editor was still invisible in that configuration**;
+choosing cairo automatically was done on 2026-10-01 (entry above). This also
+corrects the 2026-09-23 note that forcing `repaint_now`'s miss did not reproduce
+it: that forced the timeout on a GTK that then painted late,
 which is not the same as a GTK that never presents. `after-paint` is not
 evidence of a commit; it fired on a frame with no attach behind it.
 

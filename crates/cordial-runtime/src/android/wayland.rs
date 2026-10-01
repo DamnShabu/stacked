@@ -1457,6 +1457,10 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // `xdg_toplevel`, draws the header bar and answers configure/ack; this
     // file's job starts at the content area and stops there. See the module
     // doc for why the engine's surface cannot live on a connection of its own.
+    // GTK reads GSK_RENDERER when the toplevel is realised, so the choice has
+    // to be made before `HostWindow` exists. It costs nothing to ask here: the
+    // probe has been running since startup.
+    cordial_shell::gtk_renderer::settle();
     cordial_shell::host_window::init_wayland()?;
     let host = cordial_shell::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
 
