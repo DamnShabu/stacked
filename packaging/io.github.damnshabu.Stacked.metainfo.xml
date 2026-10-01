@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.4" date="2026-10-01">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.4</url>
+      <description>
+        <p>
+          Fixes the client crashing when a game's Servers list, or any other
+          Roblox web page, is opened from the AppImage. Its web view could not
+          find its own helper programs.
+        </p>
+      </description>
+    </release>
     <release version="0.21.3" date="2026-10-01">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.3</url>
       <description>
