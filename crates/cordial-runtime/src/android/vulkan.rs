@@ -1713,6 +1713,24 @@ extern "C" fn vk_create_instance(
     // (see the module doc); `rewritten` outlives this call.
     let rc = unsafe { (h.create_instance)(&patched, allocator, instance_out) };
 
+    // Unconditional, once. When no driver loads, the engine is left with no
+    // device and the window an empty canvas, and before this line the log
+    // said nothing about it beyond `0 presents`. The 0.21.2 AppImage did that
+    // to every host with a recent Mesa: its bundled libwayland lacked
+    // `wl_fixes_interface`, every ICD failed to dlopen, and the loader only
+    // says so under VK_LOADER_DEBUG.
+    if rc != VK_SUCCESS {
+        static SAID: std::sync::Once = std::sync::Once::new();
+        SAID.call_once(|| {
+            println!(
+                "[android] vulkan: the host's vkCreateInstance failed ({rc}); \
+                 no Vulkan driver loaded, so nothing can be drawn with Vulkan. \
+                 VK_LOADER_DEBUG=error,driver shows why each driver was refused"
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+        });
+    }
+
     // Kept because instance-level commands cannot be reached without it:
     // `vkGetInstanceProcAddr(NULL, ...)` only answers for the three global
     // commands, and `supported_present_modes` needs one that is not among them.
