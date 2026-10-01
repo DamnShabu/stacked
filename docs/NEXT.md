@@ -4886,6 +4886,15 @@ then at each power of ten. Across both runs and every transition: not one line.
 So "the engine ignored a suboptimal swapchain" and "Cordial ate the error" are
 both off the table — there was no error to ignore or eat.
 
+**Superseded for RADV, 2026-10-01 (PR #72).** That reading was taken on Intel
+and was right of it: no suboptimal code was ever seen to *present*. On RADV the
+status arrives at *acquire*, which this section never instrumented, and the
+engine answers it with a `PRESENT_SRC_KHR` barrier on `VK_NULL_HANDLE` that the
+driver crashes on (#39). The PR's control, one variable, was returning
+`VK_SUCCESS` for the same acquire. `vkAcquireNextImageKHR` is therefore now
+interposed, only for that one code; see `vk_acquire_next_image_khr` in
+`vulkan.rs`. Not reproduced on Intel, which does not return the status.
+
 **So the three named suspects are all disproved and the bug is not reproducible
 from `gtk_window_fullscreen`.** What is left is the difference between that call
 and however the reporter fullscreens — and the one candidate with a mechanism is

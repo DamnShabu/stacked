@@ -636,8 +636,34 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
     }
 }
 
-/// The real `vkAcquireNextImageKHR`, interposed for one Roblox compatibility
-/// quirk. The driver call and image index are otherwise untouched.
+/// The real `vkAcquireNextImageKHR`, interposed for one status code and nothing
+/// else: the call, the semaphore, the fence and the image index reach the driver
+/// and come back untouched.
+///
+/// **What this changes, and what it costs.** `VK_SUBOPTIMAL_KHR` means the image
+/// was acquired and is usable, and that the swapchain could be recreated to match
+/// the surface better. On a Wayland fullscreen exit on RADV the engine was
+/// observed to answer it by recording a `PRESENT_SRC_KHR` barrier on
+/// `VK_NULL_HANDLE`, which crashed the driver (issue #39, measured by the PR
+/// author with the status as the only variable). Returning `VK_SUCCESS` for the
+/// same acquire removed the barrier. What is lost is the hint: this swapchain
+/// will not be flagged for recreation by the driver. Cordial does not need it,
+/// because every size change already reaches the engine as a new surface extent
+/// through [`settle_resize_extent`] and the engine rebuilds from that, which is
+/// the only recreation trigger that was ever observed here. `INFERRED`: that the
+/// driver's reason for the status on that machine is a compositor
+/// presentation-hint change rather than a size mismatch, which would make the
+/// lost hint a scanout optimisation and not a correctness signal; Intel's driver
+/// has not been seen to return it at all.
+///
+/// This is a downgrade between two success codes, not a stub reporting a thing
+/// that did not happen, so it stays inside AGENTS.md's rule about never making
+/// a stub lie. It is deliberately not extended to `VK_ERROR_OUT_OF_DATE_KHR`,
+/// where no image was acquired and success would be false, and the swallowed
+/// codes are counted and printed so the substitution is visible in a log
+/// ([`report_suboptimal_acquire`]). `vkAcquireNextImage2KHR` is not interposed;
+/// `INFERRED` that the engine does not resolve it, as nothing here has seen it
+/// asked for.
 static HOST_ACQUIRE_NEXT_IMAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -658,12 +684,29 @@ extern "C" fn vk_acquire_next_image_khr(
     let f: Fn_ = unsafe { std::mem::transmute(f) };
     let rc = f(device, swapchain, timeout, semaphore, fence, image_index);
 
-    // In the reproduced Wayland fullscreen failure the host returned
-    // VK_SUBOPTIMAL_KHR with a valid image index; passing that status through
-    // was immediately followed by a PRESENT_SRC_KHR barrier with
-    // VK_NULL_HANDLE. Report only this successful status as VK_SUCCESS while
-    // preserving the driver's image index. Real errors still pass through.
+    if rc == VK_SUBOPTIMAL_KHR {
+        report_suboptimal_acquire();
+    }
     normalize_acquire_result(rc)
+}
+
+/// Say that an acquire's `VK_SUBOPTIMAL_KHR` was reported to the engine as
+/// success, at the first and then at each power of ten.
+///
+/// The present path prints every non-success code it forwards; this one
+/// withholds a code, so it owes the log the same honesty. Without the line a
+/// reader of a fullscreen report could not tell a driver that never said
+/// "suboptimal" from one whose word was not passed on.
+fn report_suboptimal_acquire() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SWALLOWED: AtomicU64 = AtomicU64::new(0);
+    let n = SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
+    if is_first_or_power_of_ten(n) {
+        println!(
+            "[android] vulkan: vkAcquireNextImageKHR returned VK_SUBOPTIMAL_KHR; \
+             reported to the engine as VK_SUCCESS, {n} so far"
+        );
+    }
 }
 
 fn normalize_acquire_result(rc: i32) -> i32 {
@@ -1275,7 +1318,7 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// rather than a wrong picture.
 ///
 /// Issue #39 was isolated to `vkAcquireNextImageKHR` status handling rather
-/// than this create wrapper; see [`vk_acquire_next_image_khr`] and `docs/NEXT.md`.
+/// than this create wrapper; see [`vk_acquire_next_image_khr`].
 /// `vkDestroySwapchainKHR` remains uninterposed, and `oldSwapchain` is still
 /// forwarded unchanged here.
 ///
