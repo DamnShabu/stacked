@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.5" date="2026-10-01">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.5</url>
+      <description>
+        <p>
+          On niri, a web window such as a game's Servers list can now be
+          pointed at, clicked and scrolled. Before, the cursor stayed with the
+          game underneath it.
+        </p>
+      </description>
+    </release>
     <release version="0.21.4" date="2026-10-01">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.4</url>
       <description>

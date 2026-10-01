@@ -1,6 +1,6 @@
 pkgbase = stacked
 	pkgdesc = Roblox's official Android build, run natively on Linux -- Stacked ships no Roblox code and fetches a signature-verified one
-	pkgver = 0.21.4
+	pkgver = 0.21.5
 	pkgrel = 1
 	url = https://github.com/DamnShabu/stacked
 	install = stacked.install
@@ -41,7 +41,7 @@ pkgbase = stacked
 	conflicts = cordial-git
 	conflicts = cordial-bin
 	options = !lto
-	source = stacked::git+https://github.com/DamnShabu/stacked.git#tag=v0.21.4
+	source = stacked::git+https://github.com/DamnShabu/stacked.git#tag=v0.21.5
 	source = mcpelauncher-linker::git+https://github.com/minecraft-linux/mcpelauncher-linker.git
 	source = android_bionic::git+https://github.com/minecraft-linux/android_bionic.git
 	source = android_core::git+https://github.com/minecraft-linux/android_core.git
