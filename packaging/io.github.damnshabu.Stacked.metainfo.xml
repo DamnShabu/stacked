@@ -87,6 +87,15 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.7" date="2026-10-03">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.7</url>
+      <description>
+        <p>
+          A launcher can hide a client's window and show it again while the
+          game keeps running, at a low frame rate while hidden.
+        </p>
+      </description>
+    </release>
     <release version="0.21.6" date="2026-10-01">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.6</url>
       <description>
