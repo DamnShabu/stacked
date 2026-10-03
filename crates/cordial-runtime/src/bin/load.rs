@@ -88,7 +88,9 @@ usage: cordial-load --lib-dir <dir> [options]
                     0 means no timer: run until the window is closed or the
                     process is sent SIGTERM/SIGINT. Closing the window ends the
                     process either way — the timer is a backstop for headless
-                    and scripted runs, not the way a session is meant to end
+                    and scripted runs, not the way a session is meant to end.
+                    SIGUSR1 hides the window and SIGUSR2 shows it again; the
+                    game keeps running, at no more than 10 fps while hidden
   --dump-classes <f>  implies --jni-onload; write the Java classes Roblox asked
                     for to <f> — the observed Phase 2 backlog
   -v, --verbose     list every symbol and how it resolved

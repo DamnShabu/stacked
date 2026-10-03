@@ -1912,6 +1912,19 @@ impl HostWindow {
         }
     }
 
+    /// Unmap the window, or map it again, at a launcher's request.
+    ///
+    /// `set_visible(false)` unmaps without unrealizing: GDK keeps the
+    /// `wl_surface` and drops only its xdg role, so the engine's subsurface
+    /// survives and [`Self::wl_surface`] does not read as a closed window.
+    pub fn set_hidden(&self, on: bool) {
+        if on {
+            self.window.set_visible(false);
+        } else {
+            self.window.present();
+        }
+    }
+
     /// Where the content slot sits inside the toplevel's surface, in surface
     /// coordinates: `(x, y, width, height)`.
     ///

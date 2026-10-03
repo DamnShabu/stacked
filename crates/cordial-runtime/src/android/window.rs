@@ -51,6 +51,7 @@ struct Xlib {
         Display, Window, c_int, c_int, u32, u32, u32, c_ulong, c_ulong,
     ) -> Window,
     map_window: unsafe extern "C" fn(Display, Window) -> c_int,
+    unmap_window: unsafe extern "C" fn(Display, Window) -> c_int,
     set_wm_normal_hints: unsafe extern "C" fn(Display, Window, *mut XSizeHints),
     set_class_hint: unsafe extern "C" fn(Display, Window, *mut XClassHint) -> c_int,
     set_wm_hints: unsafe extern "C" fn(Display, Window, *mut XWMHints) -> c_int,
@@ -144,6 +145,7 @@ impl Xlib {
             default_root_window: sym!("XDefaultRootWindow"),
             create_simple_window: sym!("XCreateSimpleWindow"),
             map_window: sym!("XMapWindow"),
+            unmap_window: sym!("XUnmapWindow"),
             store_name: sym!("XStoreName"),
             flush: sym!("XFlush"),
             destroy_window: sym!("XDestroyWindow"),
@@ -1216,6 +1218,20 @@ impl HostWindow {
 
         self.release_pointer_lock();
         true
+    }
+
+    /// Unmap the window, or map it again, at a launcher's request. See
+    /// [`super::hidden`].
+    pub fn set_hidden(&self, on: bool) {
+        // SAFETY: both handles came from this struct's own creation calls.
+        unsafe {
+            if on {
+                (self.xlib.unmap_window)(self.display, self.window);
+            } else {
+                (self.xlib.map_window)(self.display, self.window);
+            }
+            (self.xlib.flush)(self.display);
+        }
     }
 
     pub fn close(&self) {

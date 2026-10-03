@@ -569,6 +569,8 @@ static HOST_QUEUE_PRESENT: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i32 {
+    // First, so the counts and pacing below see the presents that go out.
+    crate::android::hidden::pace_present();
     crate::android::glcount::QUEUE_PRESENT
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     // How evenly, not just how often. A count is a mean and a mean hides

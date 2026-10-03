@@ -6613,6 +6613,13 @@ pub fn instr_set_minimised(on: bool) {
     }
 }
 
+/// Unmap the toplevel, or map it again. See [`super::hidden`].
+pub fn set_hidden(on: bool) {
+    if let Some(w) = current() {
+        w.host.0.set_hidden(on);
+    }
+}
+
 /// Whether the window has been closed.
 ///
 /// **This is what makes closing the window end the process**, and until it

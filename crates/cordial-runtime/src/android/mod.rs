@@ -22,6 +22,7 @@ pub mod frame_pacing;
 pub mod gamepad;
 pub mod gl;
 pub mod glcount;
+pub mod hidden;
 pub mod input;
 pub mod looper;
 pub mod system;
@@ -217,6 +218,19 @@ pub fn backend_set_fullscreen(on: bool) {
     }
 }
 
+/// Unmap the window, or map it again, for the active backend. See
+/// [`hidden`] for why this is an unmap and not the compositor's minimise.
+pub fn backend_set_hidden(on: bool) {
+    match backend() {
+        Backend::Wayland => wayland::set_hidden(on),
+        Backend::X11 => {
+            if let Some(w) = window::current() {
+                w.set_hidden(on);
+            }
+        }
+    }
+}
+
 /// Close the window as the close button would, from a scripted run. See
 /// [`wayland::instr_close_window`] for why this is a fair test of the real
 /// close path and not a shortcut past it.
@@ -377,7 +391,13 @@ fn report_focus() -> bool {
 /// [`backend_focused`]. X11 answers `None`: `window.rs` tracks no visibility
 /// and a `_NET_WM_STATE_HIDDEN` reader would be a second implementation of
 /// something ADR-011 makes the fallback.
+///
+/// A window hidden by request is not visible on either backend, whatever the
+/// compositor goes on reporting about the unmapped toplevel.
 pub fn backend_visible() -> Option<bool> {
+    if hidden::is_hidden() {
+        return Some(false);
+    }
     match backend() {
         Backend::Wayland => wayland::visible(),
         Backend::X11 => None,

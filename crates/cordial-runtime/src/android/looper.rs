@@ -743,6 +743,7 @@ fn no_close_exit() -> bool {
 
 pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     install_signal_handlers();
+    super::hidden::install();
     // `--run 0` means no deadline at all: run until the window is closed or a
     // signal arrives. That is what a person playing a game wants — a session
     // should end when they end it, not when a number somebody picked runs out
@@ -850,6 +851,7 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             println!("[android] ending the run: {why}");
             break;
         }
+        super::hidden::apply();
         iters += 1;
         if instr {
             let t = start.elapsed().as_secs_f64();
@@ -1440,6 +1442,7 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     // the engine only notifies on `Set-Cookie` and a session that was restored
     // at startup and never changed would otherwise not be written back.
     crate::cookies::flush("teardown");
+    super::hidden::clear_state();
     if let Some(handle) = game_activity_handle {
         teardown(handle);
     }
