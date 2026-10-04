@@ -894,7 +894,7 @@ pub fn deliver_key(
     if no_agdk_key() {
         return;
     }
-    match cordial_linker_sys::game_activity::key(
+    let r = cordial_linker_sys::game_activity::key(
         handle,
         down,
         key_code,
@@ -904,7 +904,16 @@ pub fn deliver_key(
         unicode_char,
         event_time_ms,
         down_time_ms,
-    ) {
+    );
+    if trace_keys() {
+        let result = match &r {
+            Ok(Some(_)) => "ok".to_string(),
+            Ok(None) => "unregistered".to_string(),
+            Err(e) => format!("err:{e}"),
+        };
+        emit_key_trace("agdk", down, None, Some(key_code), meta_state, &result);
+    }
+    match r {
         Ok(Some(consumed)) => {
             super::trace(format_args!("onKey{}Native(code={key_code}) -> {consumed}",
                 if down { "Down" } else { "Up" }))
@@ -1498,6 +1507,9 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
 
     if would_suppress && !release_of_a_forwarded_press {
         track_key_held(down, evdev_code);
+        if trace_keys() {
+            emit_key_trace("native", down, Some(evdev_code), None, modifiers, "suppressed");
+        }
         if trace_text() {
             eprintln!(
                 "[cordial] pass_key_event suppressed: code={evdev_code} down={down} \
@@ -1519,11 +1531,21 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     let key_code = evdev_code;
     let f = PASS_KEY_EVENT.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
+        if trace_keys() {
+            emit_key_trace("native", down, Some(evdev_code), None, modifiers, "unregistered");
+        }
         report_unregistered("nativePassKeyEvent");
         return;
     }
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
     let r = unsafe { cordial_linker_sys::game_activity::pass_key_event(f, down, key_code, modifiers, false) };
+    if trace_keys() {
+        let result = match &r {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("err:{e}"),
+        };
+        emit_key_trace("native", down, Some(evdev_code), None, modifiers, &result);
+    }
     super::trace(format_args!(
         "nativePassKeyEvent(down={down}, keyCode={key_code}, modifiers={modifiers:#x}) -> {r:?}"
     ));
@@ -2386,6 +2408,74 @@ pub fn keyboard_report_enabled() -> bool {
 pub fn trace_text() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_TRACE_TEXT").is_some())
+}
+
+/// `CORDIAL_TRACE_KEYS=1` -- one line for every key Cordial hands to the engine,
+/// and one for every key it withholds.
+///
+/// Its own switch rather than more of `CORDIAL_TRACE_TEXT`, because that one is
+/// a text-entry trace and prints the editor's focus beside a key rather than
+/// what became of it, and the native call's result only ever went to
+/// `super::trace`, which is `CORDIAL_TRACE=1` and aborts the engine. Written for
+/// the movement bug in GitHub #29, where the question is whether W reaches
+/// `nativePassKeyEvent` in the state where the character will not move, and
+/// nothing printed an answer without also printing everything else.
+///
+/// **It records every key, including ones typed into a password box.** The
+/// evdev code of a letter is the letter. See the troubleshooting page before
+/// attaching one to an issue.
+pub fn trace_keys() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_TRACE_KEYS").is_some())
+}
+
+/// One `CORDIAL_TRACE_KEYS` line. Pure, so the format is tested rather than
+/// remembered: a reporter's paste is only evidence if the fields mean the same
+/// thing in every line.
+///
+/// `path` is `native` for `nativePassKeyEvent`, `agdk` for `onKeyDownNative`,
+/// `gate` for a key the Wayland keyboard-focus gate dropped before either.
+/// `evdev` is absent on the AGDK path, whose callers disagree about the scan
+/// code they pass (Wayland hands evdev, X11 hands evdev plus eight), so the
+/// Android keycode is what identifies the key there. `t` is milliseconds since
+/// the first key line of the run, which is zero.
+fn key_trace_line(
+    path: &str,
+    down: bool,
+    evdev: Option<i32>,
+    android: Option<i32>,
+    mods: i32,
+    result: &str,
+    held: &[i32],
+    t_ms: u128,
+) -> String {
+    let n = |v: Option<i32>| v.map_or_else(|| "-".to_string(), |v| v.to_string());
+    let held: Vec<String> = held.iter().map(|c| c.to_string()).collect();
+    format!(
+        "[cordial] key path={path} down={} evdev={} android={} mods={mods:#x} \
+         result={result} held=[{}] t={t_ms}",
+        down as u8,
+        n(evdev),
+        n(android),
+        held.join(","),
+    )
+}
+
+/// Print one key line if `CORDIAL_TRACE_KEYS` is set. Callers check
+/// [`trace_keys`] first so that building `result` costs nothing when it is off.
+fn emit_key_trace(path: &str, down: bool, evdev: Option<i32>, android: Option<i32>, mods: i32, result: &str) {
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    let t = T0.get_or_init(std::time::Instant::now).elapsed().as_millis();
+    let held = KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    eprintln!("{}", key_trace_line(path, down, evdev, android, mods, result, &held, t));
+}
+
+/// A key the Wayland focus gate dropped, for `CORDIAL_TRACE_KEYS`. Public
+/// because the gate lives in `wayland.rs`, where nothing else is told.
+pub fn trace_gated_key(down: bool, evdev: i32) {
+    if trace_keys() {
+        emit_key_trace("gate", down, Some(evdev), None, 0, "gated");
+    }
 }
 
 /// `CORDIAL_TRACE_TEXT_SHOW_PASSWORDS=1` — print what was typed, not just how
@@ -3963,4 +4053,17 @@ mod tests {
         assert!(resolved > 1000, "only {resolved} keysyms resolved; the comparison did not run");
     }
 
+    #[test]
+    fn a_key_trace_line_names_every_field() {
+        assert_eq!(
+            key_trace_line("native", true, Some(17), None, 0, "ok", &[17, 42], 1250),
+            "[cordial] key path=native down=1 evdev=17 android=- mods=0x0 \
+             result=ok held=[17,42] t=1250"
+        );
+        assert_eq!(
+            key_trace_line("agdk", false, None, Some(51), 0x1, "err:no handle", &[], 0),
+            "[cordial] key path=agdk down=0 evdev=- android=51 mods=0x1 \
+             result=err:no handle held=[] t=0"
+        );
+    }
 }

@@ -5505,6 +5505,7 @@ unsafe extern "C" fn keyboard_key(_data: *mut c_void, _kb: *mut c_void, _serial:
     // held" are different states and only the second should drop a key.
     reconcile_keyboard_focus();
     if !KEYBOARD_FOCUSED.load(Ordering::Acquire) {
+        super::input::trace_gated_key(state == 1, key as i32);
         return;
     }
     if let Some(w) = current() {
