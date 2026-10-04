@@ -92,6 +92,14 @@ it. If it stays near 60 on the 49.96 Hz output, the ceiling is the engine's own
 pacing and the display is irrelevant. `refresh.rs` notes Cordial has never told
 the engine the real refresh rate, so that is the third arm worth running.
 
+**Upstream Cordial has since measured it on NVIDIA hardware (2026-10-03), and
+a flat 60 is the engine's own frame target, not a display lock.** On a
+240.001 Hz output with input driven the whole run, the engine was told the real
+rate and still held 59.9 presents a second until `DFIntTaskSchedulerTargetFps`
+was raised past 60; at 240 it presented 216-232 a second, and MAILBOX and FIFO
+both cleared 60 with it set. In this fork that flag is `stacked config set
+fps_cap`. Not re-measured on this fork's build.
+
 **What is left is polish and broader live coverage.** Focused text fields now
 have a desktop overlay, and web views forward both bridge formats observed in
 Roblox pages. Those paths still need testing across more field types, input

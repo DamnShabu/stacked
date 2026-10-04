@@ -1502,7 +1502,7 @@ fn teardown(handle: i64) {
     {
         let finished = finished.clone();
         let limit = teardown_limit();
-        std::thread::Builder::new()
+        let watchdog = std::thread::Builder::new()
             .name("teardown-watchdog".into())
             .spawn(move || {
                 let deadline = std::time::Instant::now() + limit;
@@ -1523,8 +1523,20 @@ fn teardown(handle: i64) {
                 // SAFETY: `_exit` runs no handlers and touches no memory; the
                 // stuck thread holds nothing the kernel will not reclaim.
                 unsafe { _exit(0) }
-            })
-            .ok();
+            });
+        // **A failed spawn has to be loud, because it silences the bound.** The
+        // core of a client that froze inside this sequence for 47 minutes
+        // (upstream Cordial, 2026-10-03) held no `teardown-watchdog` thread at
+        // all, so nothing was timing the sequence out, and the `ok()` that used
+        // to answer here is the one place a reason could disappear without a
+        // word. Whether the spawn failed or the thread died is INFERRED; what
+        // is measured is that the bound was absent while the log claimed it.
+        if let Err(e) = watchdog {
+            eprintln!(
+                "[android] teardown-watchdog could not start ({e}); the engine's shutdown \
+                 sequence is unbounded in this process and a stuck one will need killing"
+            );
+        }
     }
 
     step("onWindowFocusChangedNative(false)", game_activity::window_focus(handle, false));
