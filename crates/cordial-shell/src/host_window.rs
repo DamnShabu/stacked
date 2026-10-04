@@ -458,6 +458,27 @@ fn gtk_xalign(x_alignment: i32) -> f32 {
     }
 }
 
+/// Whether `key` is an Enter the multi-line editor must not turn into a
+/// newline of its own.
+///
+/// Every Return, with any modifiers, because the modifier is not what decides
+/// it: the keyboard path forwards Shift+Return and Ctrl+Return to the engine
+/// exactly as it forwards a bare Return (`pass_key_event` only holds back
+/// character keys), so the engine has already been told, and a newline GTK
+/// inserted as well would be a second, unrequested edit of the same keypress.
+/// `CORDIAL_EDITOR_GTK_ENTER=1` gives GTK its newline back; it exists as the
+/// control that shows what the swallow changed, and is read once.
+fn owns_enter(key: gtk::gdk::Key) -> bool {
+    static GTK_ENTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    let gtk_keeps_it =
+        *GTK_ENTER.get_or_init(|| std::env::var_os("CORDIAL_EDITOR_GTK_ENTER").is_some());
+    !gtk_keeps_it
+        && matches!(
+            key,
+            gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
+        )
+}
+
 /// [`gtk_xalign`]'s counterpart for [`HostWindow::editor_multiline`]:
 /// `gtk::TextView` has no `Editable::set_alignment`, only
 /// `set_justification`, so the three points need a second mapping onto a
@@ -985,6 +1006,26 @@ impl HostWindow {
                 buf.apply_tag(&tag, &start, &end);
             });
         }
+        {
+            // Return belongs to the engine, not to this widget. In the capture
+            // phase so it runs before `GtkTextView`'s own binding, which would
+            // insert a newline: the engine already gets the raw key, and a
+            // chat box that reports `multiline=1` sends the message and
+            // empties itself on it. GTK's newline then reported "ok\n" back
+            // as an edit and overwrote that clear. See `owns_enter` for why
+            // Shift+Return goes the same way, and the Enter comment in
+            // `wayland.rs`'s key path for how the engine gets its newline back.
+            let keys = gtk::EventControllerKey::new();
+            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
+            keys.connect_key_pressed(|_, key, _, _| {
+                if owns_enter(key) {
+                    glib::Propagation::Stop
+                } else {
+                    glib::Propagation::Proceed
+                }
+            });
+            editor_multiline.add_controller(keys);
+        }
         text_layer.put(&editor_multiline_scroll, 0.0, 0.0);
 
         overlay.add_overlay(&text_layer);
@@ -1471,6 +1512,12 @@ impl HostWindow {
         if buffer.text(&start, &end, true).as_str() != overlay.text {
             self.editor_multiline_seeding.set(true);
             buffer.set_text(overlay.text);
+            // Inside the guard, as `gtk::Text`'s `set_position` is. Placed
+            // after it, the move from where `set_text` left the cursor to
+            // `overlay.caret_chars` fired the cursor signal unguarded and sent
+            // the text the engine had just pushed straight back to it.
+            let at = buffer.iter_at_offset(overlay.caret_chars.max(0));
+            buffer.place_cursor(&at);
             self.editor_multiline_seeding.set(false);
         }
         // The tag is reapplied on every text change too (see the

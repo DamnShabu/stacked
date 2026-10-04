@@ -2795,6 +2795,10 @@ impl WaylandWindow {
             }
             return;
         };
+        // Before the revision is read, because applying the engine's text is
+        // what moves it -- reading first would draw the old text for one more
+        // tick, and an engine-side clear would show a tick late.
+        super::input::apply_engine_text();
         let generation = cordial_linker_sys::game_activity::textbox_generation();
         let revision = super::input::text_buffer_revision();
         // **A missing spec is not a reason to draw nothing.**
@@ -5777,17 +5781,29 @@ impl WaylandWindow {
         // is no longer the authority -- which is what the comment above wanted
         // and could not have until something else was willing to own it.
         //
-        // **This is also why Enter needs no special case for a multi-line
-        // box.** `gtk::TextView`'s own default key bindings insert a newline
-        // on Enter -- unlike `gtk::Text`, which is single-line and has
-        // nothing to insert it into -- and that binding runs on GDK's own
-        // keyboard object, entirely below this function, whichever widget
-        // `editor_owns_text` says is up. Nothing here decides "newline versus
-        // submit"; the widget already drew that line for free by being the
-        // right shape of widget. `pass_key_event`/`deliver_key` above still
-        // hand the engine the same raw Enter regardless, exactly as for any
-        // other key, so Roblox's own script-side `TextBox.FocusLost` handling
-        // sees it too and can still act on `EnterPressed` if a game wants to.
+        // **Enter is the one key the widget must not act on for itself.**
+        //
+        // This comment used to say Enter needed no special case, because
+        // `gtk::TextView`'s own binding inserts a newline and that was taken to
+        // be the multi-line box doing the right thing. That was only ever
+        // tested with `fakefocus`, which has no engine behind it. On a real
+        // chat box -- which reports `multiline=1` -- the engine takes the raw
+        // Enter, sends the message and empties its TextBox, while GTK, on its
+        // own keyboard object, also inserts "\n"; the widget's change signal
+        // then reported "ok\n" back and the engine's clear was overwritten.
+        // Typing on afterwards continued on a second line.
+        //
+        // So `host_window.rs` swallows Return and KP_Enter in the multi-line
+        // editor (`CORDIAL_EDITOR_GTK_ENTER=1` restores GTK's newline, which
+        // is the control for measuring this), and the engine, which already
+        // receives the raw key here, owns what Enter means. A genuinely
+        // multi-line box gets its newline back as the engine's own text
+        // through `onLuaTextBoxChangedCallback` and `input::apply_engine_text`;
+        // a chat box sends and clears the same way. INFERRED for the former:
+        // no capture holds a real multi-line box, so whether the engine
+        // inserts the newline itself is not measured. Shift+Return is treated
+        // the same, because `pass_key_event` above forwards it to the engine
+        // too -- measured, not assumed; see `tools/text-input-e2e.py`.
         //
         // **Escape and a click outside need no special case here either**, for
         // the same reason the comment above this function gives Escape: both

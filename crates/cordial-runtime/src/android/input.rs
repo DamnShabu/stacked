@@ -1703,6 +1703,9 @@ pub fn idle_keepalive() {
 }
 
 pub fn pass_text(which: i64, text: &str, cursor: i32) {
+    // Remembered before it goes, so the engine's reflection of it cannot be
+    // mistaken for its own edit -- see `apply_engine_text`.
+    echo_guard(|g| g.note_sent(text, std::time::Instant::now()));
     // The per-keystroke sync first: this is the call that actually fills the
     // field. `nativePassText` is driven alongside it for the same reason both
     // mouse paths are — the interface declares both and the cost of driving
@@ -2744,6 +2747,167 @@ pub fn adopt_editor_text(text: &str, caret: i32) {
     TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
 }
 
+// ------------------------------------------------------ engine-to-editor text
+
+/// How long a text Cordial sent is still expected to come back as an echo.
+///
+/// The engine reflects what it was told through `onLuaTextBoxChangedCallback`,
+/// and does so asynchronously, so by the time "o" comes back the user may have
+/// typed "ok". Applying that echo would put the box back a keystroke. The
+/// window is short on purpose: an entry that is never consumed (the engine does
+/// not have to echo) would otherwise swallow a later, genuine engine push of
+/// the same text -- a chat box emptied by sending is exactly an empty string
+/// the user may have sent a moment earlier by backspacing to nothing.
+const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
+/// More than a person types between two pump ticks, fewer than a paste storm.
+const ECHO_CAPACITY: usize = 8;
+
+/// Texts Cordial recently sent to the engine, for recognising the engine
+/// reflecting them back.
+///
+/// The idea is mocktail's (`RobloxTextEditor::ConsumePendingNativeEchoLocked`,
+/// Apache-2.0): a bounded list, one entry used up per echo. Not its code, and
+/// the expiry is Cordial's own addition for the reason on [`ECHO_WINDOW`].
+///
+/// Pure in time -- `now` is a parameter -- so the cases that matter (a stale
+/// echo, an expired entry, a genuine push equal to an old send) are testable
+/// without sleeping.
+#[derive(Default)]
+struct EchoGuard {
+    sent: std::collections::VecDeque<(std::time::Instant, String)>,
+}
+
+impl EchoGuard {
+    fn note_sent(&mut self, text: &str, now: std::time::Instant) {
+        self.prune(now);
+        // The editor re-sends identical state on caret moves; one entry is
+        // enough and keeps the capacity for texts that differ.
+        if self.sent.back().is_some_and(|(_, t)| t == text) {
+            return;
+        }
+        if self.sent.len() >= ECHO_CAPACITY {
+            self.sent.pop_front();
+        }
+        self.sent.push_back((now, text.to_owned()));
+    }
+
+    /// Whether `text` is the engine reflecting something Cordial sent. A match
+    /// uses up that entry *and every older one*: replies come back in order, so
+    /// if the newer echo has arrived the older was coalesced away and will not
+    /// come, and leaving it would make it eat a genuine push later.
+    fn consume_echo(&mut self, text: &str, now: std::time::Instant) -> bool {
+        self.prune(now);
+        match self.sent.iter().position(|(_, t)| t == text) {
+            Some(i) => {
+                self.sent.drain(..=i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn prune(&mut self, now: std::time::Instant) {
+        while self
+            .sent
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > ECHO_WINDOW)
+        {
+            self.sent.pop_front();
+        }
+    }
+}
+
+static SENT_ECHOES: Mutex<Option<EchoGuard>> = Mutex::new(None);
+
+fn echo_guard<R>(f: impl FnOnce(&mut EchoGuard) -> R) -> R {
+    let mut g = SENT_ECHOES.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(EchoGuard::default))
+}
+
+/// Where the caret goes when the engine rewrites a box under it.
+///
+/// The user's position is kept only when it can still mean the same thing: the
+/// new text is the old text with more on the end, and the caret was not at the
+/// end. A caret that was at the end follows the text, as it would in a field
+/// something is appending to; anything else is a different string, and "after
+/// the last character" is the one position that is never out of range. Counts
+/// are characters, not bytes.
+fn caret_after_engine_text(old: &str, old_caret: usize, new: &str) -> usize {
+    let new_len = new.chars().count();
+    let old_len = old.chars().count();
+    if !old.is_empty() && new.starts_with(old) && old_caret < old_len {
+        old_caret.min(new_len)
+    } else {
+        new_len
+    }
+}
+
+/// Apply the text `onLuaTextBoxChangedCallback` delivered to the mirror buffer,
+/// from the pump. Returns whether the buffer changed, in which case its
+/// revision has moved and the next overlay sync seeds the widget from it --
+/// under `host_window.rs`'s seeding guard, so the widget's own change signal
+/// does not echo the engine's text back at it as a keystroke.
+///
+/// **The engine's text wins over what is in the box, and that is the point.**
+/// The case this exists for is a chat box: Enter makes the engine send the
+/// message and empty its own TextBox, and until this ran the editor went on
+/// showing the sent text. Two things stop it winning when it should not: a text
+/// equal to one Cordial just sent is the engine reflecting it (see
+/// [`EchoGuard`]), and a push tagged with a previous box's focus generation was
+/// meant for a box that is gone.
+///
+/// Deliberately does not call `text_input` to refresh AGDK's own copy: that is
+/// an inbound event the engine acts on, and sending one in response to the
+/// engine's own push is the kind of loop `keyboard_report_enabled` documents.
+/// The next keystroke carries the full text and brings AGDK's copy level.
+pub fn apply_engine_text() -> bool {
+    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let generation = cordial_linker_sys::game_activity::engine_text_generation();
+    if SEEN.swap(generation, Ordering::AcqRel) == generation {
+        return false;
+    }
+    if cordial_linker_sys::game_activity::focused_textbox().is_none() {
+        return false;
+    }
+    let (text, arrived_under) = cordial_linker_sys::game_activity::engine_text();
+    if arrived_under != cordial_linker_sys::game_activity::textbox_generation() {
+        if trace_text() {
+            eprintln!("[cordial] engine text dropped: it was for a previous box");
+        }
+        return false;
+    }
+    let mut buf = TEXT_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    // Seeded first, so "differs from what the box holds" compares against this
+    // focus's text and not the previous box's.
+    reseed_if_needed(&mut buf);
+    // Echo first, even when the text also equals what the box holds -- the
+    // common case, one keystroke and its reflection -- so the entry is used up
+    // rather than left to swallow a genuine push of the same text later.
+    if echo_guard(|g| g.consume_echo(&text, std::time::Instant::now())) {
+        if trace_text() {
+            eprintln!("[cordial] engine text is an echo of what was sent, ignored");
+        }
+        return false;
+    }
+    if buf.text == text {
+        return false;
+    }
+    let caret = caret_after_engine_text(&buf.text, buf.caret, &text);
+    if trace_text() {
+        // Lengths only; see `trace_text_contents`.
+        eprintln!(
+            "[cordial] engine text applied: {} -> {} chars, caret {} -> {caret}",
+            buf.text.chars().count(),
+            text.chars().count(),
+            buf.caret
+        );
+    }
+    buf.text = text;
+    buf.caret = caret;
+    TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+    true
+}
+
 // ------------------------------------------------------------ scripted input
 //
 // A click and a keystroke Cordial delivers to itself, for the experiments the
@@ -2912,6 +3076,101 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn at(ms: u64, base: std::time::Instant) -> std::time::Instant {
+        base + std::time::Duration::from_millis(ms)
+    }
+
+    /// The reflection of a keystroke is recognised once, and only once.
+    #[test]
+    fn an_echo_of_what_was_sent_is_recognised_exactly_once() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("ok", t0);
+        assert!(g.consume_echo("ok", at(20, t0)));
+        assert!(!g.consume_echo("ok", at(30, t0)), "an echo is used up by the first match");
+    }
+
+    /// "o" comes back after "ok" was typed: still an echo, and it must not be
+    /// applied, or the box goes back a keystroke.
+    #[test]
+    fn a_stale_echo_of_an_earlier_keystroke_is_still_an_echo() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("o", t0);
+        g.note_sent("ok", at(60, t0));
+        assert!(g.consume_echo("o", at(90, t0)));
+        assert!(g.consume_echo("ok", at(100, t0)));
+    }
+
+    /// Matching the newer echo retires the older one, which was coalesced away
+    /// and would otherwise sit there to eat a genuine push.
+    #[test]
+    fn a_newer_echo_retires_older_unreturned_ones() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("o", t0);
+        g.note_sent("ok", at(60, t0));
+        assert!(g.consume_echo("ok", at(90, t0)));
+        assert!(!g.consume_echo("o", at(95, t0)));
+    }
+
+    /// The chat-box case: the user backspaced to nothing a moment ago, so ""
+    /// is in the guard, and the engine clearing the box after Enter is the same
+    /// string. Genuine only once the entry has expired -- the window is the
+    /// whole mitigation, so it is pinned.
+    #[test]
+    fn a_push_equal_to_an_old_send_is_genuine_once_the_entry_expires() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("", t0);
+        assert!(!g.consume_echo("x", at(10, t0)), "text never sent is never an echo");
+        assert!(!g.consume_echo("", at(1500, t0)), "expired entries do not match");
+    }
+
+    #[test]
+    fn the_guard_is_bounded_and_drops_the_oldest() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        for i in 0..(ECHO_CAPACITY + 3) {
+            g.note_sent(&i.to_string(), at(i as u64, t0));
+        }
+        assert!(!g.consume_echo("0", at(50, t0)));
+        assert!(g.consume_echo(&(ECHO_CAPACITY + 2).to_string(), at(50, t0)));
+    }
+
+    #[test]
+    fn a_caret_move_that_resends_identical_text_takes_one_entry() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        for i in 0..20 {
+            g.note_sent("same", at(i, t0));
+        }
+        g.note_sent("other", at(30, t0));
+        assert!(g.consume_echo("same", at(40, t0)));
+    }
+
+    #[test]
+    fn the_caret_follows_text_it_was_at_the_end_of() {
+        assert_eq!(caret_after_engine_text("ok", 2, "okay"), 4);
+    }
+
+    #[test]
+    fn a_mid_text_caret_survives_a_pure_extension() {
+        assert_eq!(caret_after_engine_text("ab", 1, "abc"), 1);
+    }
+
+    #[test]
+    fn a_rewrite_puts_the_caret_at_the_end_in_characters() {
+        // The chat box emptied by sending.
+        assert_eq!(caret_after_engine_text("ok", 2, ""), 0);
+        // A different string: the old position means nothing in it.
+        assert_eq!(caret_after_engine_text("abc", 1, "xy"), 2);
+        // Characters, not bytes.
+        assert_eq!(caret_after_engine_text("a", 0, "h\u{e9}llo"), 5);
+        // Shrinking never leaves the caret past the end.
+        assert_eq!(caret_after_engine_text("abcdef", 5, "ab"), 2);
+    }
 
     /// The whole policy table, because the interesting cases are the ones
     /// nobody thinks about: a backend that does not know, and a window that is

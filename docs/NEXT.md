@@ -2189,16 +2189,26 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
   `"one\ntwo"` read back as `"one two"`, 7 characters, zero newlines --
   the single-line flattening path, exercised on the real Wayland widget for
   the first time.
-- Enter inserting a newline in a multi-line box, and Escape/an outside click
-  releasing focus, need no code here at all: `dispatch_key` already returns
-  before editing anything once `editor_owns_text()` is true, whichever widget
-  that is, so GDK's own keyboard object drives `gtk::TextView`'s default
-  Enter-inserts-a-newline binding the same way it drives `gtk::Text`'s lack of
-  one -- see the comment above `editor_owns_text()`'s call in
-  `crates/cordial-runtime/src/android/wayland.rs`'s `dispatch_key`.
-  `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12) are
-  still read nowhere in this codebase; that comment explains why that is
-  consistent rather than an oversight.
+- **RETRACTED, 2026-10-04: "Enter inserting a newline in a multi-line box
+  needs no code here at all."** That was written from `fakefocus`, which has
+  no engine behind it. A real chat box ("Say something") reports
+  `multiline=1`; Enter reaches the engine as a raw key, which sends the
+  message and empties its TextBox, while GDK's own keyboard object also drove
+  `gtk::TextView`'s Enter-inserts-a-newline binding. The widget's change
+  signal then reported `"ok\n"` back and overwrote the engine's clear, so the
+  box kept the sent text and further typing continued on a second line. Two
+  changes, both in `host_window.rs`/`input.rs`: the multi-line editor now
+  swallows Return, KP_Enter and ISO_Enter in the capture phase (`owns_enter`;
+  `CORDIAL_EDITOR_GTK_ENTER=1` restores GTK's newline, as the control), and
+  `onLuaTextBoxChangedCallback` -- a deliberate no-op until now -- delivers the
+  engine's text to the editor (`input::apply_engine_text`), so a clear shows
+  and a real multi-line box can get its newline back from the engine. Whether
+  a real multi-line box's engine inserts that newline itself is `INFERRED`:
+  no capture holds one. Escape and an outside click still need no code here:
+  both reach the engine as ordinary input and it decides whether the box
+  blurs. `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12)
+  are still read nowhere in this codebase; the comment in `dispatch_key`
+  explains why that is consistent rather than an oversight.
 
 **UNVERIFIED**: everything about a real multi-line `TextBox`'s own spec --
 whether Roblox ever actually sends `multiline=1` with a masked
@@ -3921,8 +3931,10 @@ IME. And the engine pushes text *out* during editing —
 `onLuaTextBoxChangedCallback(String)` and the no-argument
 `onLuaTextBoxPropertyChangedCallback()`, whose only sensible response is to
 re-read that geometry. A "properties changed" callback is only needed if Java is
-displaying the box. **Both are unimplemented in Cordial**
-(`docs/analysis/unresolved-java.md` §2c).
+displaying the box. **Both were unimplemented in Cordial** when this was written
+(`docs/analysis/unresolved-java.md` §2c); the property callback now bumps a
+counter the pump re-reads geometry on, and the text callback now carries the
+engine's text to the editor (`input::apply_engine_text`, 2026-10-04).
 
 So the shadow buffer was never the problem, and deleting it was never going to
 help: **the missing piece is a widget, not a message.** Cordial has to draw the

@@ -219,6 +219,20 @@ std::atomic<unsigned> g_textbox_generation{0};
 /// this box last reported may be stale" from "nothing has happened", and skip
 /// its own poll interval when it has.
 std::atomic<unsigned> g_textbox_property_generation{0};
+/// The text `onLuaTextBoxChangedCallback` last delivered, the focus generation
+/// it arrived under, and a counter that moves each time one arrives. Guarded
+/// by `g_textbox_mutex` except the counter, which is read without it so the
+/// pump can ask "has anything arrived" every tick for the price of an atomic.
+///
+/// Kept apart from `g_textbox_text`: that is `showKeyboard`'s snapshot, taken
+/// once at focus and read when a box is reseeded, and an engine push overwriting
+/// it would change what a refocus seeds from. The generation tag is what lets
+/// the consumer drop a push that was meant for the previous box, which is a
+/// real ordering -- the engine can clear a chat box on the same tick the focus
+/// moves.
+std::string g_engine_text;
+unsigned g_engine_text_focus_generation = 0;
+std::atomic<unsigned> g_engine_text_generation{0};
 
 /// Every slot, named where a name has been earned and numbered where it has
 /// not. `textColor` is printed in hex because that is the form in which it
@@ -329,6 +343,47 @@ extern "C" void cordial_textbox_property_changed() {
                 g_textbox_property_generation.load(std::memory_order_relaxed) + 1);
     }
     g_textbox_property_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+/// Called from `onLuaTextBoxChangedCallback` below, and from devctl's
+/// `enginetext` verb, which is the only way to exercise the consumer without a
+/// signed-in session. Same rule as the property callback: it arrives on an
+/// engine worker thread, so it stores and bumps a counter and touches nothing
+/// else. Applying the text to a GTK widget happens on Cordial's own pump.
+extern "C" void cordial_textbox_engine_text_changed(const char* utf8) {
+    {
+        std::lock_guard<std::mutex> lock(g_textbox_mutex);
+        g_engine_text = utf8 ? utf8 : "";
+        g_engine_text_focus_generation =
+            g_textbox_generation.load(std::memory_order_acquire);
+    }
+    if (getenv("CORDIAL_TRACE_TEXT")) {
+        // Length only: this is as often a password box as a search bar.
+        fprintf(stderr, "[cordial] engine text arrived, %zu bytes\n",
+                utf8 ? strlen(utf8) : 0);
+    }
+    g_engine_text_generation.fetch_add(1, std::memory_order_acq_rel);
+}
+
+extern "C" unsigned cordial_textbox_engine_text_generation() {
+    return g_engine_text_generation.load(std::memory_order_acquire);
+}
+
+/// Copy the engine's last pushed text into `buf` and report the focus
+/// generation it arrived under through `*focus_generation`. Returns the full
+/// byte length, which may exceed `n - 1`: the caller retries with a bigger
+/// buffer rather than this truncating a box's contents silently.
+extern "C" int cordial_textbox_engine_text(char* buf, int n,
+                                           unsigned* focus_generation) {
+    std::lock_guard<std::mutex> lock(g_textbox_mutex);
+    if (focus_generation) *focus_generation = g_engine_text_focus_generation;
+    const int full = static_cast<int>(g_engine_text.size());
+    if (buf && n > 0) {
+        const int len = full > n - 1 ? n - 1 : full;
+        memcpy(buf, g_engine_text.data(), static_cast<size_t>(len));
+        buf[len] = '\0';
+    }
+    return full;
 }
 
 /// How many times the engine has said a place finished loading, and which one.
@@ -885,15 +940,28 @@ public:
     // no-op: a box that resizes or restyles mid-edit previously only refreshed
     // on `WaylandWindow::polled_textbox_info`'s 100ms poll.
     //
-    // `onLuaTextBoxChangedCallback(String)` stays a no-op deliberately.
-    // Writing engine-pushed text into a GTK `TextBuffer` the user may be
-    // actively typing into needs to guard against the widget's own
-    // `connect_editor_changed` echoing it straight back as a keystroke, decide
-    // whose edit wins when the two disagree, and preserve the caret and
-    // selection through the write — none of which exists yet. See
-    // `host_window.rs`'s note on `connect_editor_changed` for why a careless
-    // write there is worse than the stale text this leaves in place.
-    static void onLuaTextBoxChangedCallback(ENV*, Class*, std::shared_ptr<String>) {}
+    // `onLuaTextBoxChangedCallback(String)` hands the engine's text to the
+    // editor, and it was a no-op until it had somewhere safe to put it.
+    //
+    // What was missing is listed in the old version of this comment: a guard
+    // so the widget's own change signal does not echo the write straight back
+    // as a keystroke, a rule for whose edit wins, and a caret. All three now
+    // live on the pump side (`input::apply_engine_text`, under
+    // `host_window.rs`'s seeding guard); this only carries the string across,
+    // because it arrives on an engine worker thread -- see the property
+    // callback below for the measurement -- where no GTK call is allowed.
+    //
+    // The gap showed as a chat box that kept "ok" after Enter had sent it: the
+    // engine cleared its own TextBox, and the clear was never shown, so the
+    // next keystroke built on the stale text and sent it back.
+    //
+    // Idea, not code, from mocktail's `RobloxTextEditor::
+    // ReplaceFocusedTextFromEngine` (Apache-2.0): treat this callback as
+    // authoritative, and recognise the engine reflecting text Cordial itself
+    // just sent.
+    static void onLuaTextBoxChangedCallback(ENV*, Class*, std::shared_ptr<String> text) {
+        cordial_textbox_engine_text_changed(text ? text->c_str() : "");
+    }
     // Does not arrive on Cordial's GTK main loop, or even on the engine's
     // main thread -- confirmed 2026-09-16 by logging `gettid()` and the
     // calling thread's `pthread_getname_np` name under `CORDIAL_TRACE_TEXT=1`

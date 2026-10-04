@@ -279,6 +279,21 @@ fn handle(line: &str) -> String {
             cordial_linker_sys::game_activity::test_blur_textbox();
             "ok fakeblur".into()
         }
+        // `enginetext <text>` -- deliver `text` through the entry point
+        // `onLuaTextBoxChangedCallback` uses, as the engine would when it
+        // rewrites the focused box (a chat box emptied by sending).
+        //
+        // **Synthetic, and a reading taken through it must say so.** It proves
+        // the pump side -- echo guard, mirror, widget seeding, caret -- does
+        // what it should with a push; it says nothing about what a real engine
+        // sends or when. The reply echoes the byte count only, never the text.
+        // An empty payload is meaningful (it is the chat-box clear), which is
+        // why the text is whatever follows the verb rather than a token.
+        "enginetext" => {
+            let rest = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            cordial_linker_sys::game_activity::test_engine_text(rest);
+            format!("ok enginetext synthetic bytes={}", rest.len())
+        }
         // `natives <class>` -- what the engine registered on a Java class, as
         // opposed to what it exported. See `registered_natives`' own doc for
         // the weeks-old wrong conclusion this exists to settle.

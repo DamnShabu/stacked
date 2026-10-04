@@ -242,6 +242,13 @@ def main():
     ap.add_argument("--profile", default="default",
                     help="a signed-in profile; must not be one another client holds")
     ap.add_argument("--keep", action="store_true", help="leave the client and compositor up")
+    ap.add_argument("--only-engine-text", action="store_true",
+                    help="run only the Enter and engine-text cases (sections 15-17), which "
+                         "use a synthetic focused box and need no real one")
+    ap.add_argument("--control", action="store_true",
+                    help="start the client with CORDIAL_EDITOR_GTK_ENTER=1, which gives GTK's "
+                         "own newline on Enter back; section 15 then expects it, so the same "
+                         "assertion shows what swallowing Return changed")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     args = ap.parse_args()
@@ -301,6 +308,8 @@ def main():
             # /tmp and is not something to paste into an issue.
             CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
         )
+        if args.control:
+            env["CORDIAL_EDITOR_GTK_ENTER"] = "1"
         log = open(log_path, "w")
         client = subprocess.Popen(
             [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
@@ -354,7 +363,10 @@ def main():
             sys.exit(f"SKIPPED: this launch hit the startup freeze -- presents stuck at "
                      f"{first}. That is docs/NEXT.md §0 and not a text-entry result. "
                      f"Run it again; it is about a third of launches.")
-        run_cases(case, dev, kbd, ptr, log_path, args, display)
+        if args.only_engine_text:
+            run_enter_and_engine_text(case, dev, kbd, log_path, args.control)
+        else:
+            run_cases(case, dev, kbd, ptr, log_path, args, display)
     finally:
         if not args.keep:
             for h in (kbd, ptr):
@@ -434,6 +446,230 @@ def focus_box(case, dev, tries=5, geometry_timeout=4.0):
     box = dev.textbox()
     box["geometry_wait"] = None
     return box
+
+
+def wait_for(dev, pred, timeout=3.0):
+    """Poll the `textbox` readback until `pred` holds, and return the last reading.
+
+    The pump applies an engine push and seeds the widget on its own tick, so
+    asserting immediately reads the state before the thing under test has
+    happened. Returns the last reading either way; the caller's assertion is
+    what fails, not this.
+    """
+    last = None
+    end = time.time() + timeout
+    while time.time() < end:
+        last = dev.textbox()
+        if pred(last):
+            return last
+        time.sleep(0.05)
+    return last
+
+
+def fake_box(dev, text=""):
+    """Focus a synthetic multi-line box and wait for the editor to be on it.
+
+    **Every reading taken in a box made here is SYNTHETIC.** `fakefocus` is
+    the engine-side focus path with nothing behind it: it shows what the GTK
+    editor does with a `multiline=1` spec, and says nothing about what a real
+    chat box sends. A fresh blur first, so no case inherits the previous one's
+    text, caret or echo history.
+    """
+    dev.send("fakeblur")
+    time.sleep(0.6)
+    dev.send(f"fakefocus 1 300 300 400 120 {text}")
+    box = wait_for(dev, lambda b: b["focus"] != "none" and b["x"] != "none"
+                   and float(b["w"]) > 0, timeout=5.0)
+    # Placed is not focused: GTK takes keyboard focus a pump tick later, and a
+    # key sent before it lands on nothing.
+    time.sleep(1.0)
+    return box
+
+
+def run_enter_and_engine_text(case, dev, kbd, log_path, control):
+    """Sections 15-17: Enter in a multi-line editor, engine-to-editor text, and the single-line editor.
+
+    Everything here runs in a SYNTHETIC multi-line box (`fakefocus`) and the
+    engine's push is synthetic too (`enginetext`, the same entry point
+    `onLuaTextBoxChangedCallback` uses). That is as far as a signed-out
+    session reaches: a real chat box sending and clearing needs an account.
+    """
+    def type_(s):
+        kbd.cmd(f"type {s}")
+
+    def key(k):
+        kbd.cmd(f"key {k}")
+
+    def log():
+        return open(log_path, errors="replace").read()
+
+    enters = lambda: re.findall(r"pass_key_event down=true code=28 mods=(0x[0-9a-f]+)", log())
+
+    print("\n-- 15. Return in a multi-line editor (SYNTHETIC box)"
+          + ("  [CONTROL: CORDIAL_EDITOR_GTK_ENTER=1]" if control else ""))
+    fake_box(dev)
+    type_("ok")
+    s = wait_for(dev, lambda b: b["chars"] == 2)
+    case.check("typed 'ok' into the multi-line editor", s["text"], "ok")
+    before = len(enters())
+    key("Return")
+    time.sleep(0.8)
+    s = dev.textbox()
+    want_text, want_chars = ("ok\n", 3) if control else ("ok", 2)
+    case.check("text after Return" + (" (control: GTK inserts its own newline)" if control else ""),
+               s["text"], want_text)
+    case.check("characters after Return", s["chars"], want_chars)
+    got = enters()
+    case.check("the engine was handed the raw Return", len(got) - before, 1)
+    case.check("a bare Return carries no modifiers", got[-1] if got else None, "0x0")
+
+    fake_box(dev)
+    type_("ok")
+    wait_for(dev, lambda b: b["chars"] == 2)
+    before = len(enters())
+    key("shift+Return")
+    time.sleep(0.8)
+    s = dev.textbox()
+    case.check("text after Shift+Return" + (" (control)" if control else ""),
+               s["text"], want_text)
+    got = enters()
+    case.check("the engine was handed Shift+Return as well", len(got) - before, 1)
+    case.note("modifiers the engine received with Shift+Return", got[-1] if got else None)
+    case.check("Shift+Return reached the engine with a modifier set",
+               bool(got) and got[-1] != "0x0", True)
+
+    print("\n-- 16. the engine's text reaches the editor (SYNTHETIC push)")
+    # The pre-fix symptom, with no push: the engine cleared its box and the
+    # editor was never told. Typing on builds on the stale text.
+    fake_box(dev)
+    type_("ok")
+    wait_for(dev, lambda b: b["chars"] == 2)
+    key("Return")
+    time.sleep(0.6)
+    type_("x")
+    s = wait_for(dev, lambda b: "x" in (b["text"] or ""))
+    case.note("CONTROL (no engine push, the old behaviour)", f"text after 'ok', Return, 'x': {s['text']!r}")
+    case.check("control: without a push the editor still holds the sent text",
+               (s["text"] or "").replace("\n", "") , "okx")
+
+    fake_box(dev)
+    type_("ok")
+    wait_for(dev, lambda b: b["chars"] == 2)
+    key("Return")
+    time.sleep(0.6)
+    rev = dev.textbox()["rev"]
+    dev.send("enginetext ")
+    s = wait_for(dev, lambda b: b["rev"] != rev and b["chars"] == 0)
+    case.check("an engine-side clear empties the editor mirror", (s["text"], s["chars"], s["caret"]),
+               ("", 0, 0))
+    type_("x")
+    s = wait_for(dev, lambda b: b["chars"] >= 1)
+    case.check("the next keystroke builds on the engine's text, not the stale one",
+               s["text"], "x")
+
+    fake_box(dev)
+    dev.send("enginetext hello")
+    s = wait_for(dev, lambda b: b["chars"] == 5)
+    case.check("engine text arrives in the box", (s["text"], s["caret"]), ("hello", 5))
+    type_("Z")
+    s = wait_for(dev, lambda b: b["chars"] == 6)
+    case.check("the widget really holds the engine's text (typing builds on it)",
+               s["text"], "helloZ")
+
+    # A stale echo: "ab" was typed, so "a" is the engine reflecting the first
+    # keystroke. Applying it would put the box back a character.
+    fake_box(dev)
+    type_("ab")
+    wait_for(dev, lambda b: b["chars"] == 2)
+    rev = dev.textbox()["rev"]
+    dev.send("enginetext a")
+    time.sleep(0.8)
+    s = dev.textbox()
+    case.check("an echo of an earlier keystroke is ignored", (s["text"], s["rev"]), ("ab", rev))
+    # Same push once the entry has expired: now it is the engine's own edit.
+    time.sleep(1.3)
+    dev.send("enginetext a")
+    s = wait_for(dev, lambda b: b["rev"] != rev)
+    case.check("the same text after the echo window is applied", s["text"], "a")
+
+    # Caret: kept when the new text only adds to the end of what was there and
+    # the caret was not at the end.
+    fake_box(dev)
+    type_("ab")
+    wait_for(dev, lambda b: b["chars"] == 2)
+    key("Left")
+    wait_for(dev, lambda b: b["caret"] == 1)
+    dev.send("enginetext abc")
+    s = wait_for(dev, lambda b: b["chars"] == 3)
+    case.check("a pure extension keeps a mid-text caret", (s["text"], s["caret"]), ("abc", 1))
+    type_("Q")
+    s = wait_for(dev, lambda b: b["chars"] == 4)
+    case.check("the widget's caret was placed there too", s["text"], "aQbc")
+
+    fake_box(dev)
+    type_("abc")
+    wait_for(dev, lambda b: b["chars"] == 3)
+    key("Left")
+    dev.send("enginetext xy")
+    s = wait_for(dev, lambda b: b["text"] == "xy")
+    case.check("a rewrite puts the caret at the end", (s["text"], s["caret"]), ("xy", 2))
+    type_("!")
+    s = wait_for(dev, lambda b: b["chars"] == 3)
+    case.check("and the widget agrees", s["text"], "xy!")
+    print("\n-- 17. the single-line editor is unchanged (SYNTHETIC box, multiline=0)")
+    # Sections 3-8 and 10 of this file, replayed in a synthetic single-line box.
+    # They are the cases that assert the double-insert guard, caret placement and
+    # selection on the `gtk::Text` widget this change did not mean to touch;
+    # section 1's focus needs the signed-in Home search bar and cannot run on a
+    # signed-out profile, so these stand in for 3-8 and 10 there.
+    dev.send("fakeblur")
+    time.sleep(0.6)
+    dev.send("fakefocus 0 300 300 400 40")
+    wait_for(dev, lambda b: b["focus"] != "none" and b["x"] != "none"
+             and float(b["w"]) > 0, timeout=5.0)
+    time.sleep(1.0)
+    type_("hello")
+    s = wait_for(dev, lambda b: b["chars"] == 5)
+    case.check("single-line: text and caret after typing 'hello'", (s["text"], s["caret"]), ("hello", 5))
+    key("BackSpace")
+    s = wait_for(dev, lambda b: b["chars"] == 4)
+    case.check("single-line: backspace", (s["text"], s["caret"]), ("hell", 4))
+    key("Home")
+    type_("X")
+    s = wait_for(dev, lambda b: b["chars"] == 5)
+    case.check("single-line: insertion at the caret", (s["text"], s["caret"]), ("Xhell", 1))
+    key("End")
+    type_("!")
+    s = wait_for(dev, lambda b: b["chars"] == 6)
+    case.check("single-line: append", s["text"], "Xhell!")
+    key("shift+Left"); key("shift+Left")
+    type_("?")
+    s = wait_for(dev, lambda b: b["text"] == "Xhel?")
+    case.check("single-line: a selection is replaced", (s["text"], s["caret"]), ("Xhel?", 5))
+    key("ctrl+a")
+    type_("abcdefgh")
+    s = wait_for(dev, lambda b: b["text"] == "abcdefgh")
+    case.check("single-line: select all, overtype", (s["text"], s["caret"]), ("abcdefgh", 8))
+    key("ctrl+a"); key("ctrl+c"); key("End"); key("ctrl+v")
+    s = wait_for(dev, lambda b: b["chars"] == 16, timeout=4.0)
+    case.check("single-line: paste appends the copy once", s["text"], "abcdefghabcdefgh")
+    before = len(enters())
+    key("Return")
+    time.sleep(0.8)
+    s = dev.textbox()
+    case.check("single-line: Return inserts nothing (gtk::Text has no newline to insert)",
+               s["text"], "abcdefghabcdefgh")
+    case.check("single-line: the engine still got the raw Return", len(enters()) - before, 1)
+    # And the engine's push reaches this widget as well.
+    dev.send("enginetext cleared")
+    s = wait_for(dev, lambda b: b["text"] == "cleared")
+    case.check("single-line: an engine push replaces the text", (s["text"], s["caret"]), ("cleared", 7))
+    type_("!")
+    s = wait_for(dev, lambda b: b["chars"] == 8)
+    case.check("single-line: typing builds on the pushed text", s["text"], "cleared!")
+
+    dev.send("fakeblur")
+    time.sleep(0.6)
 
 
 def run_cases(case, dev, kbd, ptr, log_path, args, display):
@@ -679,6 +915,8 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
         in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
                f"swaymsg output HEADLESS-1 mode {args.width}x{args.height}")
         time.sleep(2.0)
+
+    run_enter_and_engine_text(case, dev, kbd, log_path, args.control)
 
     print("\n-- 12b. with no box focused, keys reach the game again")
     # Everything after this mark is deliberately sent with nothing focused, so

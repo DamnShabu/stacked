@@ -2296,6 +2296,11 @@ pub mod game_activity {
         fn cordial_textbox_generation() -> c_int;
         fn cordial_textbox_property_generation() -> c_int;
         fn cordial_textbox_text(buf: *mut c_char, n: c_int) -> c_int;
+        fn cordial_textbox_engine_text_generation() -> c_int;
+        fn cordial_textbox_engine_text(
+            buf: *mut c_char, n: c_int, focus_generation: *mut u32,
+        ) -> c_int;
+        fn cordial_textbox_engine_text_changed(utf8: *const c_char);
         fn cordial_registered_natives(
             class_name: *const c_char, out: *mut c_char, n: usize,
         ) -> c_int;
@@ -2643,6 +2648,57 @@ pub mod game_activity {
             return String::new();
         }
         String::from_utf8_lossy(&buf[..n as usize]).into_owned()
+    }
+
+    /// Moves each time `onLuaTextBoxChangedCallback` delivers text. A third
+    /// counter beside [`textbox_generation`] (focus changed) and
+    /// [`textbox_property_generation`] (geometry or style changed): this one
+    /// means "the engine has said what the box now contains".
+    pub fn engine_text_generation() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_textbox_engine_text_generation() as u32 }
+    }
+
+    /// What the engine last pushed through `onLuaTextBoxChangedCallback`, and
+    /// the [`textbox_generation`] that was current when it arrived. A caller
+    /// that finds the second no longer equals the first is holding text meant
+    /// for a box that has since lost focus.
+    pub fn engine_text() -> (String, u32) {
+        let mut buf = vec![0u8; 4096];
+        let mut focus_generation: u32 = 0;
+        loop {
+            // SAFETY: `buf` is writable for its full length and
+            // `focus_generation` is a live out-parameter.
+            let full = unsafe {
+                cordial_textbox_engine_text(
+                    buf.as_mut_ptr() as *mut c_char,
+                    buf.len() as c_int,
+                    &mut focus_generation,
+                )
+            };
+            if full < 0 {
+                return (String::new(), focus_generation);
+            }
+            if (full as usize) < buf.len() {
+                let text = String::from_utf8_lossy(&buf[..full as usize]).into_owned();
+                return (text, focus_generation);
+            }
+            buf = vec![0u8; full as usize + 1];
+        }
+    }
+
+    /// Deliver `text` exactly as `onLuaTextBoxChangedCallback` does -- for
+    /// devctl's `enginetext` verb.
+    ///
+    /// **Test-only, and the engine never calls this.** A real engine-side
+    /// clear (a chat box emptied by sending) needs a signed-in session to
+    /// produce; this is the same entry point the callback uses, so the pump
+    /// side can be exercised without one. Anything measured through it is
+    /// synthetic and must be reported as such.
+    pub fn test_engine_text(text: &str) {
+        let text = CString::new(text.replace('\0', "")).unwrap_or_default();
+        // SAFETY: `text` outlives the call, which copies it.
+        unsafe { cordial_textbox_engine_text_changed(text.as_ptr()) }
     }
 
     /// Re-drive `onSurfaceChangedNative` after the host window is resized.
