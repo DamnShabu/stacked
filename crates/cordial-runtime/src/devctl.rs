@@ -245,7 +245,8 @@ fn handle(line: &str) -> String {
                     // A handle no real engine build has ever assigned to
                     // anything Cordial has captured -- see the caveat above
                     // about not overlapping this with a real focus.
-                    const SYNTHETIC_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
+                    const SYNTHETIC_HANDLE: i64 =
+                        cordial_linker_sys::game_activity::SYNTHETIC_TEXTBOX_HANDLE;
                     let info = cordial_linker_sys::game_activity::RawTextBoxInfo {
                         x, y, width: w, height: h,
                         font_size: 16.0,
@@ -480,12 +481,13 @@ fn textbox_line() -> String {
         .map(|(x, y, w, h, src)| format!(" x={x} y={y} w={w} h={h} placed={src}"))
         .unwrap_or_else(|| " x=none y=none w=none h=none placed=none".into());
     format!(
-        "ok focus={} gen={} rev={} chars={} bytes={} caret={caret}{geometry}{} text={}",
+        "ok focus={} gen={} rev={} chars={} bytes={} caret={caret} returns={}{geometry}{} text={}",
         focus.map(|h| h.to_string()).unwrap_or_else(|| "none".into()),
         cordial_linker_sys::game_activity::textbox_generation(),
         crate::android::input::text_buffer_revision(),
         text.chars().count(),
         text.len(),
+        crate::android::input::return_pressed_calls(),
         textbox_font_fields(),
         crate::android::input::redacted(&text),
     )

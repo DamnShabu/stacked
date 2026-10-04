@@ -1942,6 +1942,22 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         }
     });
 
+    // **Enter on a single-line box, which is an editor action rather than text.**
+    //
+    // GTK's `activate` is Android's IME action listener: the final text goes
+    // to the engine first, then the engine is told Enter was pressed on this
+    // box. What follows -- focus released through `hideKeyboard`, the text
+    // cleared or kept through `onLuaTextBoxChangedCallback` -- is the
+    // engine's answer, and nothing here second-guesses it. A multi-line box
+    // never reaches this: its Enter is a newline GTK inserts and
+    // `connect_editor_changed` above syncs like any other edit.
+    host.host.0.connect_editor_activate(|| {
+        let Some(w) = WINDOW.get() else { return };
+        let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else { return };
+        w.send_current_text(which);
+        super::input::return_pressed(which);
+    });
+
     // Listeners that dereference `current()` can only be installed now.
     unsafe {
         if !pointer.is_null() {
@@ -5699,9 +5715,18 @@ impl WaylandWindow {
         // no F5 and no F11 at all. The `else` branch did say so on every press
         // -- `wayland: unmapped keysym` -- but it is a trace line, and the
         // greps that were run looked for `passKeyEvent`.
+        //
+        // **Enter is decided once, before either path.** While the editor
+        // widget is on a box it is Android's `EditText` here, and an
+        // `EditText` consumes the key: a multi-line box gets its newline from
+        // GTK and a single-line one gets `nativeReturnPressedFromOnScreenKeyboard`
+        // (see `connect_editor_activate`), and neither also hears a raw key.
+        let enter_to_editor = super::input::editor_consumes_enter(down, evdev_key as i32);
         if let Some(keycode) = super::input::keysym_to_android(keysym) {
             if handle != 0 {
-                super::input::deliver_key(handle, down, keycode, evdev_key as i32, meta, 0, unicode, now, now);
+                if !enter_to_editor {
+                    super::input::deliver_key(handle, down, keycode, evdev_key as i32, meta, 0, unicode, now, now);
+                }
             } else {
                 // **A mapped key with no handle went nowhere and said nothing.**
                 //
@@ -5740,7 +5765,9 @@ impl WaylandWindow {
         }
         // The evdev code, not the Android keycode: this native speaks the
         // platform's own vocabulary. See `pass_key_event`.
-        super::input::pass_key_event(down, evdev_key as i32, meta);
+        if !enter_to_editor {
+            super::input::pass_key_event(down, evdev_key as i32, meta);
+        }
 
         if !down {
             return;
@@ -5781,53 +5808,52 @@ impl WaylandWindow {
         // is no longer the authority -- which is what the comment above wanted
         // and could not have until something else was willing to own it.
         //
-        // **Enter is the one key the widget must not act on for itself.**
+        // **Enter is the editor's, as it is on Android -- and the engine's
+        // answer to it comes back through its own callbacks.**
         //
-        // This comment used to say Enter needed no special case, because
-        // `gtk::TextView`'s own binding inserts a newline and that was taken to
-        // be the multi-line box doing the right thing. That was only ever
-        // tested with `fakefocus`, which has no engine behind it. On a real
-        // chat box -- which reports `multiline=1` -- the engine takes the raw
-        // Enter, sends the message and empties its TextBox, while GTK, on its
-        // own keyboard object, also inserts "\n"; the widget's change signal
-        // then reported "ok\n" back and the engine's clear was overwritten.
-        // Typing on afterwards continued on a second line.
+        // The focused Roblox box is an `EditText` on a phone, and an
+        // `EditText` consumes Enter: nothing downstream hears a key. On a
+        // multi-line box it inserts "\n" into the text, the text is synced,
+        // and whatever happens next (a chat script that sends on seeing the
+        // newline and empties the box, or a box that simply keeps it) is the
+        // engine's, delivered through `onLuaTextBoxChangedCallback` and
+        // `input::apply_engine_text`. On a single-line box it is an editor
+        // action: the final text is synced and
+        // `nativeReturnPressedFromOnScreenKeyboard` tells the engine, which
+        // decides whether the box loses focus (`hideKeyboard`) and whether its
+        // text clears or stays -- see `connect_editor_activate`.
         //
-        // So `host_window.rs` swallows Return and KP_Enter in the multi-line
-        // editor (`CORDIAL_EDITOR_GTK_ENTER=1` restores GTK's newline, which
-        // is the control for measuring this), and the engine, which already
-        // receives the raw key here, owns what Enter means. A genuinely
-        // multi-line box gets its newline back as the engine's own text
-        // through `onLuaTextBoxChangedCallback` and `input::apply_engine_text`;
-        // a chat box sends and clears the same way. INFERRED for the former:
-        // no capture holds a real multi-line box, so whether the engine
-        // inserts the newline itself is not measured. Shift+Return is treated
-        // the same, because `pass_key_event` above forwards it to the engine
-        // too -- measured, not assumed; see `tools/text-input-e2e.py`.
+        // So `editor_consumes_enter` above keeps the raw key from the engine
+        // on both paths while a box is focused, and this file neither blurs a
+        // box nor clears the editor on Enter itself.
+        //
+        // **An earlier version swallowed Return in the multi-line widget and
+        // sent the engine the raw key instead, and that was the wrong
+        // owner.** It fixed one symptom -- GTK's newline overwriting a chat
+        // box the engine had just cleared -- by deciding in the host that a
+        // multi-line box never keeps its newline, which is the engine's
+        // decision per box, and it left single-line boxes with a key the
+        // platform never sends them. The control for both is
+        // `tools/text-input-e2e.py`'s section 15.
+        //
+        // What is INFERRED, because no signed-in run has held it: that the
+        // engine acts on `nativeReturnPressedFromOnScreenKeyboard` the way it
+        // acted on the raw key. A synthetic `fakefocus` box has no engine
+        // behind it, so it can show that the call is made once and the key is
+        // withheld; it cannot show what a chat box or a search box does next.
         //
         // **Escape and a click outside need no special case here either**, for
         // the same reason the comment above this function gives Escape: both
         // reach the engine as ordinary input (Escape through this same path,
         // an outside click through `dispatch_button`) and it is the engine's
         // `hideKeyboard`/focus-loss handling that decides whether the box
-        // blurs -- Cordial never second-guesses that decision for a
-        // single-line box today, so there is nothing to add for a multi-line
-        // one.
+        // blurs.
         //
         // **`returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo`'s slots 11
-        // and 12) are not read anywhere in this file, and that is consistent
-        // rather than an oversight.** On Android they tell the real
-        // `EditText` wrapper which IME action button to show and whether it,
-        // rather than the game, is allowed to release focus on it -- both
-        // meaningless without a soft keyboard to draw a button on. Cordial
-        // supplies neither: every key reaches the engine and no widget here
-        // ever calls `hideKeyboard` unprompted, which is the same as always
-        // deferring to the game the way `manualFocusRelease=1` would ask for.
-        // A build that changes this would need to read `return_key_type` to
-        // decide when Enter should end editing on a *single*-line box
-        // (`Enum.ReturnKeyType::Done`/`Send`, say) -- untested here because no
-        // capture in this project has yet shown Cordial itself needing to
-        // make that call.
+        // and 12) are read only to be traced, in `input::return_pressed`.** On
+        // Android they pick the IME action button and say whether the game,
+        // not the `EditText`, releases focus on it -- meaningless without a
+        // soft keyboard to draw a button on, and Cordial supplies neither.
         if self.editor_owns_text() {
             return;
         }

@@ -947,6 +947,26 @@ static PASS_TEXT: std::sync::atomic::AtomicPtr<c_void> =
 /// a different call at a different moment, not an alternative spelling of one.
 static SYNC_TEXTBOX: std::sync::atomic::AtomicPtr<c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// `nativeReturnPressedFromOnScreenKeyboard`. Stored on its own, like
+/// [`GET_TEXTBOX_INFO`], because a build that does not export it must still
+/// type: [`editor_consumes_enter`] then leaves a single-line box's Enter as the
+/// raw key it has always been, rather than withholding it for a call that
+/// cannot be made.
+static RETURN_PRESSED: std::sync::atomic::AtomicPtr<c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// How many times [`return_pressed`] has been asked to speak for a box,
+/// synthetic ones included. devctl's `textbox` reports it, because "Enter did
+/// not also reach the engine as a key" and "Enter reached it once as an editor
+/// action" are the two halves of the claim and neither is visible in the text.
+static RETURN_PRESSED_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_return_pressed_native(native: *mut c_void) {
+    RETURN_PRESSED.store(native, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn return_pressed_calls() -> u64 {
+    RETURN_PRESSED_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// `updateKeyboardSize`, the acknowledgement that an editor is up.
 static UPDATE_KEYBOARD_SIZE: std::sync::atomic::AtomicPtr<c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -1700,6 +1720,133 @@ pub fn idle_keepalive() {
     if let Some((x, y)) = mouse_last_position() {
         pass_mouse_move_delta(x, y, 0.0, 0.0);
     }
+}
+
+/// Enter on a single-line box, as an editor action.
+///
+/// On Android the box is an `EditText` and Enter never reaches the engine as a
+/// key: the IME's action listener syncs the final text and calls
+/// `nativeReturnPressedFromOnScreenKeyboard(handle)`, and the engine decides
+/// from there whether the box lets go of focus (it calls `hideKeyboard`) and
+/// whether its text clears or stays (`onLuaTextBoxChangedCallback`). This is
+/// that call and nothing more -- Cordial neither blurs the box nor clears the
+/// editor itself, because a chat box that sends and empties, a search box that
+/// submits and stays and a box that simply finishes are the engine's three
+/// answers to one keypress, and guessing between them here is how Enter came to
+/// leave a newline in a sent message.
+///
+/// The caller has already synced the text, which is what the Java side does
+/// first. `returnKeyType` and `manualFocusRelease` are read only to be traced.
+/// mocktail (Apache-2.0, `src/runtime/roblox_text_editor.cc`, `FinishLocked`)
+/// goes further after this call, and says it matches `RbxKeyboard`'s editor
+/// action listener: unless `manualFocusRelease` is set it also drives
+/// `nativePassText(handle, text, finished = true)` and closes its editor
+/// itself. INFERRED, and deliberately not done here: nothing in this project
+/// shows the Java side ending the session itself rather than the engine's
+/// `hideKeyboard` doing it, and driving `nativePassText` on a key was the thing
+/// retracted on 2026-08-24 as buying nothing. If a signed-in single-line box
+/// stays focused after Enter, that missing call, gated on
+/// `manual_focus_release`, is the first thing to try.
+///
+/// A synthetic box (devctl's `fakefocus`) is counted and traced but not sent:
+/// its handle was never issued by the engine.
+pub fn return_pressed(which: i64) {
+    let n = RETURN_PRESSED_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let synthetic = which == cordial_linker_sys::game_activity::SYNTHETIC_TEXTBOX_HANDLE;
+    if trace_text() {
+        let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+        eprintln!(
+            "[cordial] return pressed #{n} handle={which}{} multiline={} returnKeyType={} \
+             manualFocusRelease={}",
+            if synthetic { " (synthetic)" } else { "" },
+            spec.map_or(-1, |i| i.multiline),
+            spec.map_or(-1, |i| i.return_key_type),
+            spec.map_or(-1, |i| i.manual_focus_release),
+        );
+    }
+    if synthetic {
+        if trace_text() {
+            eprintln!("[cordial] nativeReturnPressedFromOnScreenKeyboard not sent: synthetic box");
+        }
+        return;
+    }
+    let f = RETURN_PRESSED.load(Ordering::Relaxed);
+    if f.is_null() {
+        report_unregistered("nativeReturnPressedFromOnScreenKeyboard");
+        return;
+    }
+    // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded; `which` is the handle `showKeyboard` issued for the focused box.
+    let r = unsafe { cordial_linker_sys::game_activity::return_pressed(f, which) };
+    if trace_text() {
+        eprintln!("[cordial] nativeReturnPressedFromOnScreenKeyboard({which}) -> {r:?}");
+    }
+}
+
+/// Whether this evdev code is an Enter key: the main one and the keypad's.
+fn evdev_is_enter(code: i32) -> bool {
+    matches!(code, 28 | 96)
+}
+
+/// Whether an Enter belongs to the editor over the focused box rather than to
+/// the engine. Pure, so the cases are tested rather than argued.
+///
+/// On Android the `EditText` consumes the key and nothing downstream hears it.
+/// A multi-line box gets its newline from the editor (GTK inserts it and the
+/// text is synced); a single-line box gets [`return_pressed`], which needs the
+/// native to exist -- without it the raw key is the only way Enter can reach
+/// the engine, so it is left alone.
+fn enter_belongs_to_editor(evdev: i32, box_focused: bool, multiline: bool, can_return: bool) -> bool {
+    evdev_is_enter(evdev) && box_focused && (multiline || can_return)
+}
+
+/// Enter keys whose press was withheld from the engine, so the release is too.
+/// The mirror of [`FORWARDED_PRESSES`], for the same stuck-key reason: a press
+/// withheld while a box had focus must not leave a release the engine never
+/// had a press for, and a press forwarded before focus must still be released.
+static WITHHELD_ENTERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// Decide, for one Enter transition arriving at the Wayland keyboard, whether
+/// the editor consumes it; `true` means it must not reach the engine by any
+/// path. Only the Wayland path asks: the X11 path has no editor widget
+/// (ADR-024), so there nothing would turn the key into text or an action.
+pub fn editor_consumes_enter(down: bool, evdev: i32) -> bool {
+    if !evdev_is_enter(evdev) || keys_to_game_while_typing() {
+        return false;
+    }
+    let consumed = if down {
+        let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+        let take = enter_belongs_to_editor(
+            evdev,
+            cordial_linker_sys::game_activity::focused_textbox().is_some(),
+            spec.is_some_and(|i| i.multiline != 0),
+            !RETURN_PRESSED.load(Ordering::Relaxed).is_null(),
+        );
+        if take {
+            let mut w = WITHHELD_ENTERS.lock().unwrap_or_else(|e| e.into_inner());
+            if !w.contains(&evdev) {
+                w.push(evdev);
+            }
+        }
+        take
+    } else {
+        let mut w = WITHHELD_ENTERS.lock().unwrap_or_else(|e| e.into_inner());
+        match w.iter().position(|&c| c == evdev) {
+            Some(i) => {
+                w.remove(i);
+                true
+            }
+            None => false,
+        }
+    };
+    if consumed {
+        if trace_keys() {
+            emit_key_trace("wayland", down, Some(evdev), None, 0, "withheld: the editor owns Enter");
+        }
+        if trace_text() {
+            eprintln!("[cordial] Enter code={evdev} down={down} withheld from the engine: the editor owns it");
+        }
+    }
+    consumed
 }
 
 pub fn pass_text(which: i64, text: &str, cursor: i32) {
@@ -3076,6 +3223,19 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Enter belongs to the editor on a multi-line box always, on a single-line
+    /// box only when the engine can be told about it, and never with no box.
+    #[test]
+    fn enter_goes_to_the_editor_only_where_something_can_act_on_it() {
+        // (evdev, box focused, multiline, native present)
+        assert!(enter_belongs_to_editor(28, true, true, false));
+        assert!(enter_belongs_to_editor(96, true, true, true));
+        assert!(enter_belongs_to_editor(28, true, false, true));
+        assert!(!enter_belongs_to_editor(28, true, false, false), "no native: the raw key is all there is");
+        assert!(!enter_belongs_to_editor(28, false, true, true), "no box, no editor");
+        assert!(!enter_belongs_to_editor(30, true, true, true), "only Enter");
+    }
 
     fn at(ms: u64, base: std::time::Instant) -> std::time::Instant {
         base + std::time::Duration::from_millis(ms)

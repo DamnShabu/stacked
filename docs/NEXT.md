@@ -2192,23 +2192,54 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
 - **RETRACTED, 2026-10-04: "Enter inserting a newline in a multi-line box
   needs no code here at all."** That was written from `fakefocus`, which has
   no engine behind it. A real chat box ("Say something") reports
-  `multiline=1`; Enter reaches the engine as a raw key, which sends the
+  `multiline=1`; Enter reached the engine as a raw key, which sends the
   message and empties its TextBox, while GDK's own keyboard object also drove
-  `gtk::TextView`'s Enter-inserts-a-newline binding. The widget's change
-  signal then reported `"ok\n"` back and overwrote the engine's clear, so the
-  box kept the sent text and further typing continued on a second line. Two
-  changes, both in `host_window.rs`/`input.rs`: the multi-line editor now
-  swallows Return, KP_Enter and ISO_Enter in the capture phase (`owns_enter`;
-  `CORDIAL_EDITOR_GTK_ENTER=1` restores GTK's newline, as the control), and
-  `onLuaTextBoxChangedCallback` -- a deliberate no-op until now -- delivers the
-  engine's text to the editor (`input::apply_engine_text`), so a clear shows
-  and a real multi-line box can get its newline back from the engine. Whether
-  a real multi-line box's engine inserts that newline itself is `INFERRED`:
-  no capture holds one. Escape and an outside click still need no code here:
-  both reach the engine as ordinary input and it decides whether the box
-  blurs. `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12)
-  are still read nowhere in this codebase; the comment in `dispatch_key`
-  explains why that is consistent rather than an oversight.
+  `gtk::TextView`'s newline binding, and the widget's change signal reported
+  `"ok\n"` back over the engine's clear.
+- **RETRACTED again, 2026-10-04: the first fix for that (swallow Return in the
+  multi-line editor, send the engine the raw key, `CORDIAL_EDITOR_GTK_ENTER`)
+  was the wrong owner.** It decided in the host that no multi-line box keeps
+  its newline, which is the engine's call per box, and it left single-line
+  boxes with a key Android never sends them. What replaced it is Android's
+  contract: the focused box is an `EditText` and consumes Enter.
+  - Multi-line: GTK inserts the newline, the text is synced like any edit, and
+    the raw key is withheld from the engine
+    (`input::editor_consumes_enter`, Wayland path only -- X11 has no editor).
+    What the engine does next arrives through `onLuaTextBoxChangedCallback`.
+  - Single-line: `gtk::Text`'s `activate` syncs the final text and calls
+    `nativeReturnPressedFromOnScreenKeyboard(handle)` (`input::return_pressed`;
+    dex prototype `(J)V`, `tools/dex_method.py` on classes2.dex), and the raw
+    key is withheld. If a build does not export the native, the raw key is left
+    alone, because it is then the only way Enter can arrive.
+  - Cordial neither blurs a box nor clears the editor on Enter. Focus and
+    clearing are the engine's, through `hideKeyboard` and the text callback.
+  - Measured, nested sway, signed out. Synthetic boxes, `tools/text-input-e2e.py
+    --only-engine-text`: 40 assertions pass; the same 40 against the old routing
+    (`--client-env` switch, since removed) fail 11, all of them the Enter ones.
+    A synthetic single-line box counts the ReturnPressed call but does not send
+    it (its handle was never issued by the engine). On the real sign-in screen,
+    Enter in the empty username field (`returnKeyType=3 manualFocusRelease=1`)
+    called the native once with the real handle (`-> Ok(())`) and the engine
+    answered by blurring that box and focusing the password field. With the old
+    raw key the same press blurred the username box and focused nothing.
+    Nothing was typed or submitted: the Sign In button is disabled while the
+    fields are empty.
+  - `INFERRED`: what a real multi-line box (a chat box) does with the newline,
+    and what a single-line box that is not the sign-in form does after
+    ReturnPressed. No capture holds either; a signed-in run is the check, with
+    `CORDIAL_TRACE_TEXT=1` and `CORDIAL_TRACE_KEYS=1` (look for `return pressed`
+    and `withheld`, then whether `textbox blurred` follows and whether
+    `engine text arrived` carries the clear). mocktail's `FinishLocked`
+    (Apache-2.0, `src/runtime/roblox_text_editor.cc`) additionally drives
+    `nativePassText(handle, text, finished=true)` and closes its own editor
+    unless `manualFocusRelease` is set, and says that mirrors `RbxKeyboard`'s
+    action listener; Cordial does not, and the sign-in measurement above needed
+    nothing more. If a signed-in box stays focused after Enter, that call gated
+    on `manual_focus_release` is the first thing to try.
+  - Escape and an outside click still need no code here: both reach the engine
+    as ordinary input and it decides whether the box blurs.
+    `returnKeyType`/`manualFocusRelease` (slots 11/12) are read only to be
+    traced, in `input::return_pressed`.
 
 **UNVERIFIED**: everything about a real multi-line `TextBox`'s own spec --
 whether Roblox ever actually sends `multiline=1` with a masked

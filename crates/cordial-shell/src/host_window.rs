@@ -284,6 +284,10 @@ pub struct HostWindow {
     /// What to tell when the user edits. Installed by the runtime, which owns
     /// the push to `syncTextboxTextAndCursorPosition2`.
     editor_changed: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>>,
+    /// Called when Enter is pressed in the single-line editor, GTK's
+    /// `activate`. Absent on the multi-line one on purpose: Enter there is a
+    /// newline in the text, not an action. See [`Self::connect_editor_activate`].
+    editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
     /// The font family the engine draws with, once the runtime has found it in
     /// the APK. `None` until then, and `None` for ever if it is not there --
     /// see [`HostWindow::set_editor_font_family`].
@@ -456,27 +460,6 @@ fn gtk_xalign(x_alignment: i32) -> f32 {
         // default, and the one value this project has actually observed.
         _ => 0.0,
     }
-}
-
-/// Whether `key` is an Enter the multi-line editor must not turn into a
-/// newline of its own.
-///
-/// Every Return, with any modifiers, because the modifier is not what decides
-/// it: the keyboard path forwards Shift+Return and Ctrl+Return to the engine
-/// exactly as it forwards a bare Return (`pass_key_event` only holds back
-/// character keys), so the engine has already been told, and a newline GTK
-/// inserted as well would be a second, unrequested edit of the same keypress.
-/// `CORDIAL_EDITOR_GTK_ENTER=1` gives GTK its newline back; it exists as the
-/// control that shows what the swallow changed, and is read once.
-fn owns_enter(key: gtk::gdk::Key) -> bool {
-    static GTK_ENTER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    let gtk_keeps_it =
-        *GTK_ENTER.get_or_init(|| std::env::var_os("CORDIAL_EDITOR_GTK_ENTER").is_some());
-    !gtk_keeps_it
-        && matches!(
-            key,
-            gtk::gdk::Key::Return | gtk::gdk::Key::KP_Enter | gtk::gdk::Key::ISO_Enter
-        )
 }
 
 /// [`gtk_xalign`]'s counterpart for [`HostWindow::editor_multiline`]:
@@ -921,6 +904,16 @@ impl HostWindow {
         let editor_changed: std::rc::Rc<
             std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>,
         > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        {
+            let sink = editor_activated.clone();
+            editor.connect_activate(move |_| {
+                if let Some(cb) = sink.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
         {
             // One closure behind an `Rc`, shared by both signals: the text and
             // the caret are one fact as far as the engine is concerned --
@@ -1006,26 +999,6 @@ impl HostWindow {
                 buf.apply_tag(&tag, &start, &end);
             });
         }
-        {
-            // Return belongs to the engine, not to this widget. In the capture
-            // phase so it runs before `GtkTextView`'s own binding, which would
-            // insert a newline: the engine already gets the raw key, and a
-            // chat box that reports `multiline=1` sends the message and
-            // empties itself on it. GTK's newline then reported "ok\n" back
-            // as an edit and overwrote that clear. See `owns_enter` for why
-            // Shift+Return goes the same way, and the Enter comment in
-            // `wayland.rs`'s key path for how the engine gets its newline back.
-            let keys = gtk::EventControllerKey::new();
-            keys.set_propagation_phase(gtk::PropagationPhase::Capture);
-            keys.connect_key_pressed(|_, key, _, _| {
-                if owns_enter(key) {
-                    glib::Propagation::Stop
-                } else {
-                    glib::Propagation::Proceed
-                }
-            });
-            editor_multiline.add_controller(keys);
-        }
         text_layer.put(&editor_multiline_scroll, 0.0, 0.0);
 
         overlay.add_overlay(&text_layer);
@@ -1070,6 +1043,7 @@ impl HostWindow {
             pointer_constrained: std::cell::Cell::new(false),
             editor_seeding,
             editor_changed,
+            editor_activated,
             editor_font_family: std::cell::RefCell::new(None),
         }
     }
@@ -1113,6 +1087,18 @@ impl HostWindow {
     /// seen yet is a caret past the end of the string it holds.
     pub fn connect_editor_changed<F: Fn(&str, i32) + 'static>(&self, f: F) {
         *self.editor_changed.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Install a callback for Enter in the single-line editor.
+    ///
+    /// This is the editor action Android's IME sends a single-line `EditText`;
+    /// the runtime owns what it means (sync the final text, tell the engine),
+    /// because the engine, not this window, decides whether the box then loses
+    /// focus or clears. The multi-line editor has no equivalent: GTK inserts
+    /// the newline into its buffer, `connect_editor_changed` reports it like
+    /// any other edit, and what the engine does with a newline is its own.
+    pub fn connect_editor_activate<F: Fn() + 'static>(&self, f: F) {
+        *self.editor_activated.borrow_mut() = Some(Box::new(f));
     }
 
     /// The development control surface's `paste`: insert `text` at the

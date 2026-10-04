@@ -2251,6 +2251,9 @@ pub mod game_activity {
             f: *mut c_void, which: i64, text: *const c_char, flag: c_int, cursor: c_int,
             err: *mut c_char, n: usize,
         ) -> c_int;
+        fn cordial_input_return_pressed(
+            f: *mut c_void, which: i64, err: *mut c_char, n: usize,
+        ) -> c_int;
         fn cordial_input_mouse_move(
             f: *mut c_void, x: f32, y: f32, dx: f32, dy: f32,
             err: *mut c_char, n: usize,
@@ -2765,6 +2768,28 @@ pub mod game_activity {
         if rc == 0 { Ok(()) } else { Err(take_err(err)) }
     }
 
+    /// `NativeGLInterface.nativeReturnPressedFromOnScreenKeyboard` -- Enter on
+    /// a single-line box, after the final text has been synced. Takes the
+    /// `showKeyboard` handle, like `nativePassText`.
+    ///
+    /// # Safety
+    ///
+    /// `native` must be a live pointer to the exported JNI native this call
+    /// names, obtained via [`Library::symbol`] (or the module-level dlsym
+    /// equivalent) against a `libroblox.so` Cordial has `dlopen`'d and never
+    /// `dlclose`s. The C shim supplies the `JNIEnv`/`jobject` from the
+    /// process's own `JavaVM`. `which` is handed to the engine unchecked, so
+    /// it must be a handle `showKeyboard` issued, never
+    /// [`SYNTHETIC_TEXTBOX_HANDLE`].
+    pub unsafe fn return_pressed(native: *mut c_void, which: i64) -> Result<(), String> {
+        let mut err = vec![0u8; 512];
+        // SAFETY: `err` outlives the call.
+        let rc = unsafe {
+            cordial_input_return_pressed(native, which, err.as_mut_ptr() as *mut c_char, err.len())
+        };
+        if rc == 0 { Ok(()) } else { Err(take_err(err)) }
+    }
+
     /// `NativeGLInterface.nativePassText` — text entered into a focused box.
     ///
     /// `which` is the handle from `showKeyboard`, which is how the engine knows
@@ -3191,6 +3216,12 @@ pub mod game_activity {
         );
         fn cordial_textbox_blurred();
     }
+
+    /// The handle devctl's `fakefocus` gives its synthetic box. No real engine
+    /// build has issued it, so nothing that takes a box handle may pass it on
+    /// to the engine: a native that looks the handle up would be handed a
+    /// number it never made.
+    pub const SYNTHETIC_TEXTBOX_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
 
     /// Synthesise a focused `NativeTextBoxInfo` exactly as the engine's own
     /// `showKeyboard`/`<init>` hook would -- for devctl's `fakefocus` verb,
