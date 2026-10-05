@@ -799,6 +799,9 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     let mut stall_reported = false;
     let mut recovery_tried = false;
     let join_watch = JOIN_REQUESTED.load(Ordering::Relaxed);
+    // Hovers owed to the engine after each game loads; see `NewGameSeed` for
+    // the measurement that puts this here (#29).
+    let mut game_seed = super::input::NewGameSeed::new();
     let join_started = std::time::Instant::now();
     let mut join_reported = false;
     let mut focus_reported: Option<bool> = Some(true);
@@ -1300,6 +1303,21 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // pump, and a socket handler is not the place to find out whether
             // they mind. A no-op unless `CORDIAL_DEV_CONTROL` was set.
             crate::devctl::apply_queued(handle);
+            // On this thread, with the other input natives: a new game's
+            // DataModel has seen no input, and the movement controls it binds
+            // at spawn depend on that. `NewGameSeed::due` is a plain counter
+            // compare on every tick, and says yes four times a second for a few
+            // seconds around each join.
+            match game_seed.due(
+                cordial_linker_sys::game_activity::experience_starts()
+                    .wrapping_add(cordial_linker_sys::game_activity::games_loaded()),
+                std::time::Instant::now(),
+            ) {
+                super::input::SeedDue::No => {}
+                due => {
+                    super::input::seed_pointer_for_new_game(due == super::input::SeedDue::First);
+                }
+            }
             // Tell the engine when the user has switched away, and when they
             // have come back.
             //

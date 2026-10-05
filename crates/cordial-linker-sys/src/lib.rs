@@ -2304,6 +2304,7 @@ pub mod game_activity {
             f: *mut c_void, out: *mut RawTextBoxInfo, err: *mut c_char, n: usize,
         ) -> c_int;
         fn cordial_games_loaded() -> u32;
+        fn cordial_experience_starts() -> u32;
         fn cordial_last_place() -> i64;
         fn cordial_game_activity_window_focus(
             handle: i64,
@@ -2546,6 +2547,14 @@ pub mod game_activity {
     pub fn games_loaded() -> u32 {
         // SAFETY: a plain atomic load on the C++ side.
         unsafe { cordial_games_loaded() }
+    }
+
+    /// How many times the engine has announced an experience starting, which
+    /// comes before [`games_loaded`] moves. Used to start `NewGameSeed`'s window
+    /// when the new DataModel appears rather than after it has settled.
+    pub fn experience_starts() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_experience_starts() }
     }
 
     /// The place id of the most recent load, or 0 if none has been reported.
