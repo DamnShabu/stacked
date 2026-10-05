@@ -1738,6 +1738,169 @@ pub fn idle_keepalive() {
     }
 }
 
+/// When, around a game starting, to tell the engine that a pointer exists: from
+/// the moment it announces the experience, four times a second until
+/// [`NEW_GAME_SEED_SECONDS`] after the last thing it announced.
+///
+/// ## Why this exists (#29)
+///
+/// After a join made with the Play button in Roblox's own app, WASD, Space and
+/// the arrows do nothing until the character respawns, while Escape, the
+/// camera and every mouse click still work. Measured 2026-10-05 on one
+/// signed-in `CordialTest` client, nested headless sway, the same Play click
+/// each time, movement scored by whether the character walked in a screenshot
+/// pair across a 2.5 s hold of W (an idle pair is the control, a respawn at the
+/// start of the session was the positive control, and every pair was read by
+/// eye because UI animation fools the pixel score). All events below went
+/// through `nativePassMouseMove` or `nativePassKeyEvent`:
+///
+/// Steal An Egg, events hand-driven:
+///
+/// | what reached the engine around the join | joins | walked |
+/// |---|---|---|
+/// | nothing | 9 | 0 |
+/// | pointer motion from the click until the load finished | 4 | 4 |
+/// | one move at the load, to where the pointer was | 2 | 2 |
+/// | one move at the load, to somewhere else | 2 | 2 |
+/// | pointer motion for five seconds from the load | 2 | 2 |
+/// | shift taps until the load finished | 2 | 2 |
+/// | pointer motion starting ten seconds after the load | 3 | 0 |
+///
+/// AI Town, the same client, the hovers this file sends switched off and the
+/// events hand-driven, or the built schedule switched on:
+///
+/// | what reached the engine around the join | joins | walked |
+/// |---|---|---|
+/// | nothing | 4 | 0 |
+/// | one move at the load | 2 | 0 |
+/// | built schedule v1: once a second, from the load for six seconds | 7 | 4 |
+/// | pointer motion from the click until the load | 3 | 3 |
+/// | pointer motion for five seconds from the load | 1 | 1 |
+/// | a hover every 250 ms from the click until six seconds after the load | 5 | 5 |
+///
+/// So input has to reach the new DataModel while it is deciding, one event is not
+/// always enough, and the same events a few seconds late change nothing. In AI
+/// Town the world is on screen about a second after the load callback, so the
+/// decision sits close to the load and can fall before it. **`INFERRED`**: that
+/// the movement controls are chosen once, at spawn, from the input the new
+/// DataModel has seen by then, and that a DataModel that has seen none gets the
+/// scheme a phone would. The mechanism has not been observed, only its
+/// signature. It would also explain why a join from a link tends to escape: a
+/// real pointer usually moves while the place loads.
+///
+/// Cordial's labels were not the cause. Every pointer event carries
+/// `SOURCE_MOUSE`/`TOOL_TYPE_MOUSE`, the keyboard goes through
+/// `nativePassKeyEvent`, which carries no device at all, and the engine is
+/// never asked for an `InputDevice` or a keyboard `Configuration`.
+///
+/// ## What it sends, and when not to
+///
+/// A zero-delta hover at the last place the pointer was, through the same
+/// native a mouse move uses. Only when a pointer has been seen at all: on a
+/// machine with a touchscreen and no mouse, telling the engine one exists would
+/// be a stub that lies, and the player there really is on touch.
+///
+/// Four a second for the join, which is ten to twelve seconds of events, because
+/// the cost of an extra hover is nil and the only schedule that held in every
+/// hand-driven join was dense and began early. **The built schedule below has
+/// not been run against a join**; it is the hand-driven one, moved into the
+/// pump.
+#[derive(Debug, Default)]
+pub struct NewGameSeed {
+    seen_bumps: u32,
+    since: Option<std::time::Instant>,
+    sent: u32,
+}
+
+/// How long after the last announcement the seed keeps being offered, in
+/// seconds.
+pub const NEW_GAME_SEED_SECONDS: u64 = 8;
+/// The gap between hovers, in milliseconds.
+pub const NEW_GAME_SEED_INTERVAL_MS: u64 = 250;
+
+/// What [`NewGameSeed::due`] says to do on this tick.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SeedDue {
+    No,
+    /// The first hover of a new game; worth one log line.
+    First,
+    Again,
+}
+
+impl NewGameSeed {
+    pub const fn new() -> Self {
+        Self { seen_bumps: 0, since: None, sent: 0 }
+    }
+
+    /// `bumps` is the engine's experience-start count plus its game-loaded
+    /// count. Any change starts a fresh window, and a join moves it twice or
+    /// more -- the start, then the load, a second or three later -- so the
+    /// window runs from the start to the load plus [`NEW_GAME_SEED_SECONDS`],
+    /// and a bump inside a window restarts the schedule rather than doubling it.
+    pub fn due(&mut self, bumps: u32, now: std::time::Instant) -> SeedDue {
+        if bumps != self.seen_bumps {
+            self.seen_bumps = bumps;
+            self.since = Some(now);
+            self.sent = 0;
+        }
+        let Some(since) = self.since else {
+            return SeedDue::No;
+        };
+        let elapsed = now.saturating_duration_since(since).as_millis() as u64;
+        // The window is over once the last hover's interval has passed.
+        // Without this a tick arriving long afterwards would still find hovers
+        // owed.
+        if elapsed >= NEW_GAME_SEED_SECONDS * 1000 + NEW_GAME_SEED_INTERVAL_MS {
+            return SeedDue::No;
+        }
+        // One hover per interval elapsed: the first at 0, the next once an
+        // interval has passed, and so on. `sent` is how many have gone out, and
+        // a late tick owes the one it is on, not the backlog.
+        let owed = elapsed / NEW_GAME_SEED_INTERVAL_MS + 1;
+        if u64::from(self.sent) >= owed {
+            return SeedDue::No;
+        }
+        let first = self.sent == 0;
+        self.sent = owed as u32;
+        if first { SeedDue::First } else { SeedDue::Again }
+    }
+}
+
+/// Whether the hovers are sent at all. `CORDIAL_NO_GAME_SEED=1` turns them off
+/// at launch and the control socket's `gameseed on|off` flips them while the
+/// client runs, because the only way to show the hover is what moves the
+/// character is to join with it off and with it on in the same session.
+static GAME_SEED_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_game_seed(on: bool) {
+    GAME_SEED_ON.store(on, Ordering::Release);
+}
+
+fn game_seed_enabled() -> bool {
+    static ENV_OFF: OnceLock<bool> = OnceLock::new();
+    !*ENV_OFF.get_or_init(|| std::env::var_os("CORDIAL_NO_GAME_SEED").is_some())
+        && GAME_SEED_ON.load(Ordering::Acquire)
+}
+
+/// Deliver the hover [`NewGameSeed`] has decided is due. Returns whether a
+/// pointer was known to deliver it at.
+pub fn seed_pointer_for_new_game(first: bool) -> bool {
+    if !game_seed_enabled() {
+        return false;
+    }
+    let Some((x, y)) = pointer_seen_at() else {
+        return false;
+    };
+    if first {
+        println!(
+            "[android] a game is starting: handing the engine pointer hovers at ({x:.0}, {y:.0}) so its \
+             input state is not left at the phone default (#29)"
+        );
+    }
+    pass_mouse_move_delta(x, y, 0.0, 0.0);
+    true
+}
+
 pub fn pass_text(which: i64, text: &str, cursor: i32) {
     // The per-keystroke sync first: this is the call that actually fills the
     // field. `nativePassText` is driven alongside it for the same reason both
@@ -1845,6 +2008,21 @@ fn unpack_mouse_position(position: u64) -> (f32, f32) {
 
 fn mouse_last_position() -> Option<(f32, f32)> {
     let position = MOUSE_LAST.load(Ordering::Acquire);
+    (position != NO_MOUSE_POSITION).then(|| unpack_mouse_position(position))
+}
+
+/// Where the pointer last reported itself to the engine, **kept when the
+/// pointer leaves the canvas**, unlike [`MOUSE_LAST`].
+///
+/// `MOUSE_LAST` is cleared by [`reset_mouse_delta`] so that a pointer coming
+/// back at the far edge does not report the window's width as one movement.
+/// That is right for deltas and wrong for the question [`NewGameSeed`] asks,
+/// which is "has there ever been a pointer here, and roughly where": a player
+/// who clicked Play and then moved off the window still has a mouse.
+static POINTER_SEEN_AT: AtomicU64 = AtomicU64::new(NO_MOUSE_POSITION);
+
+fn pointer_seen_at() -> Option<(f32, f32)> {
+    let position = POINTER_SEEN_AT.load(Ordering::Acquire);
     (position != NO_MOUSE_POSITION).then(|| unpack_mouse_position(position))
 }
 
@@ -2007,6 +2185,7 @@ pub fn pass_mouse_move(x: f32, y: f32) {
 /// `MOUSE_LAST` is deliberately left alone: it tracks where the *cursor* is,
 /// and while the pointer is locked the cursor is not going anywhere.
 pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
+    POINTER_SEEN_AT.store(pack_mouse_position(x, y), Ordering::Release);
     let f = PASS_MOUSE_MOVE.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
         report_unregistered("nativePassMouseMove");
@@ -3587,4 +3766,97 @@ mod tests {
         assert!(resolved > 1000, "only {resolved} keysyms resolved; the comparison did not run");
     }
 
+    fn seed_at(base: std::time::Instant, ms: u64) -> std::time::Instant {
+        base + std::time::Duration::from_millis(ms)
+    }
+
+    /// Nothing is owed before the engine has announced anything, however long
+    /// the client has been up: the seed is for a new DataModel, not for the
+    /// Home page.
+    #[test]
+    fn no_seed_before_any_game_has_started() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        for ms in [0, 500, 5_000, 60_000] {
+            assert_eq!(seed.due(0, seed_at(base, ms)), SeedDue::No);
+        }
+    }
+
+    /// The first tick after the count moves owes one hover, and only one until
+    /// an interval has passed; the pump runs thousands of times a second.
+    #[test]
+    fn an_announcement_owes_one_hover_at_once() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        for ms in [1, 10, 100, NEW_GAME_SEED_INTERVAL_MS - 1] {
+            assert_eq!(seed.due(1, seed_at(base, ms)), SeedDue::No, "{ms} ms is inside the first interval");
+        }
+        assert_eq!(seed.due(1, seed_at(base, NEW_GAME_SEED_INTERVAL_MS)), SeedDue::Again);
+    }
+
+    /// One every interval, for the whole window, then nothing for the rest of
+    /// the session.
+    #[test]
+    fn hovers_continue_at_the_interval_then_stop() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        let mut sent = 0;
+        let mut first = 0;
+        for ms in (0..60_000).step_by(16) {
+            match seed.due(3, seed_at(base, ms)) {
+                SeedDue::No => {}
+                SeedDue::First => {
+                    first += 1;
+                    sent += 1;
+                }
+                SeedDue::Again => sent += 1,
+            }
+        }
+        assert_eq!(first, 1);
+        assert_eq!(
+            sent,
+            NEW_GAME_SEED_SECONDS * 1000 / NEW_GAME_SEED_INTERVAL_MS + 1,
+            "one at the start and one per interval after it"
+        );
+    }
+
+    /// A join moves the count twice or more. A second bump restarts the
+    /// schedule from itself rather than adding a second set on top, and a
+    /// genuinely later game starts a fresh one.
+    #[test]
+    fn a_second_bump_restarts_the_window_and_a_later_game_gets_its_own() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        assert_eq!(seed.due(2, seed_at(base, 40)), SeedDue::First, "a new count is a new window");
+        assert_eq!(seed.due(2, seed_at(base, 80)), SeedDue::No);
+        // The restarted window runs its own length from the second bump.
+        let end = 40 + NEW_GAME_SEED_SECONDS * 1000;
+        assert_eq!(seed.due(2, seed_at(base, end)), SeedDue::Again, "still inside the window");
+        assert_eq!(seed.due(2, seed_at(base, end + NEW_GAME_SEED_INTERVAL_MS + 1)), SeedDue::No);
+        // Long after the window closed, a different game.
+        assert_eq!(seed.due(2, seed_at(base, 120_000)), SeedDue::No);
+        assert_eq!(seed.due(3, seed_at(base, 120_001)), SeedDue::First);
+    }
+
+    /// A tick that arrives late does not owe the hovers it missed, only the
+    /// one it is on: they would all land in the same instant and prove nothing.
+    #[test]
+    fn a_late_tick_owes_one_hover_not_a_backlog() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        assert_eq!(seed.due(1, seed_at(base, 4_100)), SeedDue::Again);
+        assert_eq!(seed.due(1, seed_at(base, 4_101)), SeedDue::No);
+    }
+
+    /// With no pointer ever seen -- a touchscreen-only seat -- there is nothing
+    /// honest to hover, and the call must say so rather than invent a mouse.
+    #[test]
+    fn no_hover_without_a_pointer() {
+        let saved = POINTER_SEEN_AT.swap(NO_MOUSE_POSITION, Ordering::AcqRel);
+        assert!(!seed_pointer_for_new_game(false));
+        POINTER_SEEN_AT.store(saved, Ordering::Release);
+    }
 }

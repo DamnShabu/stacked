@@ -227,6 +227,7 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_NO_FULLSCREEN_CONFINE=1` | Don't confine the cursor in fullscreen. |
 | `CORDIAL_NO_POINTER_LOCK=1` | Never capture the cursor, even for first-person or a camera drag. |
 | `CORDIAL_DRAG_LOCK=0` | On Hyprland, don't hold the cursor still during a right-button camera drag ([ADR-060](adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates.md)). |
+| `CORDIAL_NO_GAME_SEED=1` | Don't hand the engine pointer hovers while a game starts. They are there because movement keys were dead after a Play-button join without them ([movement-keys.md](analysis/movement-keys.md)). |
 | `CORDIAL_FPS_CAP=N` | The same as `fps_cap`. `0` is the engine's own target; unset follows the screen. |
 | `CORDIAL_THEME=stacked\|system` | The same as `theme`. |
 | `CORDIAL_PRESENT_MODE=…` | The same as `present_mode`, plus `uncapped` and `fifo-relaxed`. |

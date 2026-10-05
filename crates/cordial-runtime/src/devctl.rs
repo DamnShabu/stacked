@@ -399,6 +399,20 @@ fn handle(line: &str) -> String {
             push(Cmd::Redraw);
             "ok".into()
         }
+        // `gameseed on|off` -- the pointer hover handed to the engine when a
+        // game loads (`input::NewGameSeed`, #29), switched without a relaunch
+        // so one session can join with it off and then on.
+        "gameseed" => match it.next() {
+            Some("on") => {
+                crate::android::input::set_game_seed(true);
+                "ok gameseed on".into()
+            }
+            Some("off") => {
+                crate::android::input::set_game_seed(false);
+                "ok gameseed off".into()
+            }
+            _ => "err gameseed <on|off>".into(),
+        },
         // The capture the compositor would not give us. See `vulkan::capture`.
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
