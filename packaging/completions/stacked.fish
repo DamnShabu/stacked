@@ -11,6 +11,7 @@ complete -c stacked -n __fish_use_subcommand -a profiles
 complete -c stacked -n __fish_use_subcommand -a config
 complete -c stacked -n __fish_use_subcommand -a flags
 complete -c stacked -n __fish_use_subcommand -a audio-outputs
+complete -c stacked -n __fish_use_subcommand -a audio-inputs
 complete -c stacked -n __fish_use_subcommand -a plugins
 complete -c stacked -n __fish_use_subcommand -a doctor
 complete -c stacked -n __fish_use_subcommand -a logs

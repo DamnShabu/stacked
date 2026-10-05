@@ -553,7 +553,12 @@ bool input_capture_is_open(Stream* s) {
 
 bool open_input_capture(Stream* s) {
     std::lock_guard<std::mutex> lifecycle(s->capture_lifecycle);
-    return s->capture.open(kCaptureRate, kCaptureChannels, std::string());
+    // Empty unless the user chose a microphone (`CORDIAL_AUDIO_SOURCE`), and
+    // empty is PipeWire's own default as before. The lookup only walks the
+    // registry; it opens nothing.
+    return s->capture.open(kCaptureRate, kCaptureChannels,
+                           cordial::audio::resolve_input_target(
+                               cordial::audio::configured_input_device()));
 }
 
 void close_input_capture(Stream* s) {

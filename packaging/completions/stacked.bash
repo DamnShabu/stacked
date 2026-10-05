@@ -4,7 +4,7 @@ _stacked() {
     if [[ $prev == --profile || $prev == -p ]]; then
         words=$(stacked __complete profiles 2>/dev/null)
     elif (( COMP_CWORD == 1 )); then
-        words="play status install update versions pin unpin profiles config flags audio-outputs plugins doctor logs desktop completions diagnostics help version"
+        words="play status install update versions pin unpin profiles config flags audio-outputs audio-inputs plugins doctor logs desktop completions diagnostics help version"
     elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == config && ${COMP_WORDS[2]} == @(get|set|unset) ]]; then
         words=$(stacked __complete config-keys 2>/dev/null)
     elif (( COMP_CWORD == 3 )) && [[ ${COMP_WORDS[1]} == profiles && ${COMP_WORDS[2]} == @(use|remove) ]]; then

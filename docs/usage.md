@@ -25,6 +25,7 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked config` | List every setting with its current value (see below). |
 | `stacked flags` | List, set and remove the current profile's FastFlags (see [FastFlags](#fastflags)). |
 | `stacked audio-outputs` | List the names `audio_output` accepts. |
+| `stacked audio-inputs` | List the microphones `audio_input` accepts. |
 | `stacked plugins …` | Manage plugins (see below). |
 | `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |
 | `stacked desktop install` | Add Stacked to the app menu and make it what the website's Play button opens. `desktop remove` undoes it. Packages and the Flatpak do this themselves. |
@@ -82,6 +83,7 @@ values it accepts.
 | `pointer_acceleration` | `unlockedcursor` | `unlockedcursor` or `always`. Whether desktop pointer acceleration also affects the camera. |
 | `gamepad` | `true` | Controllers. |
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
+| `audio_input` | empty | A microphone name from `stacked audio-inputs`. Empty follows the system. Read at launch. |
 | `close_on_leave` | `false` | Close Roblox when you leave an experience. |
 | `mangohud` / `vkbasalt` | `false` | Overlays, if they're installed. See [shaders.md](shaders.md) for vkBasalt. |
 | `carry_launch_ticket` | `false` | Hand a website Play button's one-use login ticket to the engine as well. |

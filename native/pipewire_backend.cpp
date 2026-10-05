@@ -777,6 +777,15 @@ std::string choose_output_target(const std::string& requested,
     return {};
 }
 
+std::string choose_input_target(const std::string& requested,
+                                const std::vector<std::string>& available_sources,
+                                bool* fell_back) {
+    // The rule is identical and deliberately shared: "is the thing asked for
+    // present, and is empty a fallback" has one answer, and two copies of it is
+    // how the sink and the microphone would come to disagree.
+    return choose_output_target(requested, available_sources, fell_back);
+}
+
 } // namespace testing
 
 const std::string& configured_output_device() {
@@ -797,6 +806,48 @@ const std::string& configured_output_device() {
         return s;
     }();
     return name;
+}
+
+const std::string& configured_input_device() {
+    // Read once, as the sink is: the choice is made at launch (`launch.rs`
+    // passes it only when one was made) and a game already running keeps it.
+    static const std::string name = [] {
+        const char* v = std::getenv("CORDIAL_AUDIO_SOURCE");
+        std::string s = v ? v : "";
+        if (!s.empty()) {
+            // Says what was asked for and not that a microphone was opened:
+            // nothing is, until Roblox starts recording.
+            std::fprintf(stderr,
+                "I/Cordial-OpenSLES         input device: recording will be aimed at PipeWire "
+                "source '%s' (CORDIAL_AUDIO_SOURCE). Unset it to follow the system default.\n",
+                s.c_str());
+        }
+        return s;
+    }();
+    return name;
+}
+
+std::string resolve_input_target(const std::string& requested) {
+    if (requested.empty()) return {};
+
+    // Sources only, and enumeration only: this walks the registry, and the
+    // microphone rule at the top of `audio_classes.cpp` is why it must stay
+    // that. Nothing on this path may construct a `CaptureStream`.
+    std::vector<std::string> sources;
+    for (const DeviceInfo& d : enumerate_devices()) {
+        if (d.is_source) sources.push_back(d.node_name);
+    }
+
+    bool fell_back = false;
+    std::string target = testing::choose_input_target(requested, sources, &fell_back);
+    if (fell_back) {
+        std::fprintf(stderr,
+            "W/Cordial-OpenSLES         input device '%s' is not in this PipeWire session "
+            "(%zu source(s) present); falling back to the system default microphone. The "
+            "choice is kept, so replugging the device and relaunching will use it again.\n",
+            requested.c_str(), sources.size());
+    }
+    return target;
 }
 
 std::string resolve_output_target(const std::string& requested) {
@@ -1662,6 +1713,16 @@ const std::string& configured_output_device() {
 
 std::string resolve_output_target(const std::string&) { return {}; }
 
+const std::string& configured_input_device() {
+    static const std::string name = [] {
+        const char* v = std::getenv("CORDIAL_AUDIO_SOURCE");
+        return std::string(v ? v : "");
+    }();
+    return name;
+}
+
+std::string resolve_input_target(const std::string&) { return {}; }
+
 namespace testing {
 
 /// Shares no code with the real one on purpose: it is four lines, and the
@@ -1677,6 +1738,12 @@ std::string choose_output_target(const std::string& requested,
     }
     if (fell_back) *fell_back = true;
     return {};
+}
+
+std::string choose_input_target(const std::string& requested,
+                                const std::vector<std::string>& available_sources,
+                                bool* fell_back) {
+    return choose_output_target(requested, available_sources, fell_back);
 }
 
 } // namespace testing
@@ -1932,6 +1999,40 @@ size_t cordial_audio_sinks(CordialAudioSink** out) {
     *out = list;
     return count;
 }
+
+size_t cordial_audio_sources(CordialAudioSink** out) {
+    if (!out) return 0;
+    *out = nullptr;
+
+    // The same registry walk as the sinks, filtered the other way. Enumeration
+    // only: nothing here constructs a `CaptureStream`, which is the rule at the
+    // top of `audio_classes.cpp` and is pinned by the shell's own test of this
+    // call reading `cordial_audio_capture_streams` before and after.
+    std::vector<cordial::audio::DeviceInfo> devices = cordial::audio::enumerate_devices();
+
+    size_t count = 0;
+    for (const cordial::audio::DeviceInfo& d : devices) {
+        if (d.is_source && !d.node_name.empty()) ++count;
+    }
+    if (count == 0) return 0;
+
+    auto* list = static_cast<CordialAudioSink*>(std::calloc(count, sizeof(CordialAudioSink)));
+    if (!list) return 0;
+
+    size_t i = 0;
+    for (const cordial::audio::DeviceInfo& d : devices) {
+        if (!d.is_source || d.node_name.empty()) continue;
+        list[i].node_name = ::strdup(d.node_name.c_str());
+        list[i].description =
+            ::strdup(d.description.empty() ? d.node_name.c_str() : d.description.c_str());
+        list[i].is_default = d.is_default ? 1 : 0;
+        ++i;
+    }
+    *out = list;
+    return count;
+}
+
+unsigned cordial_audio_capture_streams(void) { return cordial::audio::active_capture_streams(); }
 
 void cordial_audio_sinks_free(CordialAudioSink* sinks, size_t count) {
     if (!sinks) return;
