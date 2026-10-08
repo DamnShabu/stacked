@@ -104,9 +104,17 @@ Flags come from more than one place, and each source owns its own file:
 ```text
 <profile>/flags.json                             user    (always wins)
 shell.json's fps_cap                             launcher setting
+CORDIAL_QUALITY                                  launcher setting
 ~/.local/share/cordial/plugins/<id>/flags.json   plugin
 the client-settings document from Roblox         base
 ```
+
+`CORDIAL_QUALITY` is for a launcher starting several clients at once, such as
+the Roblox manager's performance levels: `low`, `medium` or `max` sets a
+graphics-quality preset for that one client (`high`, or unset, sets nothing).
+The flags are listed in `crates/cordial-runtime/src/graphics_quality.rs`.
+Whether they change anything in a 3D game on this engine has not been
+measured yet.
 
 Your overrides live in the profile, so a flag you set while testing something on
 one account is not silently still set on the account you play. A file left at

@@ -81,8 +81,9 @@ pub enum Source {
     /// for a mode whose tables nothing on this project's hardware has
     /// measured.
     Performance,
-    /// A launcher setting turned into flags, today only the frame-rate
-    /// target. See [`fps_cap_layer`].
+    /// A launcher setting turned into flags: the frame-rate target (see
+    /// [`fps_cap_layer`]) and the graphics quality (see
+    /// [`crate::graphics_quality`]).
     Launcher,
 }
 
@@ -729,9 +730,10 @@ pub fn collect() -> Vec<Layer> {
     }
 
     // After the plugins and before the user's own file: the launcher's
-    // setting is the user's choice too, made somewhere friendlier than JSON,
-    // and a plugin should not be able to outvote it -- but a line the user
+    // settings are the user's choice too, made somewhere friendlier than JSON,
+    // and a plugin should not be able to outvote them -- but a line the user
     // wrote into `flags.json` by hand is the more specific statement.
+    layers.push(crate::graphics_quality::layer());
     layers.push(fps_cap_layer());
 
     if let Some(layer) = read_layer(&user_path(), Source::User) {

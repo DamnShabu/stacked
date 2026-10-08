@@ -39,6 +39,7 @@ pub mod elf;
 mod ffi_util;
 pub mod flags;
 pub mod graphics;
+pub mod graphics_quality;
 pub mod headless;
 pub mod identity;
 pub mod linking;
