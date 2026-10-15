@@ -1877,8 +1877,8 @@ static WITHHELD_ENTERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 
 /// Decide, for one Enter transition arriving at the Wayland keyboard, whether
 /// the editor consumes it; `true` means it must not reach the engine by any
-/// path. Only the Wayland path asks: the X11 path has no editor widget
-/// (ADR-024), so there nothing would turn the key into text or an action.
+/// path. Only the Wayland path asks: on X11 the editor is its own GTK window
+/// (ADR-062), which takes Enter itself and calls `return_pressed`.
 pub fn editor_consumes_enter(down: bool, evdev: i32) -> bool {
     if !evdev_is_enter(evdev) || keys_to_game_while_typing() {
         return false;
@@ -2935,9 +2935,9 @@ fn replace_if_focused(
     Ok(field.len_chars())
 }
 
-/// The devctl `paste`/`settext` buffer path: X11, which has no editor widget
-/// at all, and Wayland's own fallback if this is ever reached before a window
-/// exists. **Not what runs while a `gtk::Text` owns the field** -- see
+/// The devctl `paste`/`settext` buffer path: X11 with `CORDIAL_X11_EDITOR=off`
+/// (ADR-062), and Wayland's own fallback if this is ever reached before a
+/// window exists. **Not what runs while a `gtk::Text` owns the field** -- see
 /// `clipboard::paste_text`/`clipboard::set_text`, which write the widget
 /// directly on Wayland so it, this mirror and the engine cannot disagree
 /// afterward; this function exists for the backend that has no widget to be
@@ -3013,7 +3013,8 @@ pub fn text_buffer_peek() -> (String, i32) {
 /// It is kept rather than deleted because three things still read it --
 /// `text_buffer_snapshot` for the overlay, `splice_preedit` for IME display,
 /// and `reseed_if_needed` for the engine's own value at a focus boundary -- and
-/// because the X11 backend has no editor widget and still edits it the old way.
+/// because X11 with `CORDIAL_X11_EDITOR=off` (ADR-062) still edits it the old
+/// way.
 ///
 /// The generation is stamped as current so [`reseed_if_needed`] does not
 /// immediately overwrite what the user just typed with what the engine last

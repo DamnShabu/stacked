@@ -5886,7 +5886,7 @@ impl WaylandWindow {
         // key events only and never text" and a paste is text. What is left
         // here is a Wayland session where the editor widget is not up, plus
         // the X11 path, which has its own copy of this branch in `window.rs`
-        // and no editor widget at all (ADR-024).
+        // for when its editor window is off (ADR-062).
         if super::input::is_paste_shortcut(keysym, meta) {
             if let Err(e) = super::clipboard::paste_into_engine(handle) {
                 super::trace(format_args!("wayland: clipboard paste failed: {e}"));
