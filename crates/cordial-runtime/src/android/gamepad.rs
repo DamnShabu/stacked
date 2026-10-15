@@ -93,10 +93,11 @@
 //! the capability masks sysfs publishes, which is enough to stop a pad with
 //! fewer axes or buttons than the standard one shifting everything after the
 //! gap; [`button_keycode`] and [`axis_code`] remain as the standard layout, used
-//! when sysfs cannot be read. What it does not do is what gilrs carries in
-//! `SDL_GameControllerDB`: a per-model mapping for pads whose drivers report
-//! unusual codes, and the vendor and product ids a `gamepadType` classifier would
-//! want once the ordinals are known. When the udev dependency is accepted, this
+//! when sysfs cannot be read. A small table of pads whose drivers report unusual
+//! axes ([`QUIRKS`], keyed by vendor, product and driver version) and
+//! `CORDIAL_GAMEPAD_AXES` cover what the masks cannot; what is still missing is
+//! the breadth of `SDL_GameControllerDB`, and the ids a `gamepadType` classifier
+//! would want once the ordinals are known. When the udev dependency is accepted, this
 //! module's [`poll`] is the seam to swap underneath.
 //!
 //! TASKS.md recommends `libmanette` for this and should not: it has no Rust
@@ -379,6 +380,9 @@ static PADS: std::sync::Mutex<Vec<Pad>> = std::sync::Mutex::new(Vec::new());
 struct Layout {
     buttons: Vec<Option<i32>>,
     axes: Vec<Option<i32>>,
+    /// The `ABS_*` code behind each axis index, which is what a per-device
+    /// quirk or `CORDIAL_GAMEPAD_AXES` names an axis by.
+    abs: Vec<usize>,
 }
 
 impl Layout {
@@ -388,6 +392,7 @@ impl Layout {
         Layout {
             buttons: (0..15).map(button_keycode).collect(),
             axes: (0..8).map(axis_code).collect(),
+            abs: vec![ABS_X, ABS_Y, ABS_Z, ABS_RX, ABS_RY, ABS_RZ, ABS_HAT0X, ABS_HAT0Y],
         }
     }
 
@@ -401,8 +406,26 @@ impl Layout {
         let buttons = high.into_iter().chain(low.into_iter().filter(|&c| c >= BTN_MISC))
             .map(btn_to_android)
             .collect();
-        let axes = set_bits(abs_mask).into_iter().map(abs_to_android).collect();
-        Layout { buttons, axes }
+        let abs = set_bits(abs_mask);
+        // **A pad with no `ABS_RX`/`ABS_RY` has its right stick on `ABS_Z` and
+        // `ABS_RZ`.** Linux's gamepad convention puts the right stick on RX/RY
+        // and the analogue triggers on Z/RZ, so a pad that declares Z and RZ and
+        // neither of the others has no triggers to give them to. Android reads
+        // the same four-axis pads the same way (its generic key layout maps
+        // `ABS_Z` to `AXIS_Z` and `ABS_RZ` to `AXIS_RZ`), and so does SDL's
+        // database for the PlayStation 3 pad on hid-sony (`rightx:a2,righty:a3`
+        // with the triggers as buttons). Without this, such a pad's right stick
+        // arrived as the two triggers.
+        let right_stick_on_z = !abs.contains(&ABS_RX) && !abs.contains(&ABS_RY);
+        let axes = abs
+            .iter()
+            .map(|&c| match c {
+                ABS_Z if right_stick_on_z => Some(AXIS_Z),
+                ABS_RZ if right_stick_on_z => Some(AXIS_RZ),
+                _ => abs_to_android(c),
+            })
+            .collect();
+        Layout { buttons, axes, abs }
     }
 
     fn button(&self, index: u8) -> Option<i32> {
@@ -412,7 +435,38 @@ impl Layout {
     fn axis(&self, index: u8) -> Option<i32> {
         self.axes.get(index as usize).copied().flatten()
     }
+
+    /// Give the axes the pad declares as `ABS_*` code `abs` the Android axis
+    /// `to` (`None` to drop them). A code the pad does not declare is ignored.
+    fn remap_axis(&mut self, abs: usize, to: Option<i32>) {
+        for (i, code) in self.abs.iter().enumerate() {
+            if *code == abs {
+                self.axes[i] = to;
+            }
+        }
+    }
 }
+
+/// `linux/input-event-codes.h` axis codes, and the Android `MotionEvent.AXIS_*`
+/// values this module hands the engine.
+const ABS_X: usize = 0x00;
+const ABS_Y: usize = 0x01;
+const ABS_Z: usize = 0x02;
+const ABS_RX: usize = 0x03;
+const ABS_RY: usize = 0x04;
+const ABS_RZ: usize = 0x05;
+const ABS_HAT0X: usize = 0x10;
+const ABS_HAT0Y: usize = 0x11;
+const AXIS_X: i32 = 0;
+const AXIS_Y: i32 = 1;
+const AXIS_Z: i32 = 11;
+const AXIS_RX: i32 = 12;
+const AXIS_RY: i32 = 13;
+const AXIS_RZ: i32 = 14;
+const AXIS_HAT_X: i32 = 15;
+const AXIS_HAT_Y: i32 = 16;
+const AXIS_LTRIGGER: i32 = 17;
+const AXIS_RTRIGGER: i32 = 18;
 
 /// `BTN_MISC`, the bottom of the range joydev considers buttons at all.
 const BTN_MISC: usize = 0x100;
@@ -455,6 +509,14 @@ fn btn_to_android(code: usize) -> Option<i32> {
         0x13c => 110, // BTN_MODE   -> BUTTON_MODE
         0x13d => 106, // BTN_THUMBL -> BUTTON_THUMBL
         0x13e => 107, // BTN_THUMBR -> BUTTON_THUMBR
+        // A D-pad that is four buttons rather than a hat. The AYN Odin pads
+        // declare no `ABS_HAT0X`, and Android's own key layout for that device
+        // maps these four codes to `DPAD_UP`..`DPAD_RIGHT`; without them the
+        // pad had no D-pad at all.
+        0x220 => 19, // BTN_DPAD_UP    -> DPAD_UP
+        0x221 => 20, // BTN_DPAD_DOWN  -> DPAD_DOWN
+        0x222 => 21, // BTN_DPAD_LEFT  -> DPAD_LEFT
+        0x223 => 22, // BTN_DPAD_RIGHT -> DPAD_RIGHT
         _ => return None,
     })
 }
@@ -463,15 +525,160 @@ fn btn_to_android(code: usize) -> Option<i32> {
 /// on `AXIS_Z`/`AXIS_RZ` as Android does it. `None` for an axis with no entry.
 fn abs_to_android(code: usize) -> Option<i32> {
     Some(match code {
-        0x00 => 0,  // ABS_X      -> AXIS_X
-        0x01 => 1,  // ABS_Y      -> AXIS_Y
-        0x02 => 17, // ABS_Z      -> AXIS_LTRIGGER
-        0x03 => 11, // ABS_RX     -> AXIS_Z
-        0x04 => 14, // ABS_RY     -> AXIS_RZ
-        0x05 => 18, // ABS_RZ     -> AXIS_RTRIGGER
-        0x10 => 15, // ABS_HAT0X  -> AXIS_HAT_X
-        0x11 => 16, // ABS_HAT0Y  -> AXIS_HAT_Y
+        ABS_X => AXIS_X,
+        ABS_Y => AXIS_Y,
+        ABS_Z => AXIS_LTRIGGER,
+        ABS_RX => AXIS_Z,
+        ABS_RY => AXIS_RZ,
+        ABS_RZ => AXIS_RTRIGGER,
+        ABS_HAT0X => AXIS_HAT_X,
+        ABS_HAT0Y => AXIS_HAT_Y,
         _ => return None,
+    })
+}
+
+/// The ids a pad reports, from `/sys/class/input/jsN/device/id`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct DeviceId {
+    vendor: u16,
+    product: u16,
+    version: u16,
+}
+
+fn read_device_id(node: i32) -> Option<DeviceId> {
+    let read = |name: &str| {
+        let text = std::fs::read_to_string(format!("/sys/class/input/js{node}/device/id/{name}")).ok()?;
+        u16::from_str_radix(text.trim(), 16).ok()
+    };
+    Some(DeviceId { vendor: read("vendor")?, product: read("product")?, version: read("version")? })
+}
+
+/// A pad whose axes the capability masks alone get wrong, found by its ids.
+///
+/// **The masks say which axes exist, not which is the stick.** Linux's gamepad
+/// convention and the drivers that predate it disagree, and a pad on the old
+/// one has the same six axes in a different order. This table is for those, and
+/// it is keyed on evidence rather than on a guess: each entry names where the
+/// mapping was read, and a pad with no entry gets the layout its masks give it.
+/// Ideas from SDL's `gamecontrollerdb.txt` (zlib licence), not its lines.
+struct Quirk {
+    /// Shown in the launch log when the quirk applies.
+    name: &'static str,
+    vendor: u16,
+    products: &'static [u16],
+    /// Whether the entry applies only to the old driver, which reports an input
+    /// version with bit 15 clear (`hid-sony`), as against the one that replaced
+    /// it for the same device (`hid-playstation`, bit 15 set).
+    legacy_driver_only: bool,
+    /// `(ABS_* code, Android axis)`.
+    axes: &'static [(usize, i32)],
+}
+
+const QUIRKS: &[Quirk] = &[Quirk {
+    // SDL's database has two entries per product for the DualShock 4 on Linux,
+    // told apart by the version in the GUID: 0x0111 / 0x0100 (hid-sony) has the
+    // right stick on a2/a5 and the triggers on a3/a4 -- ABS_Z, ABS_RZ and
+    // ABS_RX, ABS_RY -- and 0x8100 / 0x8111 (hid-playstation) has the Linux
+    // convention. Read 2026-10-16 for 054c:05c4 and 054c:09cc.
+    name: "DualShock 4 on hid-sony (right stick on Z/RZ, triggers on RX/RY)",
+    vendor: 0x054c,
+    products: &[0x05c4, 0x09cc],
+    legacy_driver_only: true,
+    axes: &[
+        (ABS_Z, AXIS_Z),
+        (ABS_RZ, AXIS_RZ),
+        (ABS_RX, AXIS_LTRIGGER),
+        (ABS_RY, AXIS_RTRIGGER),
+    ],
+}];
+
+fn quirk_for(id: &DeviceId) -> Option<&'static Quirk> {
+    QUIRKS.iter().find(|q| {
+        q.vendor == id.vendor
+            && q.products.contains(&id.product)
+            && (!q.legacy_driver_only || id.version & 0x8000 == 0)
+    })
+}
+
+/// `CORDIAL_GAMEPAD_AXES`: `abs=android` pairs, comma separated, applied to
+/// every pad after its own layout is worked out.
+///
+/// Either side is a name or a number. The left is the Linux axis the pad
+/// declares (`x y z rx ry rz hat0x hat0y`), the right is the Android axis the
+/// engine is told about (`x y z rx ry rz hat_x hat_y ltrigger rtrigger`), or
+/// `none` to drop it. `CORDIAL_GAMEPAD_AXES=z=rz,rz=z` swaps two.
+///
+/// It exists for the pad nobody has a table entry for. A pad whose sticks do
+/// the wrong thing can be tried in a minute, and what works goes in an issue
+/// and becomes a [`Quirk`].
+fn parse_axis_overrides(spec: &str) -> Result<Vec<(usize, Option<i32>)>, String> {
+    let named = |name: &str, table: &[(&str, i64)]| -> Option<i64> {
+        let n = name.trim().to_ascii_lowercase();
+        table
+            .iter()
+            .find(|(k, _)| *k == n)
+            .map(|(_, v)| *v)
+            .or_else(|| match n.strip_prefix("0x") {
+                Some(hex) => i64::from_str_radix(hex, 16).ok(),
+                None => n.parse().ok(),
+            })
+    };
+    const LINUX: &[(&str, i64)] = &[
+        ("x", ABS_X as i64),
+        ("y", ABS_Y as i64),
+        ("z", ABS_Z as i64),
+        ("rx", ABS_RX as i64),
+        ("ry", ABS_RY as i64),
+        ("rz", ABS_RZ as i64),
+        ("hat0x", ABS_HAT0X as i64),
+        ("hat0y", ABS_HAT0Y as i64),
+    ];
+    const ANDROID: &[(&str, i64)] = &[
+        ("x", AXIS_X as i64),
+        ("y", AXIS_Y as i64),
+        ("z", AXIS_Z as i64),
+        ("rx", AXIS_RX as i64),
+        ("ry", AXIS_RY as i64),
+        ("rz", AXIS_RZ as i64),
+        ("hat_x", AXIS_HAT_X as i64),
+        ("hat_y", AXIS_HAT_Y as i64),
+        ("ltrigger", AXIS_LTRIGGER as i64),
+        ("rtrigger", AXIS_RTRIGGER as i64),
+    ];
+    let mut out = Vec::new();
+    for pair in spec.split(',').map(str::trim).filter(|p| !p.is_empty()) {
+        let (from, to) = pair.split_once('=').ok_or_else(|| format!("{pair:?} is not abs=android"))?;
+        let from = named(from, LINUX)
+            .and_then(|v| usize::try_from(v).ok())
+            .ok_or_else(|| format!("{:?} is not a Linux axis", from.trim()))?;
+        let to = if to.trim().eq_ignore_ascii_case("none") {
+            None
+        } else {
+            let v = named(to, ANDROID).ok_or_else(|| format!("{:?} is not an Android axis", to.trim()))?;
+            Some(i32::try_from(v).map_err(|_| format!("{:?} is out of range", to.trim()))?)
+        };
+        out.push((from, to));
+    }
+    Ok(out)
+}
+
+fn axis_overrides() -> &'static [(usize, Option<i32>)] {
+    static OVERRIDES: OnceLock<Vec<(usize, Option<i32>)>> = OnceLock::new();
+    OVERRIDES.get_or_init(|| {
+        let Some(spec) = std::env::var_os("CORDIAL_GAMEPAD_AXES") else {
+            return Vec::new();
+        };
+        match parse_axis_overrides(&spec.to_string_lossy()) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!(
+                    "[cordial] CORDIAL_GAMEPAD_AXES={} ignored: {e}. It is abs=android pairs, \
+                     for example z=rz,rz=z; see docs/controllers.md",
+                    spec.to_string_lossy()
+                );
+                Vec::new()
+            }
+        }
     })
 }
 
@@ -482,7 +689,27 @@ fn read_layout(id: i32) -> Layout {
     let (Some(key), Some(abs)) = (read("key"), read("abs")) else {
         return Layout::standard();
     };
-    let layout = Layout::from_capabilities(&key, &abs);
+    let mut layout = Layout::from_capabilities(&key, &abs);
+    // Said once per pad when anything beyond its capability masks decided its
+    // axes, because "my stick is on the wrong axis" is answered by knowing which
+    // table was consulted.
+    if let Some(ids) = read_device_id(id) {
+        if let Some(quirk) = quirk_for(&ids) {
+            eprintln!(
+                "[cordial] gamepad: js{id} ({:04x}:{:04x}) matches {}; using its axes",
+                ids.vendor, ids.product, quirk.name
+            );
+            for &(from, to) in quirk.axes {
+                layout.remap_axis(from, Some(to));
+            }
+        }
+    }
+    for &(from, to) in axis_overrides() {
+        layout.remap_axis(from, to);
+    }
+    if !axis_overrides().is_empty() {
+        eprintln!("[cordial] gamepad: js{id}: CORDIAL_GAMEPAD_AXES applied");
+    }
     if input::trace_gamepad() {
         eprintln!(
             "[cordial] gamepad: js{id} buttons {:?} axes {:?} (Android codes by joydev index)",
@@ -1146,6 +1373,89 @@ mod tests {
         assert_eq!(digital.axis(4), Some(15));
         // The old table sent that stick sideways into the left trigger.
         assert_eq!(axis_code(2), Some(17));
+    }
+
+    /// The AYN Odin 3's own pad (#113): six axes with the Linux convention, and a
+    /// D-pad that is four buttons because there is no hat.
+    ///
+    /// The axes are what Android's own key layout for the same hardware says
+    /// (`axis 0x02 LTRIGGER`, `0x03 Z`, `0x04 RZ`, `0x05 RTRIGGER`), so the
+    /// capability mask already gives the right answer for them and a table entry
+    /// would change nothing. The D-pad was the part dropped: its four codes had
+    /// no Android key.
+    #[test]
+    fn a_pad_with_a_button_dpad_and_no_hat_gets_dpad_keys() {
+        use super::Layout;
+        // Bits 0x130.. in the fifth word from the bottom, 0x220.. in the ninth.
+        let mut words = [0u64; 9];
+        for b in [0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e] {
+            words[b / 64] |= 1 << (b % 64);
+        }
+        for b in [0x220, 0x221, 0x222, 0x223] {
+            words[b / 64] |= 1 << (b % 64);
+        }
+        let key = words.iter().rev().map(|w| format!("{w:x}")).collect::<Vec<_>>().join(" ");
+        let odin = Layout::from_capabilities(&key, "3f");
+        assert_eq!(
+            odin.buttons,
+            [96, 97, 99, 100, 102, 103, 109, 108, 110, 106, 107, 19, 20, 21, 22].map(Some),
+            "the D-pad follows the face and shoulder buttons in joydev's order"
+        );
+        assert_eq!(odin.axes, [0, 1, 17, 11, 14, 18].map(Some), "the sticks were already right");
+    }
+
+    /// A four-axis pad has no triggers to put on Z and RZ.
+    #[test]
+    fn z_and_rz_are_the_right_stick_when_rx_and_ry_are_absent() {
+        use super::Layout;
+        // X Y Z RZ and a hat: bits 0, 1, 2, 5, 16, 17.
+        let old_style = Layout::from_capabilities("", "30027");
+        assert_eq!(old_style.axes, [0, 1, 11, 14, 15, 16].map(Some));
+        // Control: add RX and RY and the same two axes are the triggers again.
+        let full = Layout::from_capabilities("", "3003f");
+        assert_eq!(full.axes[2], Some(17));
+        assert_eq!(full.axes[5], Some(18));
+    }
+
+    /// The one table entry, and the version that decides which driver's layout
+    /// it is.
+    #[test]
+    fn a_dualshock_4_on_the_old_driver_has_its_right_stick_on_z_and_rz() {
+        use super::{quirk_for, DeviceId, Layout};
+        let sony = |version| DeviceId { vendor: 0x054c, product: 0x05c4, version };
+        let quirk = quirk_for(&sony(0x0111)).expect("hid-sony reports version 0x0111");
+        let mut layout = Layout::from_capabilities("", "3003f");
+        assert_eq!(layout.axes[2], Some(17), "before the entry, Z is a trigger");
+        for &(abs, android) in quirk.axes {
+            layout.remap_axis(abs, Some(android));
+        }
+        assert_eq!(
+            layout.axes,
+            [0, 1, 11, 17, 18, 14, 15, 16].map(Some),
+            "Z/RZ are the stick, RX/RY the triggers"
+        );
+        assert!(quirk_for(&sony(0x8111)).is_none(), "hid-playstation uses the Linux convention");
+        assert!(quirk_for(&DeviceId { vendor: 0x045e, product: 0x028e, version: 0x0114 }).is_none());
+        assert!(quirk_for(&DeviceId { vendor: 0x054c, product: 0x0ce6, version: 0x0111 }).is_none());
+    }
+
+    #[test]
+    fn the_axis_override_names_a_pair_per_comma_and_says_what_it_cannot_read() {
+        use super::{parse_axis_overrides as parse, Layout};
+        assert_eq!(parse("z=rz, rz=z").unwrap(), vec![(2, Some(14)), (5, Some(11))]);
+        assert_eq!(parse("rx=ltrigger,0x10=none,4=18").unwrap(), vec![(3, Some(17)), (16, None), (4, Some(18))]);
+        assert_eq!(parse("").unwrap(), vec![]);
+        assert!(parse("z").unwrap_err().contains("abs=android"));
+        assert!(parse("q=x").unwrap_err().contains("not a Linux axis"));
+        assert!(parse("x=banana").unwrap_err().contains("not an Android axis"));
+
+        let mut layout = Layout::from_capabilities("", "3f");
+        for (abs, to) in parse("z=rz,rz=z").unwrap() {
+            layout.remap_axis(abs, to);
+        }
+        assert_eq!(layout.axes, [0, 1, 14, 11, 14, 11].map(Some), "applied by Linux code, Z and RZ now both sticks");
+        layout.remap_axis(0x30, Some(5));
+        assert_eq!(layout.axes.len(), 6, "an axis the pad does not have is ignored");
     }
 
     /// Unreadable capabilities must not turn a pad into nothing.
