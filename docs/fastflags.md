@@ -113,8 +113,16 @@ the client-settings document from Roblox         base
 the Roblox manager's performance levels: `low`, `medium` or `max` sets a
 graphics-quality preset for that one client (`high`, or unset, sets nothing).
 The flags are listed in `crates/cordial-runtime/src/graphics_quality.rs`.
-Whether they change anything in a 3D game on this engine has not been
-measured yet.
+Each preset pins the render quality level, which stops Roblox's automatic
+quality from stepping down when it cannot reach your frame-rate target (seen
+in the log with `FLogFRM=7`). `max` also tries to turn off dynamic resolution
+scaling, the usual cause of a soft 3D picture at full window size. That part is
+not verified: Roblox enables the scaling per account, and that setting
+overrides the flag that would turn it back off, so `max` sets the other
+switches that look like they should disable it. Nobody has checked them in a
+3D game yet. Expect a changed preset to take full effect from the second
+launch, because the engine sometimes starts from the flags it cached last
+time.
 
 Your overrides live in the profile, so a flag you set while testing something on
 one account is not silently still set on the account you play. A file left at
@@ -134,16 +142,17 @@ flags: FIntTaskSchedulerAutoThreadLimit = 8 from user
 Two plugins disagreeing is a real disagreement, so both are named. The later one
 wins so the outcome is deterministic, but nothing is hidden.
 
-**If the interface looks coarse**, it is being laid out for a low-density phone.
-Raise both — the render resolution is 720p by default and `dpiScale` is 1.0,
-which is what Roblox treats as a cheap handset. `stacked` passes its
-environment on to the client:
+**If the interface looks coarse**, it is being laid out for a low-density phone:
+`dpiScale` is 1.0, which Roblox treats as a cheap handset. Raise it.
+Resolution is not the problem. The engine renders at the window's real size
+(`swapchain ... size 1920x1080` in its log for a 1080p fullscreen window);
+`CORDIAL_RESOLUTION` only sets the size the window first opens at. `stacked`
+passes its environment on to the client:
 
 ```bash
-CORDIAL_RESOLUTION=1920x1200 CORDIAL_DPI_SCALE=1.75 stacked
+CORDIAL_DPI_SCALE=1.75 stacked
 ```
 
-Roblox's graphics-quality FastFlags (`DebugFRMQualityLevelOverride` and the MSAA
-overrides) were tested and change nothing here, because they govern 3D scene
-rendering and the logged-out landing page is a 2D interface. Resolution and
-density are the levers that apply to it.
+**If the 3D scene in a game looks soft** while the interface is sharp, that is
+the engine's own scaling, not the window. Try `CORDIAL_QUALITY=max`, described
+above.

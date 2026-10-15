@@ -8,13 +8,31 @@
 //! one process it applies to, read before the settings document is built,
 //! layered above plugins and below the user's file.
 //!
-//! **`INFERRED` that these flags change what a game costs.** Every name is one
-//! the Windows client's community presets have used for years, but
-//! `docs/fastflags.md` records that `DebugFRMQualityLevelOverride` and the MSAA
-//! overrides changed nothing measurable on the logged-out landing page, which
-//! is 2D; nobody has measured them in a 3D experience on this engine. A name
-//! the engine does not know is ignored, so the worst a wrong one does is
+//! **What has been measured, on the logged-out landing page with `FLogFRM=7`,
+//! and what has not.** `DFIntDebugFRMQualityLevelOverride` acts: without it
+//! the engine's FRM controller logs `FastBackoff, reducing quality` and steps
+//! 21 to 19 within seconds while chasing a 165 Hz frame-rate target, and with
+//! it set the controller logs no status and no step at all, in alternating
+//! runs from the same cleared state. Whether the MSAA and texture overrides
+//! change a 3D frame has not been measured; the landing page is 2D and an
+//! engine-scaled 3D scene is not on it, so neither is a picture of one. Every
+//! name below is in `libroblox.so`; a name the engine does not know is
+//! accepted and ignored, which is how `RenderShadowIntensity`, `DisablePostFx`
+//! and `RenderGrassDetailStrands` sat in the first version of this table doing
 //! nothing.
+//!
+//! **Max also turns dynamic resolution off, and that half is `INFERRED`.** The
+//! symptom was a 3D scene drawn soft at a native 1920x1080 swapchain. The
+//! engine's `DRS init:` log line reads `canUseHighDPIFullFB=true` only when
+//! automatic DRS is rolled out to the client, and on the account that showed
+//! the symptom Roblox rolls it out through an experiment assignment
+//! (`IxpSettings.json`, `AutomaticDRSHundredthPercent` = 10000). That
+//! assignment beats the settings document: `DFIntAutomaticDRSHundredthPercent`
+//! = 10000 turns the line on for a client with no assignment, and = 0 does not
+//! turn it off for one that has it, five runs of five. So the rollout cannot be
+//! withdrawn from here, and Max sets the switches downstream of it instead.
+//! None of them shows in any log line a signed-out client produces, so none is
+//! measured; see `quality_flags`.
 
 use std::collections::BTreeMap;
 
@@ -27,14 +45,15 @@ pub const QUALITY_ENV: &str = "CORDIAL_QUALITY";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Quality {
     /// The cheapest frame the engine will draw: lowest render quality, no
-    /// anti-aliasing, smallest textures, no shadows, post-processing or grass.
+    /// anti-aliasing, smallest textures, no grass.
     Low,
     /// A middle render quality with no anti-aliasing and reduced textures.
     Medium,
     /// The engine's own choice. Sets nothing.
     #[default]
     High,
-    /// The top render quality, 4x anti-aliasing and full textures.
+    /// The top render quality, 4x anti-aliasing, full textures and no
+    /// dynamic resolution scaling.
     Max,
 }
 
@@ -67,18 +86,14 @@ pub fn quality_flags(quality: Quality) -> Vec<(&'static str, &'static str)> {
             ("FIntDebugForceMSAASamples", "0"),
             ("DFFlagTextureQualityOverrideEnabled", "True"),
             ("DFIntTextureQualityOverride", "0"),
-            ("FIntRenderShadowIntensity", "0"),
-            ("FFlagDisablePostFx", "True"),
             ("FIntFRMMinGrassDistance", "0"),
             ("FIntFRMMaxGrassDistance", "0"),
-            ("FIntRenderGrassDetailStrands", "0"),
         ],
         Quality::Medium => vec![
             ("DFIntDebugFRMQualityLevelOverride", "8"),
             ("FIntDebugForceMSAASamples", "0"),
             ("DFFlagTextureQualityOverrideEnabled", "True"),
             ("DFIntTextureQualityOverride", "1"),
-            ("FFlagDisablePostFx", "True"),
         ],
         Quality::High => Vec::new(),
         Quality::Max => vec![
@@ -86,6 +101,20 @@ pub fn quality_flags(quality: Quality) -> Vec<(&'static str, &'static str)> {
             ("FIntDebugForceMSAASamples", "4"),
             ("DFFlagTextureQualityOverrideEnabled", "True"),
             ("DFIntTextureQualityOverride", "3"),
+            // The rollout itself, for a client Roblox has not enrolled by
+            // experiment, so a later server-side rollout cannot start scaling
+            // a client the user asked to draw at its best. `DFInt` is
+            // measured: the server document's `FIntAutomaticDRSHundredthPercent`
+            // is a dead name on this build and moved nothing, the `DFInt`
+            // spelling did.
+            ("DFIntAutomaticDRSHundredthPercent", "0"),
+            // `INFERRED`, all three. `DFFlag` for `AutomaticDRS` is read off
+            // the `DFFlagAutomaticDRS_IXP` key Roblox's own document carries;
+            // `DebugDisableDRS` is in the binary under a prefix nothing here
+            // has shown, so both spellings go in and the wrong one is ignored.
+            ("DFFlagAutomaticDRS", "False"),
+            ("FFlagDebugDisableDRS", "True"),
+            ("DFFlagDebugDisableDRS", "True"),
         ],
     }
 }
@@ -155,6 +184,45 @@ mod tests {
         };
         assert!(level(Quality::Low) < level(Quality::Medium));
         assert!(level(Quality::Medium) < level(Quality::Max));
+    }
+
+    #[test]
+    fn only_max_turns_dynamic_resolution_off() {
+        let has = |q, key: &str, value: &str| {
+            quality_flags(q).into_iter().any(|(k, v)| k == key && v == value)
+        };
+        assert!(has(Quality::Max, "DFFlagDebugDisableDRS", "True"));
+        assert!(has(Quality::Max, "DFIntAutomaticDRSHundredthPercent", "0"));
+        for q in [Quality::Low, Quality::Medium] {
+            assert!(!quality_flags(q).into_iter().any(|(k, _)| k.contains("DRS")));
+        }
+    }
+
+    /// Names checked against `libroblox.so` 2.742 and absent from it. The
+    /// engine accepts and ignores an unknown name, so nothing else would ever
+    /// say one of these had crept back in.
+    #[test]
+    fn no_level_carries_a_name_the_engine_does_not_have() {
+        let dead = [
+            "FIntRenderShadowIntensity",
+            "FFlagDisablePostFx",
+            "FIntRenderGrassDetailStrands",
+            "FIntAutomaticDRSHundredthPercent",
+        ];
+        for q in [Quality::Low, Quality::Medium, Quality::Max] {
+            for (k, _) in quality_flags(q) {
+                assert!(!dead.contains(&k), "{k} is not in the engine");
+            }
+        }
+    }
+
+    #[test]
+    fn no_level_sets_a_flag_twice() {
+        for q in [Quality::Low, Quality::Medium, Quality::Max] {
+            let flags = quality_flags(q);
+            let keys: std::collections::BTreeSet<_> = flags.iter().map(|(k, _)| *k).collect();
+            assert_eq!(keys.len(), flags.len(), "{q:?}");
+        }
     }
 
     #[test]

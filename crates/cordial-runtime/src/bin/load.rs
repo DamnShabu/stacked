@@ -111,7 +111,8 @@ env:
                                      window manager for fullscreen
   CORDIAL_COMPOSITOR_BYPASS=1        X11: set _NET_WM_BYPASS_COMPOSITOR
                                      while fullscreen (off by default)
-  CORDIAL_RESOLUTION=<w>x<h>         render resolution (default 1280x720);
+  CORDIAL_RESOLUTION=<w>x<h>         opening window size (default 1280x720);
+                                     the render follows the window after.
                                      CORDIAL_FULLSCREEN overrides it
   CORDIAL_DPI_SCALE=<f>              UI density Roblox lays out against.
                                      1.0 is a low-density phone; try 1.5-2
@@ -451,15 +452,6 @@ fn enter_run_dir(opt: &mut Options) {
     }
 }
 
-/// The render resolution, and why it is not simply the window size.
-///
-/// Roblox sizes its framebuffers and picks UI asset resolutions from what the
-/// surface reports, so 1280x720 is not just a small window — it is the whole
-/// pipeline running at 720p. On a 1920x1200 panel that is the difference
-/// between a native image and an upscaled one.
-///
-/// `CORDIAL_RESOLUTION=<w>x<h>`; defaults to 1280x720, and `CORDIAL_FULLSCREEN`
-/// overrides both with the monitor's own size.
 /// What `GameActivity.bootstrapTheApp()` runs, and whether it ran.
 ///
 /// On Android this is Kotlin: the app fetches its client settings and its flag
@@ -932,6 +924,17 @@ extern "C" fn run_bootstrap() {
     }
 }
 
+/// The size the window is first opened at, `CORDIAL_RESOLUTION=<w>x<h>`,
+/// 1280x720 by default.
+///
+/// **Only the opening size, not the render resolution.** This used to say the
+/// whole pipeline ran at 720p, and it does not: the engine sizes its swapchain
+/// from the window it is given, so once the compositor tiles, maximises or
+/// fullscreens the window the swapchain follows. A default launch logged
+/// `creating framebuffer 942x1004` and then `swapchain ... size 1920x1080`
+/// with this function still answering 1280x720. Blur in a 3D game at a native
+/// swapchain size is the engine's own scaling, which is
+/// `graphics_quality.rs`'s business, not this.
 fn requested_resolution() -> (u32, u32) {
     let Ok(v) = std::env::var("CORDIAL_RESOLUTION") else {
         return (1280, 720);
