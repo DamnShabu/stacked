@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.9" date="2026-10-15">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.9</url>
+      <description>
+        <p>
+          On AMD and Intel graphics without built-in ETC2 support, Stacked asks
+          the driver to decode those textures, as Sober does, aimed at blurry
+          3D textures and cursors.
+        </p>
+      </description>
+    </release>
     <release version="0.21.8" date="2026-10-15">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.8</url>
       <description>

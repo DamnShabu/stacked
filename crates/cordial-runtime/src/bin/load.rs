@@ -1639,6 +1639,20 @@ enum DiskMoment {
 }
 
 fn main() -> ExitCode {
+    // Desktop GPUs without ETC2 (RADV on this host) make the engine log
+    // `ETC1 0 ETC2 0` where Sober, on the same card, logs `ETC1 1 ETC2 1` and
+    // `using emulated fast ETC2 support` -- and Sober's textures are the crisp
+    // ones. Mesa has its own ETC2 decoder behind this driconf option, so the
+    // driver then truthfully reports the feature and does the decoding; no stub
+    // claims anything. Set first, before any thread exists and long before the
+    // Vulkan loader runs. A value the user already set wins, so
+    // `vk_require_etc2=false` turns it off; drivers other than Mesa ignore it.
+    // INFERRED: that this is what sharpens in-game textures. Signed-out loads no
+    // ETC2 image, so only the Caps line has been seen to change.
+    if std::env::var_os("vk_require_etc2").is_none() {
+        std::env::set_var("vk_require_etc2", "true");
+    }
+
     // **Before `parse()`, and that is not stylistic.** `--profile` latches the
     // active profile directory as a side effect of being parsed, and the whole
     // point of `--headless` is that the compositor must already be this
