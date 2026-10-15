@@ -7016,7 +7016,9 @@ impl WaylandWindow {
         // any traffic on the display connection — and the display connection
         // is exactly where a click on the header bar arrives, so the idle case
         // is the only one that waits.
+        let pump_started = std::time::Instant::now();
         self.host.0.pump();
+        let gtk_ms = pump_started.elapsed().as_millis() as u64;
         // The close button destroys the toplevel inside the `pump` just above,
         // and the surface proxies below go with it. `looper::pump` only learns
         // of the close from `window_closed` on its next turn, so without this
@@ -7024,6 +7026,9 @@ impl WaylandWindow {
         // `wl_argument_from_va_list` under `sync_canvas_geometry`, caught with
         // gdb on a window closed in a nested sway. The launcher reported that
         // as a crash every time somebody closed the game.
+        // Recorded on every exit below, or a pump that returned early would
+        // leave the previous one's numbers standing.
+        let _phases = PumpPhases { started: pump_started, gtk_ms };
         if self.host.0.wl_surface().is_none() {
             return;
         }
@@ -7146,6 +7151,19 @@ impl WaylandWindow {
              compositor error on {name}#{id}, code {code}. \
              The compositor's own description of it is on stderr just above this line."
         );
+    }
+}
+
+/// Hands the pump's timings to `input::note_pump_phases` when the pump ends, by
+/// whatever return it takes.
+struct PumpPhases {
+    started: std::time::Instant,
+    gtk_ms: u64,
+}
+
+impl Drop for PumpPhases {
+    fn drop(&mut self) {
+        super::input::note_pump_phases(self.gtk_ms, self.started.elapsed().as_millis() as u64);
     }
 }
 

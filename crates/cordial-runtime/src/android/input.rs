@@ -1508,12 +1508,49 @@ pub fn note_pump_tick() {
     if last != u64::MAX && pump_gap_is_a_stall(now.saturating_sub(last), now) {
         eprintln!(
             "[cordial] input pump: the loop that delivers input did not run for {} ms; keys and \
-             mouse that arrived meanwhile were queued and are being delivered now, none were dropped",
-            now - last
+             mouse that arrived meanwhile were queued and are being delivered now, none were dropped{}",
+            now - last,
+            pump_phase_note(now - last)
         );
     }
 }
 
+/// How long the last input pump spent inside GTK's main loop, and in all.
+/// Zero until a pump has finished one.
+static LAST_PUMP_GTK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PUMP_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Recorded by the display backend at the end of each pump, so that a stall can
+/// say which half it was in.
+///
+/// The stall line named a 3,057 ms gap (#108) and nothing about where it went:
+/// the pump runs GTK's main loop, which also runs every timer and D-Bus
+/// callback the process has registered, and a slow one of those is
+/// indistinguishable from the engine's thread being held up somewhere outside
+/// the pump entirely. Two integers per pump, not a profile.
+pub fn note_pump_phases(gtk_ms: u64, total_ms: u64) {
+    LAST_PUMP_GTK_MS.store(gtk_ms, Ordering::Relaxed);
+    LAST_PUMP_TOTAL_MS.store(total_ms, Ordering::Relaxed);
+}
+
+/// The sentence appended to a stall line: where the previous pump's time went.
+/// The previous pump is the one a gap is measured from, so a stall inside GTK's
+/// loop shows up here and one outside the pump shows up as a small total.
+fn pump_phase_note(gap_ms: u64) -> String {
+    pump_phase_sentence(
+        gap_ms,
+        LAST_PUMP_GTK_MS.load(Ordering::Relaxed),
+        LAST_PUMP_TOTAL_MS.load(Ordering::Relaxed),
+    )
+}
+
+fn pump_phase_sentence(gap_ms: u64, gtk_ms: u64, total_ms: u64) -> String {
+    format!(
+        "; the pump before it ran for {total_ms} ms ({gtk_ms} ms of that in GTK's main loop), \
+         so {} ms of the gap were outside the pump",
+        gap_ms.saturating_sub(total_ms)
+    )
+}
 pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     if no_pass_key() {
         return;
@@ -3212,6 +3249,15 @@ mod tests {
         assert!(!pump_gap_is_a_stall(999, 120_000));
         assert!(pump_gap_is_a_stall(1000, 120_000));
         assert!(!pump_gap_is_a_stall(30_000, 20_000), "loading the engine is not a stall");
+    }
+
+    #[test]
+    fn a_stall_line_says_how_much_of_the_gap_was_inside_the_pump() {
+        let inside = pump_phase_sentence(3057, 3051, 3055);
+        assert!(inside.contains("ran for 3055 ms (3051 ms of that in GTK's main loop)"), "{inside}");
+        assert!(inside.contains("so 2 ms of the gap were outside"), "{inside}");
+        let outside = pump_phase_sentence(3020, 0, 1);
+        assert!(outside.contains("so 3019 ms of the gap were outside"), "{outside}");
     }
 
     /// The whole policy table, because the interesting cases are the ones

@@ -2130,7 +2130,10 @@ impl HostWindow {
 pub fn pump_input_events(handle: i64) {
     super::input::note_pump_tick();
     if let Some(w) = current() {
+        let started = std::time::Instant::now();
         w.pump_input_events(handle);
+        // No GTK main loop is iterated on this path, so none of it is GTK's.
+        super::input::note_pump_phases(0, started.elapsed().as_millis() as u64);
     }
 }
 
