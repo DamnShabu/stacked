@@ -251,6 +251,16 @@ if(PIPEWIRE_FOUND)
   add_dependencies(cordial_liblog cordial_pipewire_backend_test)
 endif()
 
+# The recorder's copy of the engine's sound (record_tap.h, ADR-059). Pure ring
+# and mixing logic, so it runs at build time with no sound server, like the
+# checks around it.
+add_executable(cordial_record_tap_test EXCLUDE_FROM_ALL record_tap_test.cpp)
+target_compile_options(cordial_record_tap_test PRIVATE -UNDEBUG)
+add_custom_command(TARGET cordial_record_tap_test POST_BUILD
+  COMMAND cordial_record_tap_test
+  COMMENT "Running recorder audio tap checks")
+add_dependencies(cordial_liblog cordial_record_tap_test)
+
 add_executable(cordial_aaudio_input_callback_test EXCLUDE_FROM_ALL
   aaudio_input_callback.cpp aaudio_input_callback_test.cpp)
 target_compile_options(cordial_aaudio_input_callback_test PRIVATE -UNDEBUG)
