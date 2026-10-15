@@ -4148,6 +4148,29 @@ fn engine_owns_lock(
     toplevel_lock && engine_wants && (!dragging || wanted_before_drag || shift_during_drag)
 }
 
+/// Where to tell the compositor the cursor should reappear when a lock is given
+/// back, in the coordinates of the surface the lock was on.
+///
+/// **A lock on the toplevel is in toplevel coordinates, and the engine's pointer
+/// is in canvas coordinates.** The canvas sits below the header bar, so a hint
+/// that forgot the difference put the cursor `offset` up and to the left of where
+/// the drag had left it, and a right-button drag ended with the cursor jumping by
+/// the height of the title bar. Seen in a nested Hyprland as the press point
+/// climbing 46 px with every drag (y = 185, 139, 93, 47, 1 over five drags
+/// without moving the pointer), and in a nested KWin as a hint of (640, 360.5)
+/// for a press at that canvas point whose toplevel position is (665, 431.5).
+/// Only the shift-lock path, which recentres and so already added the offset,
+/// was right.
+///
+/// `canvas_pointer` is the engine's pointer, already recentred by the caller
+/// when the engine owned the lock.
+fn release_hint(toplevel: bool, canvas_pointer: (f32, f32), offset: (i32, i32)) -> (f32, f32) {
+    if toplevel {
+        (canvas_pointer.0 + offset.0 as f32, canvas_pointer.1 + offset.1 as f32)
+    } else {
+        canvas_pointer
+    }
+}
 
 
 /// `CORDIAL_NO_POINTER_LOCK=1` — never capture the pointer, whatever the engine
@@ -5039,29 +5062,14 @@ fn constrain_toplevel() -> bool {
         if slot.is_null() {
             return;
         }
-        // Leaving a lock the engine held (shift lock, first person) puts the
-        // cursor back at the canvas centre, where the engine has been keeping
-        // its own pointer; anything else goes back where the engine drew it.
-        // KWin only -- see `ENGINE_OWNS_LOCK`.
-        let centre = ENGINE_OWNS_LOCK.swap(false, Ordering::AcqRel) && Self::constrain_toplevel();
-        let (x, y) = if centre {
+        let toplevel = Self::constrain_toplevel();
+        let centre = ENGINE_OWNS_LOCK.swap(false, Ordering::AcqRel) && toplevel;
+        if centre {
             let (cx, cy) = self.canvas_centre();
             self.set_pointer_position(cx, cy);
-            (cx, cy)
-        } else {
-            self.pointer_position()
-        };
-        // The hint is in the constrained surface's coordinates, and the engine's
-        // position is the canvas's. On the toplevel that is a header bar's
-        // height out, so the cursor came back that far above where the engine
-        // had drawn it.
-        let on_toplevel = Self::constrain_toplevel();
-        let (hx, hy) = if on_toplevel {
-            let (ox, oy) = *self.placed_at.lock().unwrap_or_else(|e| e.into_inner());
-            (x + ox as f32, y + oy as f32)
-        } else {
-            (x, y)
-        };
+        }
+        let offset = *self.placed_at.lock().unwrap_or_else(|e| e.into_inner());
+        let (x, y) = release_hint(toplevel, self.pointer_position(), offset);
         // SAFETY: `*slot` is the live locked-pointer proxy; the two calls match
         // `set_cursor_position_hint`'s "ff" and `destroy`'s empty signature,
         // the latter sent with the destroy flag its `type="destructor"`
@@ -5073,8 +5081,8 @@ fn constrain_toplevel() -> bool {
                 std::ptr::null(),
                 1,
                 0,
-                f32_to_fixed(hx),
-                f32_to_fixed(hy),
+                f32_to_fixed(x),
+                f32_to_fixed(y),
             );
             (self.wl.marshal_flags)(
                 *slot,
@@ -5087,7 +5095,7 @@ fn constrain_toplevel() -> bool {
         }
         *slot = std::ptr::null_mut();
         drop(slot);
-        if on_toplevel {
+        if toplevel {
             self.parent_constraint_changed();
         }
         POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
@@ -7134,6 +7142,16 @@ mod tests {
         assert!(!drag_takes_the_lock(true, true, true, true), "CORDIAL_NO_DRAG_LOCK");
         assert!(!drag_takes_the_lock(false, true, false, true), "no camera button down");
         assert!(!drag_takes_the_lock(false, true, true, false), "the pointer is not the engine's");
+    }
+
+    /// The hint is in the coordinates of the surface that was locked. On the
+    /// toplevel that is the canvas point plus the header bar, whoever owned the
+    /// lock; the canvas lock has no offset to add.
+    #[test]
+    fn the_release_hint_is_in_the_locked_surfaces_coordinates() {
+        assert_eq!(release_hint(true, (640.0, 360.5), (25, 71)), (665.0, 431.5));
+        assert_eq!(release_hint(true, (500.0, 300.0), (0, 46)), (500.0, 346.0));
+        assert_eq!(release_hint(false, (640.0, 360.5), (25, 71)), (640.0, 360.5));
     }
 
     /// The Hyprland switch decides the case above, so its detection is pinned
