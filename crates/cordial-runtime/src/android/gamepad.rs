@@ -89,11 +89,14 @@
 //! ride in on a feature that cannot be switched on yet.
 //!
 //! What is lost by waiting is real and worth naming: joydev reports *indices*
-//! rather than button codes, so [`button_keycode`] and [`axis_code`] are a fixed
-//! table for the standard layout rather than a per-device mapping. gilrs carries
-//! `SDL_GameControllerDB`, which is that mapping for thousands of pads, and it
-//! also exposes the vendor and product ids a `gamepadType` classifier would want
-//! once the ordinals are known. When the udev dependency is accepted, this
+//! rather than button codes. [`Layout`] recovers the code behind each index from
+//! the capability masks sysfs publishes, which is enough to stop a pad with
+//! fewer axes or buttons than the standard one shifting everything after the
+//! gap; [`button_keycode`] and [`axis_code`] remain as the standard layout, used
+//! when sysfs cannot be read. What it does not do is what gilrs carries in
+//! `SDL_GameControllerDB`: a per-model mapping for pads whose drivers report
+//! unusual codes, and the vendor and product ids a `gamepadType` classifier would
+//! want once the ordinals are known. When the udev dependency is accepted, this
 //! module's [`poll`] is the seam to swap underneath.
 //!
 //! TASKS.md recommends `libmanette` for this and should not: it has no Rust
@@ -328,9 +331,155 @@ struct Pad {
     /// engine has not been told the shape of is the half-working gamepad
     /// support this module refuses to ship.
     announced: bool,
+    /// What each joydev button and axis index means on *this* pad. See
+    /// [`Layout`]: the fixed tables below are only its fallback.
+    layout: Layout,
 }
 
 static PADS: std::sync::Mutex<Vec<Pad>> = std::sync::Mutex::new(Vec::new());
+
+/// What each joydev button and axis *index* on one pad stands for, read from the
+/// pad rather than assumed.
+///
+/// **joydev numbers the buttons and axes a device has, not the ones a standard
+/// pad has, and the fixed tables below assumed the second.** The kernel assigns
+/// axis indices to the `ABS_*` codes the device declares in ascending order, and
+/// button indices to the declared `BTN_*` codes from `BTN_JOYSTICK` upwards
+/// (then the ones below it). A pad that omits one shifts everything after it:
+///
+/// - A pad with digital triggers declares no `ABS_Z`/`ABS_RZ`, so its right
+///   stick arrives as axes 2 and 3, which the table read as the left trigger and
+///   the right stick's *horizontal* axis. The right stick then pushes nothing
+///   sideways and the camera does not turn -- reported on #113.
+/// - `xpad` declares no `BTN_C` and no `BTN_Z`, so X is joydev button 2, not 3,
+///   and every button from there on was one or two places out.
+///
+/// The code each index stands for is exactly what sysfs publishes beside the
+/// device (`capabilities/key` and `capabilities/abs`), so no ioctl and no libc
+/// are needed; the same files [`is_a_controller`] already reads. If either is
+/// unreadable the layout falls back to the standard-pad tables, which is what
+/// every pad got before.
+///
+/// The ordering rule is read from the kernel's `joydev_connect`, and checked
+/// here only against the layouts in the tests below, not against hardware: no
+/// pad is attached to the machine this was written on. `INFERRED` for the
+/// engine's side, as everywhere in this file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Layout {
+    buttons: Vec<Option<i32>>,
+    axes: Vec<Option<i32>>,
+}
+
+impl Layout {
+    /// The standard pad: every button from `BTN_SOUTH` to `BTN_THUMBR` and axes
+    /// X, Y, Z, RX, RY, RZ and one hat. Also the answer when sysfs says nothing.
+    fn standard() -> Self {
+        Layout {
+            buttons: (0..15).map(button_keycode).collect(),
+            axes: (0..8).map(axis_code).collect(),
+        }
+    }
+
+    /// From the two sysfs capability masks, in joydev's numbering.
+    fn from_capabilities(key_mask: &str, abs_mask: &str) -> Self {
+        let keys = set_bits(key_mask);
+        let low: Vec<usize> = keys.iter().copied().filter(|&c| c < BTN_JOYSTICK).collect();
+        let high: Vec<usize> = keys.iter().copied().filter(|&c| c >= BTN_JOYSTICK).collect();
+        // `BTN_JOYSTICK` and above first, then `BTN_MISC` up to it: the order
+        // `joydev_connect` fills `keymap` in.
+        let buttons = high.into_iter().chain(low.into_iter().filter(|&c| c >= BTN_MISC))
+            .map(btn_to_android)
+            .collect();
+        let axes = set_bits(abs_mask).into_iter().map(abs_to_android).collect();
+        Layout { buttons, axes }
+    }
+
+    fn button(&self, index: u8) -> Option<i32> {
+        self.buttons.get(index as usize).copied().flatten()
+    }
+
+    fn axis(&self, index: u8) -> Option<i32> {
+        self.axes.get(index as usize).copied().flatten()
+    }
+}
+
+/// `BTN_MISC`, the bottom of the range joydev considers buttons at all.
+const BTN_MISC: usize = 0x100;
+
+/// Every set bit of a sysfs capability mask, ascending.
+///
+/// The mask prints as space-separated hex words, most significant first, each
+/// 64 bits wide -- the layout [`declares_a_gamepad_button`] already relies on.
+fn set_bits(mask: &str) -> Vec<usize> {
+    let words: Vec<&str> = mask.split_whitespace().collect();
+    let mut bits = Vec::new();
+    for (i, w) in words.iter().rev().enumerate() {
+        let Ok(word) = u64::from_str_radix(w, 16) else { continue };
+        for b in 0..64 {
+            if word >> b & 1 == 1 {
+                bits.push(i * 64 + b);
+            }
+        }
+    }
+    bits
+}
+
+/// Android `KEYCODE_BUTTON_*` for a Linux `BTN_*` code, or `None` for one with
+/// no entry here. The same mapping Android's generic key layout makes, and the
+/// one [`button_keycode`] spells positionally for a pad that declares them all.
+fn btn_to_android(code: usize) -> Option<i32> {
+    Some(match code {
+        0x130 => 96,  // BTN_SOUTH  -> BUTTON_A
+        0x131 => 97,  // BTN_EAST   -> BUTTON_B
+        0x132 => 98,  // BTN_C      -> BUTTON_C
+        0x133 => 99,  // BTN_NORTH  -> BUTTON_X
+        0x134 => 100, // BTN_WEST   -> BUTTON_Y
+        0x135 => 101, // BTN_Z      -> BUTTON_Z
+        0x136 => 102, // BTN_TL     -> BUTTON_L1
+        0x137 => 103, // BTN_TR     -> BUTTON_R1
+        0x138 => 104, // BTN_TL2    -> BUTTON_L2
+        0x139 => 105, // BTN_TR2    -> BUTTON_R2
+        0x13a => 109, // BTN_SELECT -> BUTTON_SELECT
+        0x13b => 108, // BTN_START  -> BUTTON_START
+        0x13c => 110, // BTN_MODE   -> BUTTON_MODE
+        0x13d => 106, // BTN_THUMBL -> BUTTON_THUMBL
+        0x13e => 107, // BTN_THUMBR -> BUTTON_THUMBR
+        _ => return None,
+    })
+}
+
+/// Android `MotionEvent.AXIS_*` for a Linux `ABS_*` code, with the right stick
+/// on `AXIS_Z`/`AXIS_RZ` as Android does it. `None` for an axis with no entry.
+fn abs_to_android(code: usize) -> Option<i32> {
+    Some(match code {
+        0x00 => 0,  // ABS_X      -> AXIS_X
+        0x01 => 1,  // ABS_Y      -> AXIS_Y
+        0x02 => 17, // ABS_Z      -> AXIS_LTRIGGER
+        0x03 => 11, // ABS_RX     -> AXIS_Z
+        0x04 => 14, // ABS_RY     -> AXIS_RZ
+        0x05 => 18, // ABS_RZ     -> AXIS_RTRIGGER
+        0x10 => 15, // ABS_HAT0X  -> AXIS_HAT_X
+        0x11 => 16, // ABS_HAT0Y  -> AXIS_HAT_Y
+        _ => return None,
+    })
+}
+
+/// The layout of `/dev/input/js{id}`, or the standard one if sysfs cannot say.
+fn read_layout(id: i32) -> Layout {
+    let dir = format!("/sys/class/input/js{id}/device/capabilities");
+    let read = |name: &str| std::fs::read_to_string(format!("{dir}/{name}")).ok();
+    let (Some(key), Some(abs)) = (read("key"), read("abs")) else {
+        return Layout::standard();
+    };
+    let layout = Layout::from_capabilities(&key, &abs);
+    if input::trace_gamepad() {
+        eprintln!(
+            "[cordial] gamepad: js{id} buttons {:?} axes {:?} (Android codes by joydev index)",
+            layout.buttons, layout.axes
+        );
+    }
+    layout
+}
 
 /// Android `KeyEvent.KEYCODE_BUTTON_*` for a joydev button index.
 ///
@@ -395,7 +544,7 @@ fn decode(buf: &[u8; JS_EVENT_LEN]) -> (u8, u8, i16) {
 /// every declaration names the pad by the id connect established -- and because
 /// disconnect carries no type, the engine is evidently keeping the type against
 /// that id from this call onwards.
-fn announce(id: i32, n_buttons: u8, n_axes: u8) {
+fn announce(id: i32, n_buttons: u8, n_axes: u8, layout: &Layout) {
     let name = device_name(id);
     let family = name.as_deref().map(classify);
     let ty = family.map_or_else(gamepad_type, type_for);
@@ -428,12 +577,12 @@ fn announce(id: i32, n_buttons: u8, n_axes: u8) {
     }
     input::deliver_gamepad_connect(id, ty);
     for i in 0..n_buttons {
-        if let Some(code) = button_keycode(i) {
+        if let Some(code) = layout.button(i) {
             input::deliver_gamepad_supported_key(id, code, true, ty);
         }
     }
     for i in 0..n_axes {
-        if let Some(code) = axis_code(i) {
+        if let Some(code) = layout.axis(i) {
             input::deliver_gamepad_supported_motion(id, code, SOURCE_GAMEPAD_JOYSTICK, true, ty);
         }
     }
@@ -443,8 +592,8 @@ fn announce(id: i32, n_buttons: u8, n_axes: u8) {
 ///
 /// The two components this axis is not carries 0.0 rather than a repeat of the
 /// value. Both are guesses; a zero is the guess that stays recognisable as one.
-fn send_axis(id: i32, index: u8, value: i16) {
-    let Some(code) = axis_code(index) else {
+fn send_axis(id: i32, index: u8, value: i16, layout: &Layout) {
+    let Some(code) = layout.axis(index) else {
         return;
     };
     input::deliver_gamepad_axis(id, code, value as f32 / JS_AXIS_MAX, 0.0, 0.0);
@@ -654,7 +803,7 @@ fn drain(pad: &mut Pad) -> bool {
                     // character device decide whether the client stays up.
                     (true, JS_EVENT_BUTTON) => init_buttons = init_buttons.max(index.saturating_add(1)),
                     (true, JS_EVENT_AXIS) => init_axes = init_axes.max(index.saturating_add(1)),
-                    (false, k) if pad.announced => dispatch(pad.id, k, index, value),
+                    (false, k) if pad.announced => dispatch(pad.id, k, index, value, &pad.layout),
                     (false, k) => deferred.push((k, index, value)),
                     _ => {}
                 }
@@ -669,10 +818,10 @@ fn drain(pad: &mut Pad) -> bool {
         }
     }
     if !pad.announced && (init_buttons > 0 || init_axes > 0) {
-        announce(pad.id, init_buttons, init_axes);
+        announce(pad.id, init_buttons, init_axes, &pad.layout);
         pad.announced = true;
         for (k, index, value) in deferred {
-            dispatch(pad.id, k, index, value);
+            dispatch(pad.id, k, index, value, &pad.layout);
         }
     } else if !pad.announced && !deferred.is_empty() {
         // Events arriving from a device that never sent an init burst, which
@@ -694,10 +843,10 @@ fn drain(pad: &mut Pad) -> bool {
     true
 }
 
-fn dispatch(id: i32, kind: u8, index: u8, value: i16) {
+fn dispatch(id: i32, kind: u8, index: u8, value: i16, layout: &Layout) {
     match kind {
         JS_EVENT_BUTTON => {
-            if let Some(code) = button_keycode(index) {
+            if let Some(code) = layout.button(index) {
                 input::deliver_gamepad_button(
                     id,
                     code,
@@ -705,7 +854,7 @@ fn dispatch(id: i32, kind: u8, index: u8, value: i16) {
                 );
             }
         }
-        JS_EVENT_AXIS => send_axis(id, index, value),
+        JS_EVENT_AXIS => send_axis(id, index, value, layout),
         _ => {}
     }
 }
@@ -771,7 +920,7 @@ pub fn poll() {
                 if input::trace_gamepad() {
                     eprintln!("[cordial] gamepad: opened /dev/input/js{id}");
                 }
-                pads.push(Pad { id, file, announced: false });
+                pads.push(Pad { id, file, announced: false, layout: read_layout(id) });
             }
         }
     }
@@ -810,7 +959,7 @@ fn poll_probe() {
          {{DefaultController,PlayStationController,XboxController}} and sweep \
          CORDIAL_GAMEPAD_TYPE to find which N is which."
     );
-    announce(0, 15, 8);
+    announce(0, 15, 8, &Layout::standard());
 }
 
 #[cfg(test)]
@@ -820,7 +969,12 @@ mod tests {
     fn pad(id: i32, announced: bool) -> Pad {
         // A real file descriptor that never produces an event; `withdraw` only
         // drops it, which is what letting go of a device is.
-        Pad { id, file: std::fs::File::open("/dev/null").unwrap(), announced }
+        Pad {
+            id,
+            file: std::fs::File::open("/dev/null").unwrap(),
+            announced,
+            layout: super::Layout::standard(),
+        }
     }
 
     /// **Switching the controllers off has to tell the engine**, or it keeps
@@ -875,6 +1029,67 @@ mod tests {
         // Nothing at all.
         assert!(!declares_a_gamepad_button("0 0 0 0 0"));
         assert!(!declares_a_gamepad_button(""));
+    }
+
+    /// **joydev indexes what a pad declares, not what a standard pad has.**
+    ///
+    /// #113: the right stick did not turn the camera. The masks are what the
+    /// kernel publishes for each shape of pad; the expectations follow
+    /// `joydev_connect`, which numbers `ABS_*` ascending and `BTN_*` from
+    /// `BTN_JOYSTICK` up. Control: the same pads through the old positional
+    /// tables, printed alongside, are wrong where the assertions say so.
+    #[test]
+    fn indices_follow_what_the_pad_declares_not_the_standard_layout() {
+        use super::{axis_code, button_keycode, Layout};
+        // An xpad-style Xbox pad: X Y Z RX RY RZ and the hat; no BTN_C, no BTN_Z.
+        //   abs 0x3003f = bits 0-5 and 16-17.
+        //   key: bits 0x130,0x131,0x133,0x134,0x136,0x137,0x13a-0x13e.
+        let xbox_abs = "3003f";
+        let xbox_key = {
+            // Bits 0x100..0x13f live in the fifth 64-bit word from the bottom.
+            let mut word = 0u64;
+            for b in [0x130, 0x131, 0x133, 0x134, 0x136, 0x137, 0x13a, 0x13b, 0x13c, 0x13d, 0x13e] {
+                word |= 1 << (b - 0x100);
+            }
+            format!("0 0 {word:x} 0 0 0 0")
+        };
+        let xbox = Layout::from_capabilities(&xbox_key, xbox_abs);
+        assert_eq!(
+            xbox.axes,
+            [0, 1, 17, 11, 14, 18, 15, 16].map(Some),
+            "a full pad is the standard axis order"
+        );
+        assert_eq!(
+            xbox.buttons,
+            [96, 97, 99, 100, 102, 103, 109, 108, 110, 106, 107].map(Some),
+            "without BTN_C the third button is X"
+        );
+        // The old table called index 2 BUTTON_C and index 4 BUTTON_Y for this pad.
+        assert_eq!(button_keycode(2), Some(98));
+        assert_ne!(xbox.button(2), button_keycode(2));
+
+        // A pad with digital triggers: no ABS_Z, no ABS_RZ. Right stick is 2 and 3.
+        //   abs: X Y RX RY and the hat = bits 0,1,3,4,16,17 = 0x3001b.
+        let digital = Layout::from_capabilities(&xbox_key, "3001b");
+        assert_eq!(digital.axis(2), Some(11), "the right stick's horizontal axis is AXIS_Z");
+        assert_eq!(digital.axis(3), Some(14), "and its vertical axis is AXIS_RZ");
+        assert_eq!(digital.axis(4), Some(15));
+        // The old table sent that stick sideways into the left trigger.
+        assert_eq!(axis_code(2), Some(17));
+    }
+
+    /// Unreadable capabilities must not turn a pad into nothing.
+    #[test]
+    fn an_unreadable_capability_mask_falls_back_to_the_standard_layout() {
+        use super::Layout;
+        let standard = Layout::standard();
+        assert_eq!(standard.buttons.len(), 15);
+        assert_eq!(standard.axes.len(), 8);
+        assert_eq!(standard.button(0), Some(96));
+        assert_eq!(standard.axis(3), Some(11));
+        // A mask that parses to nothing is an empty pad, not a crash.
+        let none = Layout::from_capabilities("", "");
+        assert!(none.buttons.is_empty() && none.axes.is_empty());
     }
 
     /// A real pad passes, wherever in the range its buttons sit.

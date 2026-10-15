@@ -28,6 +28,21 @@ value it used at launch, once, the first time it sees a pad.
 Force feedback is absent rather than broken: there is no rumble, deliberately,
 because a rumble call that silently does nothing is worse than none.
 
+**If a stick or button does the wrong thing**, it is worth an issue. Stacked
+works out which stick and button is which from what the kernel says your pad
+has, so a pad with digital triggers or no analogue ones should be read
+correctly. Include these three lines from a terminal (`js1` and so on for a
+second pad):
+
+```bash
+cat /sys/class/input/js0/device/name
+cat /sys/class/input/js0/device/capabilities/abs
+cat /sys/class/input/js0/device/capabilities/key
+```
+
+Starting with `CORDIAL_TRACE_GAMEPAD=1` also prints the Android code each axis
+and button was given.
+
 ```bash
 CORDIAL_MONITOR=1 CORDIAL_FULLSCREEN=1 cargo run --release --bin cordial-run -- \
   --lib-dir /path/to/lib/x86_64 --apk /path/to/base.apk \
