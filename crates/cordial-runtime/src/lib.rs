@@ -46,6 +46,7 @@ pub mod linking;
 pub mod permissions;
 pub mod plugin_host;
 pub mod profile;
+pub mod recording;
 pub mod refresh;
 pub mod roblox_api;
 pub mod secrets;

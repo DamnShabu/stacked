@@ -81,6 +81,7 @@ values it accepts.
 | `throttle` | `visible` | `visible`, `unfocused` or `off`. When the engine is allowed to slow down in the background. |
 | `pointer_acceleration` | `unlockedcursor` | `unlockedcursor` or `always`. Whether desktop pointer acceleration also affects the camera. |
 | `gamepad` | `true` | Controllers. |
+| `record_session` / `record_audio` | `false` | Record each session to a video file with `ffmpeg`, and its sound. See [recording.md](recording.md). |
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
 | `close_on_leave` | `false` | Close Roblox when you leave an experience. |
 | `mangohud` / `vkbasalt` | `false` | Overlays, if they're installed. See [shaders.md](shaders.md) for vkBasalt. |

@@ -400,6 +400,24 @@ fn handle(line: &str) -> String {
             "ok".into()
         }
         // The capture the compositor would not give us. See `vulkan::capture`.
+        // Recording (ADR-059). The rest of the line is the target, so a path
+        // with a space in it survives the whitespace split above.
+        "record" => {
+            let rest = line.trim_start().strip_prefix("record").unwrap_or("").trim();
+            let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            match sub {
+                "start" => match crate::recording::start(arg) {
+                    Ok(desc) => format!("ok {desc}"),
+                    Err(e) => format!("err {e}"),
+                },
+                "stop" => match crate::recording::stop() {
+                    Ok(summary) => format!("ok {summary}"),
+                    Err(e) => format!("err {e}"),
+                },
+                "status" | "" => format!("ok {}", crate::recording::status()),
+                _ => "err record <start [path]|stop|status>".into(),
+            }
+        }
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
                 Ok(desc) => format!("ok {desc}"),
