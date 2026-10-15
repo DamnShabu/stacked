@@ -1826,7 +1826,12 @@ public:
 
     static std::shared_ptr<InitParams> Create(ENV* env, const char* assets, int width, int height) {
         auto p = std::make_shared<InitParams>();
-        p->baseURL = S("https://www.roblox.com");
+        // Android passes no base URL (`setBaseUrl() null`) and its engine settles
+        // on `https://www.roblox.com/`, with the slash, as the capture in
+        // docs/traces/waydroid-roblox-startup.log.gz shows. Handed the bare form,
+        // this client's engine logged it without the slash (#2); with the slash
+        // the `The base url is` line matches the capture.
+        p->baseURL = S("https://www.roblox.com/");
         p->buildVariant = S("release");
         // See `build_user_agent`. The literal that used to be here was
         // invented, and the comment beside it claimed the opposite.
