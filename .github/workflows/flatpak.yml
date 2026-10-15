@@ -295,12 +295,25 @@ jobs:
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
           df -h /
 
+      # From the Flatpak project's own PPA, not Ubuntu's archive. The manifest
+      # grants `--device=input`, which `flatpak build-finish` only accepts from
+      # 1.15.6, and Ubuntu 24.04 ships 1.14.6: with the archive's package the
+      # build would stop at "Unknown device type input" (INFERRED from
+      # flatpak-context.c at 1.14.10; the PPA publishes 1.18.4 for noble, which
+      # was read from Launchpad, not run here). The guard turns a silent
+      # fallback to an old package into a legible failure.
       - name: Install flatpak
         run: |
+          sudo add-apt-repository -y ppa:flatpak/stable
           sudo apt-get update
           sudo apt-get install -y flatpak flatpak-builder ostree
           flatpak --version
           flatpak-builder --version
+          have=$(flatpak --version | awk '{print $2}')
+          if [ "$(printf '%s\n1.15.6\n' "$have" | sort -V | head -n1)" != 1.15.6 ]; then
+            echo "::error::flatpak $have cannot build a manifest with --device=input (needs 1.15.6)"
+            exit 1
+          fi
 
       # Read from the manifest rather than repeated here, so bumping the
       # runtime is a one-line change in one file.

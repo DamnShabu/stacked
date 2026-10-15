@@ -25,6 +25,23 @@ and which number.** That settles it for everyone, and it is the one thing we
 cannot work out without a controller in front of the engine. Stacked prints the
 value it used at launch, once, the first time it sees a pad.
 
+**In the Flatpak**, the sandbox had no `/dev/input` until the manifest gained
+`--device=input`, so a Flatpak installed before that cannot see a pad. That
+grant exposes `/dev/input` and nothing else in `/dev`, which still includes the
+event nodes of keyboards and mice as far as your own file permissions allow,
+because Flatpak has no grant for the pad alone. To give an existing install the
+permission yourself:
+
+```bash
+flatpak override --user --device=input io.github.damnshabu.Stacked
+```
+
+Flatpak older than 1.15.6, which is what Ubuntu 24.04 and Debian 12 ship, does
+not know `input` and refuses that command; `--device=all` is the wider grant
+those versions have. Checked upstream: `flatpak run --device=input` makes
+`/dev/input` appear in the sandbox. **INFERRED:** a pad then works there; no pad
+was attached for that check.
+
 Force feedback is absent rather than broken: there is no rumble, deliberately,
 because a rumble call that silently does nothing is worse than none.
 

@@ -12,8 +12,8 @@
 #     The second in particular is arbitrary command execution on the host, which
 #     would hand every plugin the sandbox escape the capability model exists to
 #     prevent — below the level any broker can see. See ADR-002 §2.
-#   * `--device=dri` and the display sockets are the whole of what the runtime
-#     needs. Camera, screenshot and filesystem access are never held by Stacked
+#   * `--device=dri`, `--device=input` and the display sockets are the whole of
+#     what the runtime needs. Camera, screenshot and filesystem access are never held by Stacked
 #     on a plugin's behalf; they are granted per-plugin at runtime through
 #     portals, revocably (spec §7).
 #   * The two `--filesystem=xdg-run/...` entries below exist only for the
@@ -81,6 +81,31 @@ finish-args:
   # flathub, 2026-09-29) confirms this empirically: it has no `add-extensions`
   # block at all and its users still get MangoHUD. See ADR-041.
   - --device=dri
+  # Game controllers. `gamepad.rs` reads `/dev/input/jsN` and
+  # `/sys/class/input/jsN/device/capabilities`; with `--device=dri` alone the
+  # sandbox has no `/dev/input` at all (measured, flatpak 1.18.0:
+  # `ls: cannot access '/dev/input': No such file or directory`), so a pad could
+  # never be opened. /sys/class/input is visible without any grant. Reported in
+  # upstream Cordial's issue #113.
+  #
+  # **`input` and not `all`, for the reason in the FIDO comment below.** It binds
+  # `/dev/input` and nothing else in /dev. That is wider than the pad alone: the
+  # event nodes of keyboards and mice come with it, subject to the host's own
+  # file permissions, and there is no joystick-only lever to pull. That is the
+  # cost.
+  #
+  # **An older Flatpak does not refuse this, but it does not grant it.** Before
+  # 1.15.6 (Ubuntu 24.04 and Debian 12 ship 1.14) an installed app's metadata is
+  # read by `flatpak_context_load_metadata`, which logs "Unknown device type" at
+  # debug level and carries on (common/flatpak-context.c at 1.14.10, lines
+  # 1657-1678), so the app installs and runs, just without controllers. Those
+  # users need `flatpak override --user --device=all` instead; docs/controllers.md
+  # says so. What an old Flatpak does refuse is `--device=input` as a command-line
+  # option (`Unknown device type input`), which is why flatpak.yml installs a
+  # current flatpak on the build host: `flatpak-builder` runs `flatpak
+  # build-finish` there with these arguments. INFERRED for the old-host half;
+  # read from source, not run on a 1.14 machine.
+  - --device=input
   # **A USB FIDO2 security key is deliberately NOT reachable, and this is the
   # reasoning rather than an oversight.**
   #
