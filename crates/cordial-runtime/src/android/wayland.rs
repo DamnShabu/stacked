@@ -4163,6 +4163,82 @@ fn no_pointer_lock() -> bool {
     *ON.get_or_init(|| std::env::var_os("CORDIAL_NO_POINTER_LOCK").is_some())
 }
 
+/// Whether a held camera button asks for the pointer lock.
+///
+/// Pure so the Hyprland case can be tested without a compositor: the inputs are
+/// the switch, whether this compositor keeps a held button across a lock
+/// activation ([`drag_lock_keeps_the_button`]), whether a camera button is
+/// down, and whether the pointer is the engine's to capture.
+fn drag_takes_the_lock(
+    no_drag_lock: bool,
+    compositor_keeps_the_button: bool,
+    camera_button_held: bool,
+    owns_pointer: bool,
+) -> bool {
+    !no_drag_lock && compositor_keeps_the_button && camera_button_held && owns_pointer
+}
+
+/// Whether the compositor keeps a held button when a lock activates under it.
+///
+/// **Hyprland does not, and taking the lock at the press ended every right-drag
+/// before it began.** 0.26.0 moved Hyprland to a lock on the toplevel so that
+/// it would answer `locked`; the reporter of #56 then traced 0.27.0 on 0.56.2
+/// and found the right-button camera dead. Activating the constraint moves
+/// pointer focus from the canvas to the toplevel, and Hyprland releases the
+/// button that was held on the surface focus left: a `wl_pointer.button`
+/// release carrying the *press's own timestamp*, 133 microseconds after it and
+/// before the `leave`. `dispatch_pointer_button` took that for the drag ending
+/// and destroyed the lock, so `locked` arrived 62 microseconds after the
+/// `destroy` and was discarded. The physical release never arrived either --
+/// every right press in the trace has exactly one release and it is always the
+/// synthetic one -- which is why a grace period around the release is not a fix
+/// and only turns the dead camera into a stuck one (that was tried on a local
+/// 0.13.2 build, and every drag then lasted until Escape).
+///
+/// So on Hyprland a held button never asks for the lock. That is the behaviour
+/// before 0.26.0 for a drag: the camera pans from relative motion and the
+/// cursor is free, which is worse than a lock and better than no camera. The
+/// engine's own request -- shift lock, first person -- still takes the toplevel
+/// lock, because no button is held when it activates, and that half is
+/// confirmed working on 0.56.2.
+///
+/// `INFERRED` for the mechanism: it is read off that wire trace, and could not
+/// be reproduced here: Hyprland 0.56.2 needs a host compositor offering
+/// `wl_compositor` and `xdg_wm_base` at version 6, weston and sway offer 5, and
+/// headless mutter never configured its window. What *is* measured is
+/// Cordial's side: with `XDG_CURRENT_DESKTOP=Hyprland` the `pointerlock` readback
+/// no longer reports a request during a right drag. Whether the camera then
+/// pans on a real Hyprland is the reporter's to confirm.
+/// `CORDIAL_DRAG_LOCK=1` puts the old behaviour back for anyone who wants to
+/// try a newer Hyprland.
+fn drag_lock_keeps_the_button() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| {
+        if std::env::var_os("CORDIAL_DRAG_LOCK").is_some() {
+            return true;
+        }
+        !on_hyprland()
+    })
+}
+
+/// Whether the compositor is Hyprland, by the same two variables
+/// `constrain_toplevel` reads plus the instance signature Hyprland exports to
+/// every client it starts.
+fn on_hyprland() -> bool {
+    let var = |name: &str| std::env::var(name).unwrap_or_default();
+    hyprland_from(
+        &var("XDG_CURRENT_DESKTOP"),
+        &var("XDG_SESSION_DESKTOP"),
+        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some(),
+    )
+}
+
+fn hyprland_from(current_desktop: &str, session_desktop: &str, has_signature: bool) -> bool {
+    current_desktop.to_ascii_lowercase().contains("hyprland")
+        || session_desktop.to_ascii_lowercase().contains("hyprland")
+        || has_signature
+}
+
 /// `CORDIAL_NO_DRAG_LOCK=1` — leave the engine's own request as the only thing
 /// that captures the pointer.
 ///
@@ -4310,16 +4386,12 @@ fn no_fullscreen_confine() -> bool {
     })
 }
 
-/// Whether this is Hyprland, which routes pointer focus differently enough to
-/// need its own answers in two places -- see `confine_pointer` and
-/// `parent_is_canvas`.
+/// [`on_hyprland`], read once. Hyprland routes pointer focus differently
+/// enough to need its own answers -- see `confine_pointer`,
+/// `parent_is_canvas` and `constrain_toplevel`.
 fn is_hyprland() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE").is_some()
-            || std::env::var("XDG_CURRENT_DESKTOP")
-                .is_ok_and(|d| d.to_ascii_lowercase().contains("hyprland"))
-    })
+    *ON.get_or_init(on_hyprland)
 }
 
 unsafe extern "C" fn relative_pointer_motion(
@@ -4658,9 +4730,12 @@ impl WaylandWindow {
         // where the cursor is meant to stay put, which is exactly the
         // distinction Roblox's own desktop client draws.
         const CAMERA_BUTTONS: i32 = super::input::BUTTON_SECONDARY | super::input::BUTTON_TERTIARY;
-        let dragging = !no_drag_lock()
-            && self.pointer_buttons.load(Ordering::Relaxed) & CAMERA_BUTTONS != 0
-            && engine_owns_pointer(self);
+        let dragging = drag_takes_the_lock(
+            no_drag_lock(),
+            drag_lock_keeps_the_button(),
+            self.pointer_buttons.load(Ordering::Relaxed) & CAMERA_BUTTONS != 0,
+            engine_owns_pointer(self),
+        );
         let asked = engine_wants || dragging || force_pointer_lock();
 
         // **A dialog on top of the canvas takes the cursor back, whatever the
@@ -4852,8 +4927,7 @@ fn constrain_toplevel() -> bool {
         let session = std::env::var("XDG_SESSION_DESKTOP").unwrap_or_default().to_ascii_lowercase();
         let kde = desktop.contains("kde") || desktop.contains("plasma")
             || session.contains("kde") || session.contains("plasma");
-        let hyprland = is_hyprland() || session.contains("hyprland");
-        kde || hyprland
+        kde || on_hyprland()
     })
 }
 
@@ -7045,6 +7119,32 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// #56 and #105: on Hyprland the lock activating under a held right button
+    /// makes the compositor release that button, and the real release never
+    /// comes, so a drag that asks for the lock is a drag that ends at once.
+    #[test]
+    fn a_camera_drag_asks_for_the_lock_unless_the_compositor_would_drop_the_button() {
+        // Every other compositor: a held camera button over the canvas asks.
+        assert!(drag_takes_the_lock(false, true, true, true));
+        // Hyprland: the same drag does not, whatever else is true.
+        assert!(!drag_takes_the_lock(false, false, true, true));
+        // The three ways it never asked, on any compositor.
+        assert!(!drag_takes_the_lock(true, true, true, true), "CORDIAL_NO_DRAG_LOCK");
+        assert!(!drag_takes_the_lock(false, true, false, true), "no camera button down");
+        assert!(!drag_takes_the_lock(false, true, true, false), "the pointer is not the engine's");
+    }
+
+    /// The Hyprland switch decides the case above, so its detection is pinned
+    /// by name without touching the process environment other tests read.
+    #[test]
+    fn hyprland_is_recognised_from_the_session_variables() {
+        assert!(!hyprland_from("", "", false));
+        assert!(!hyprland_from("KDE", "plasma", false));
+        assert!(hyprland_from("Hyprland", "", false));
+        assert!(hyprland_from("", "hyprland", false));
+        assert!(hyprland_from("sway", "", true), "the instance signature alone is enough");
+    }
 
     /// The recentring and the release hint are KWin's. Everything that is not
     /// the toplevel-lock path must come out false whatever else is true, which
