@@ -3339,17 +3339,21 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
             deliver_key(handle, true, keycode, evdev + 8, 0, 0, c as i32, t, t);
             pass_key_event(true, evdev, 0);
         }
-        let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else {
-            if trace_text() {
-                eprintln!("[cordial] script type: no focused textbox");
+        // **The release is owed whether or not a box had focus.** This used
+        // to `continue` past it when none did, so the first character of a
+        // `devctl text` sent while the box was still taking focus went down and
+        // never came up: `KEYS_HELD` kept it (key 48 was seen), and
+        // `idle_keepalive` then sent a hover sixty times a second for as long
+        // as the client ran, which contaminated every measurement made after.
+        if let Some(which) = cordial_linker_sys::game_activity::focused_textbox() {
+            let mut buf = [0u8; 4];
+            if let Some((contents, caret)) = edit_text_buffer(Edit::Insert(c.encode_utf8(&mut buf))) {
+                let _ = cordial_linker_sys::game_activity::text_input(handle, &contents, caret, caret);
+                pass_text(which, &contents, caret);
+                delivered += 1;
             }
-            continue;
-        };
-        let mut buf = [0u8; 4];
-        if let Some((contents, caret)) = edit_text_buffer(Edit::Insert(c.encode_utf8(&mut buf))) {
-            let _ = cordial_linker_sys::game_activity::text_input(handle, &contents, caret, caret);
-            pass_text(which, &contents, caret);
-            delivered += 1;
+        } else if trace_text() {
+            eprintln!("[cordial] script type: no focused textbox");
         }
         if let (Some(keycode), Some(evdev)) = (keysym_to_android(keysym), evdev) {
             deliver_key(handle, false, keycode, evdev + 8, 0, 0, c as i32, t + 30, t);
@@ -3362,6 +3366,16 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `devctl text` with no box focused must still release every key it
+    /// pressed. It used to skip the release, leaving the key in `KEYS_HELD`.
+    #[test]
+    fn scripted_typing_with_no_box_releases_its_keys() {
+        // 'q' is evdev 16; no other test in this file presses it.
+        script_type(0, "qq", 0);
+        let held = KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!held.contains(&16), "key 16 left held after script_type: {held:?}");
+    }
 
     /// Enter belongs to the editor on a multi-line box always, on a single-line
     /// box only when the engine can be told about it, and never with no box.
