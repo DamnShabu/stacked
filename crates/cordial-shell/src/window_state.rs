@@ -69,7 +69,9 @@
 //! delivery. It does not depend on the launcher's accelerator group, so it is
 //! available even when the engine canvas has focus or has failed to draw.
 //!
-//! So both windows restore this state before they are shown. The launcher's
+//! So both windows restore this state. Size and maximised are applied before
+//! the window is shown; a saved fullscreen on the game window is applied after
+//! the engine's first present (see [`remember`]). The launcher's
 //! `win.fullscreen` action and the game's direct F11 handler are installed
 //! before their first frame, leaving no gap in which a restored fullscreen
 //! window has no keyboard way out.
@@ -223,7 +225,11 @@ pub fn save(profile_dir: &Path, which: Which, state: &WindowState) -> std::io::R
 /// the window is open. A window that belongs to one running client cannot, so
 /// this takes the directory once.
 ///
-pub fn remember(window: &libadwaita::Window, profile_dir: PathBuf, which: Which) {
+/// Returns whether the window was left fullscreen, without fullscreening it.
+/// Entering fullscreen before the engine's first frame left clients stuck on
+/// start (INFERRED: reported on Niri and in cage, not reproduced here), so the
+/// caller defers it until something has been drawn.
+pub fn remember(window: &libadwaita::Window, profile_dir: PathBuf, which: Which) -> bool {
     use libadwaita::glib;
     use libadwaita::prelude::*;
 
@@ -236,9 +242,8 @@ pub fn remember(window: &libadwaita::Window, profile_dir: PathBuf, which: Which)
     if state.maximised {
         window.maximize();
     }
-    if state.fullscreen {
-        window.fullscreen();
-    }
+    // Fullscreen is not applied here. It is handed back for the caller to
+    // apply once the engine has drawn: see `wayland::open`.
 
     let write = {
         let dir = profile_dir.clone();
@@ -308,6 +313,7 @@ pub fn remember(window: &libadwaita::Window, profile_dir: PathBuf, which: Which)
         let schedule = schedule.clone();
         window.connect_default_height_notify(move |_| schedule());
     }
+    state.fullscreen
 }
 
 #[cfg(test)]

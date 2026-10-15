@@ -1428,6 +1428,11 @@ unsafe extern "C" fn registry_global_remove(_data: *mut c_void, _registry: *mut 
     super::trace(format_args!("wayland: a global was removed; not handled"));
 }
 
+/// A fullscreen restored from `game-window.json`, waiting for the engine's
+/// first present. See `open`.
+static FULLSCREEN_AFTER_FIRST_PRESENT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 static REGISTRY_LISTENER: RegistryListener =
     RegistryListener { global: registry_global, global_remove: registry_global_remove };
 
@@ -1447,8 +1452,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // Size and maximised state from the last session on this profile, applied
     // before the window is presented so it maps at the remembered geometry
     // rather than snapping to it a frame later. Everything about the file --
-    // where it lives, why the launcher's record is a separate one, and why the
-    // saved fullscreen is written but not restored here -- is in
+    // where it lives, and why the launcher's record is a separate one -- is in
     // `cordial_shell::window_state`, which is also where the handlers that keep
     // it current are wired.
     //
@@ -1459,11 +1463,17 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // resize -- the same sequence a fullscreen toggle mid-session goes through.
     // A restored size that bypassed that would be the letterboxing bug this
     // file's own history is full of.
-    cordial_shell::window_state::remember(
+    let saved_fullscreen = cordial_shell::window_state::remember(
         host.window(),
         crate::profile::active(),
         cordial_shell::window_state::Which::Game,
     );
+    // A saved fullscreen waits for the engine's first present rather than
+    // being set before the window maps. Clients restored straight into
+    // fullscreen were reported stuck on start, on Niri and inside cage --
+    // INFERRED to be the transition landing while the engine is still
+    // bringing up its surface; not reproduced here. `pump` applies it.
+    FULLSCREEN_AFTER_FIRST_PRESENT.store(saved_fullscreen, Ordering::Relaxed);
 
     host.present();
     host.wait_until_mapped(std::time::Duration::from_secs(5))?;
@@ -6438,6 +6448,12 @@ impl WaylandWindow {
         // as a crash every time somebody closed the game.
         if self.host.0.wl_surface().is_none() {
             return;
+        }
+        if FULLSCREEN_AFTER_FIRST_PRESENT.load(Ordering::Relaxed)
+            && super::glcount::QUEUE_PRESENT.load(Ordering::Relaxed) > 0
+            && FULLSCREEN_AFTER_FIRST_PRESENT.swap(false, Ordering::Relaxed)
+        {
+            self.host.0.set_fullscreen(true);
         }
         self.sync_canvas_geometry();
         self.sync_ime_focus();
