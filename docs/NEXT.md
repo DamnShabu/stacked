@@ -83,7 +83,7 @@ only for software devices (`wsi_common_wayland.c`, `registry_handle_global`
 and the `!wl_dmabuf && !wl_shm` test in `wsi_wl_display_init`). The engine
 fails on both of its two device creations per launch (2 `VULKAN ERROR` lines
 in every engine log, not 1). Cordial now withholds Vulkan there; see
-[ADR-060](adr/ADR-060-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md).
+[ADR-061](adr/ADR-061-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md).
 
 Measured on the 2.738 engine, unsigned, nested headless sway, `cordial-run`
 from a clean tree, 10 launches an arm:

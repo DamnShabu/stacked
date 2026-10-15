@@ -1,4 +1,4 @@
-# ADR-060: Vulkan is withheld where the compositor has no dmabuf
+# ADR-061: Vulkan is withheld where the compositor has no dmabuf
 
 **Status:** accepted
 **Date:** 2026-10-15
@@ -19,7 +19,7 @@ So the engine does not lose a surface "first": it fails on both of its two devic
 
 ## Decision
 
-On the Wayland backend, with the Graphics setting on Automatic, Cordial asks the compositor for its globals before the Vulkan loader is offered to the engine, and if `zwp_linux_dmabuf_v1` (version 3 or later) is absent it withholds Vulkan, which is what `CORDIAL_NO_VULKAN` already does. The engine takes its OpenGL ES path. That drew the landing screen on pixman sway; that Mesa's EGL got there by falling back to software rendering through `wl_shm` is INFERRED from its `failed to get driver name for fd -1` warnings. The client logs one line saying so. `CORDIAL_FORCE_VULKAN_WITHOUT_DMABUF=1` keeps Vulkan, and so does choosing Vulkan by name in Settings.
+On the Wayland backend, with the Graphics setting on Automatic, Cordial asks the compositor for its globals before the Vulkan loader is offered to the engine, and if `zwp_linux_dmabuf_v1` (version 3 or later) is absent it withholds Vulkan, which is what `CORDIAL_NO_VULKAN` already does. The engine takes its OpenGL ES path. That drew the landing screen on pixman sway; that Mesa's EGL got there by falling back to software rendering through `wl_shm` is INFERRED from its `failed to get driver name for fd -1` warnings. The client logs one line saying so. `CORDIAL_FORCE_VULKAN_WITHOUT_DMABUF=1` keeps Vulkan, and so does choosing Vulkan by name (`stacked config set graphics vulkan`).
 
 The question is asked on a connection of its own that is closed straight after, because the registry walk in `wayland.rs` belongs to window construction and the answer is needed earlier. A probe that cannot be asked leaves Vulkan on.
 

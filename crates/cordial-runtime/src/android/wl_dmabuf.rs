@@ -32,7 +32,7 @@
 //! `VK_ERROR_INVALID_EXTERNAL_HANDLE` for any window whose pixel count is not a
 //! multiple of 1024 (Mesa imports the shm pool as a host pointer, which the
 //! driver wants page-aligned), once per frame, so it is not used.
-//! The reasoning and the measurements are in ADR-060.
+//! The reasoning and the measurements are in ADR-061.
 
 use std::ffi::{c_char, c_int, c_void, CStr};
 use std::sync::OnceLock;
