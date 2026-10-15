@@ -346,6 +346,9 @@ struct Pad {
     /// What each joydev button and axis index means on *this* pad. See
     /// [`Layout`]: the fixed tables below are only its fallback.
     layout: Layout,
+    /// What the axes last said, so that one stick's two axes can go to the engine
+    /// together. See [`AxisState`].
+    sticks: AxisState,
 }
 
 static PADS: std::sync::Mutex<Vec<Pad>> = std::sync::Mutex::new(Vec::new());
@@ -783,9 +786,14 @@ fn decode(buf: &[u8; JS_EVENT_LEN]) -> (u8, u8, i16) {
 /// disconnect carries no type, the engine is evidently keeping the type against
 /// that id from this call onwards.
 fn announce(id: i32, node: i32, n_buttons: u8, n_axes: u8, layout: &Layout) {
+    let family = device_name(node).as_deref().map(classify);
+    let ty = family.map_or_else(gamepad_type, type_for);
+    announce_as(id, node, n_buttons, n_axes, layout, ty);
+}
+
+fn announce_as(id: i32, node: i32, n_buttons: u8, n_axes: u8, layout: &Layout, ty: i32) {
     let name = device_name(node);
     let family = name.as_deref().map(classify);
-    let ty = family.map_or_else(gamepad_type, type_for);
     // Printed for every pad, because the sweep that establishes the ordinals
     // needs to know which pad produced which glyphs, and a photograph of a
     // screen does not record what was plugged in.
@@ -826,15 +834,104 @@ fn announce(id: i32, node: i32, n_buttons: u8, n_axes: u8, layout: &Layout) {
     }
 }
 
-/// Send one axis movement as the `Vector3` the native's three floats are read as.
+/// Reverse a direction. Written as a subtraction because `-0.0` is a value a
+/// stick at rest would otherwise put in the trace and the call.
+fn flip(v: f32) -> f32 {
+    0.0 - v
+}
+
+/// One `nativeGamepadAxisEvent`: the Android axis the engine looks the call up
+/// by, and the three floats it reads as a `Vector3`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+struct AxisCall {
+    axis: i32,
+    x: f32,
+    y: f32,
+    z: f32,
+}
+
+/// What a pad's axes last said, in the shape the engine's call needs.
 ///
-/// The two components this axis is not carries 0.0 rather than a repeat of the
-/// value. Both are guesses; a zero is the guess that stays recognisable as one.
-fn send_axis(id: i32, index: u8, value: i16, layout: &Layout) {
-    let Some(code) = layout.axis(index) else {
-        return;
-    };
-    input::deliver_gamepad_axis(id, code, value as f32 / JS_AXIS_MAX, 0.0, 0.0);
+/// **The native does not take one axis at a time, though its name says it
+/// does.** The engine looks the Android axis up in a table (`AXIS_X` and
+/// `AXIS_Y` are both Thumbstick1, `AXIS_Z` and `AXIS_RZ` are both Thumbstick2,
+/// the two triggers are L2 and R2, `AXIS_RX` and `AXIS_RY` are nothing) and then
+/// takes the whole `Vector3` as that input's new position. A stick is therefore
+/// one call carrying its x *and* its y, and sending each Linux axis alone as
+/// `(value, 0, 0)` -- which this file did until #113 -- put the vertical axis in
+/// the horizontal slot and overwrote the horizontal one: a pad whose stick was
+/// pushed down moved the menu selection right. What was measured, on the
+/// landing screen, and how: ADR-063.
+///
+/// So the pad's sticks are kept here and each event is folded into them first.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+struct AxisState {
+    /// Left stick, as the pad reports it: `-1.0..=1.0`, positive is down.
+    left: (f32, f32),
+    right: (f32, f32),
+    /// The two halves of a hat, which Linux reports as two axes.
+    hat: (f32, f32),
+}
+
+impl AxisState {
+    /// Fold one axis movement in and say what the engine is to be told, or
+    /// `None` for an axis the engine has no use for. `value` is `-1.0..=1.0` as
+    /// joydev scales it.
+    ///
+    /// The conventions are the engine's, each from the landing screen's
+    /// selection ring unless marked otherwise:
+    ///
+    /// - A stick's y is **positive up**. Android's `AXIS_Y` and Linux's `ABS_Y`
+    ///   are both positive down, and a call carrying y = -1 moved the selection
+    ///   down, so y is negated. Either of a stick's axis codes selects the same
+    ///   input; the first is used.
+    /// - A hat is read from **z**, not from x or y, and the sign is not
+    ///   Android's: horizontally z > 0 is right; vertically z > 0 is up and
+    ///   z < 0 is down. Vertically, up also wants x or y non-zero beside it:
+    ///   (0, 0, 1) did nothing and (0, 1e-6, 1) moved up, while (0, 0, -1) moved
+    ///   down. Carrying the hat's own x and y beside the z satisfies that
+    ///   without inventing a value. Why up needs it is not understood.
+    /// - INFERRED, no readout on that screen: the right stick follows the left
+    ///   one, and a trigger's travel is read from z as `0.0..=1.0`. Android
+    ///   reports `AXIS_LTRIGGER`/`AXIS_RTRIGGER` on that range, and joydev's
+    ///   `-1.0` is a released trigger, so it is rescaled.
+    fn apply(&mut self, axis: i32, value: f32) -> Option<AxisCall> {
+        let v = value.clamp(-1.0, 1.0);
+        match axis {
+            AXIS_X => self.left.0 = v,
+            AXIS_Y => self.left.1 = v,
+            AXIS_Z => self.right.0 = v,
+            AXIS_RZ => self.right.1 = v,
+            AXIS_HAT_X => self.hat.0 = v,
+            AXIS_HAT_Y => self.hat.1 = v,
+            AXIS_LTRIGGER | AXIS_RTRIGGER => {
+                return Some(AxisCall { axis, x: 0.0, y: 0.0, z: (v + 1.0) / 2.0 });
+            }
+            _ => return None,
+        }
+        Some(match axis {
+            AXIS_X | AXIS_Y => {
+                AxisCall { axis: AXIS_X, x: self.left.0, y: flip(self.left.1), z: 0.0 }
+            }
+            AXIS_Z | AXIS_RZ => {
+                AxisCall { axis: AXIS_Z, x: self.right.0, y: flip(self.right.1), z: 0.0 }
+            }
+            AXIS_HAT_X => AxisCall { axis, x: self.hat.0, y: self.hat.1, z: self.hat.0 },
+            _ => AxisCall { axis, x: self.hat.0, y: self.hat.1, z: flip(self.hat.1) },
+        })
+    }
+}
+
+/// The call one joydev axis event becomes on this pad, if any.
+fn axis_call(layout: &Layout, sticks: &mut AxisState, index: u8, value: i16) -> Option<AxisCall> {
+    sticks.apply(layout.axis(index)?, value as f32 / JS_AXIS_MAX)
+}
+
+/// Send one axis movement as the call the engine reads it as. See [`AxisState`].
+fn send_axis(id: i32, index: u8, value: i16, layout: &Layout, sticks: &mut AxisState) {
+    if let Some(c) = axis_call(layout, sticks, index, value) {
+        input::deliver_gamepad_axis(id, c.axis, c.x, c.y, c.z);
+    }
 }
 
 /// What kind of pad this is, as far as the host can tell.
@@ -1073,7 +1170,9 @@ fn drain(pad: &mut Pad) -> bool {
                     // character device decide whether the client stays up.
                     (true, JS_EVENT_BUTTON) => init_buttons = init_buttons.max(index.saturating_add(1)),
                     (true, JS_EVENT_AXIS) => init_axes = init_axes.max(index.saturating_add(1)),
-                    (false, k) if pad.announced => dispatch(pad.id, k, index, value, &pad.layout),
+                    (false, k) if pad.announced => {
+                        dispatch(pad.id, k, index, value, &pad.layout, &mut pad.sticks)
+                    }
                     (false, k) => deferred.push((k, index, value)),
                     _ => {}
                 }
@@ -1091,7 +1190,7 @@ fn drain(pad: &mut Pad) -> bool {
         announce(pad.id, pad.node, init_buttons, init_axes, &pad.layout);
         pad.announced = true;
         for (k, index, value) in deferred {
-            dispatch(pad.id, k, index, value, &pad.layout);
+            dispatch(pad.id, k, index, value, &pad.layout, &mut pad.sticks);
         }
     } else if !pad.announced && !deferred.is_empty() {
         // Events arriving from a device that never sent an init burst, which
@@ -1113,7 +1212,7 @@ fn drain(pad: &mut Pad) -> bool {
     true
 }
 
-fn dispatch(id: i32, kind: u8, index: u8, value: i16, layout: &Layout) {
+fn dispatch(id: i32, kind: u8, index: u8, value: i16, layout: &Layout, sticks: &mut AxisState) {
     match kind {
         JS_EVENT_BUTTON => {
             if let Some(code) = layout.button(index) {
@@ -1124,7 +1223,7 @@ fn dispatch(id: i32, kind: u8, index: u8, value: i16, layout: &Layout) {
                 );
             }
         }
-        JS_EVENT_AXIS => send_axis(id, index, value, layout),
+        JS_EVENT_AXIS => send_axis(id, index, value, layout, sticks),
         _ => {}
     }
 }
@@ -1194,7 +1293,14 @@ pub fn poll() {
                 if input::trace_gamepad() {
                     eprintln!("[cordial] gamepad: opened /dev/input/js{node} as device {id}");
                 }
-                pads.push(Pad { id, node, file, announced: false, layout: read_layout(node) });
+                pads.push(Pad {
+                    id,
+                    node,
+                    file,
+                    announced: false,
+                    layout: read_layout(node),
+                    sticks: AxisState::default(),
+                });
             }
         }
     }
@@ -1237,6 +1343,38 @@ fn poll_probe() {
     announce(0, 0, 15, 8, &Layout::standard());
 }
 
+/// `padconnect` on the development control surface: announce a synthetic pad
+/// with the standard layout under `id`, as the probe does but live and at a
+/// chosen id, so the calls that follow it (`padaxis`, `padbutton`) have a device
+/// to be about.
+pub fn synthetic_connect(id: i32, requested_type: Option<i32>) {
+    if !input::gamepad_natives_ready() {
+        eprintln!("[cordial] gamepad: padconnect refused, the gamepad natives did not resolve");
+        return;
+    }
+    let ty = requested_type.unwrap_or_else(gamepad_type);
+    eprintln!("[cordial] gamepad: padconnect {id}, gamepadType={ty} (development control surface)");
+    announce_as(id, 0, 15, 8, &Layout::standard(), ty);
+}
+
+/// `padjs` on the development control surface: one joydev axis event, with the
+/// value a kernel would put in the packet, through the same fold and the same
+/// calls a real pad takes, on a synthetic pad connected with `padconnect`.
+///
+/// Here because `cordial_screenshot` of the engine's own selection ring is the
+/// only readout of what a stick did, and a virtual `uinput` pad to drive it
+/// would be seen by every other program on the host, this client's neighbours
+/// included.
+pub fn synthetic_axis(id: i32, index: u8, value: i16) {
+    static SYNTH: std::sync::Mutex<AxisState> = std::sync::Mutex::new(AxisState {
+        left: (0.0, 0.0),
+        right: (0.0, 0.0),
+        hat: (0.0, 0.0),
+    });
+    let mut state = SYNTH.lock().unwrap_or_else(|e| e.into_inner());
+    send_axis(id, index, value, &Layout::standard(), &mut state);
+}
+
 #[cfg(test)]
 mod tests {
     use super::{enabled_for, free_slot, js_node, withdraw, Pad};
@@ -1250,6 +1388,7 @@ mod tests {
             file: std::fs::File::open("/dev/null").unwrap(),
             announced,
             layout: super::Layout::standard(),
+            sticks: super::AxisState::default(),
         }
     }
 
@@ -1641,5 +1780,115 @@ mod tests {
         assert_eq!(32767i16 as f32 / JS_AXIS_MAX, 1.0);
         assert_eq!(-32767i16 as f32 / JS_AXIS_MAX, -1.0);
         assert_eq!(0i16 as f32 / JS_AXIS_MAX, 0.0);
+    }
+
+    /// The Odin 3's six axes (#113), as the capability mask lays them out:
+    /// X, Y, LTRIGGER, Z, RZ, RTRIGGER at joydev indices 0..5.
+    fn odin_axes() -> super::Layout {
+        super::Layout::from_capabilities("", "3f")
+    }
+
+    /// The fault itself. Each Linux axis used to go out alone as `(value, 0, 0)`,
+    /// so a stick pushed down arrived as a stick pushed right, and the engine
+    /// takes a stick's whole position from one call. It now goes out as the
+    /// stick, vertical negated because the engine's y is positive up, and the
+    /// other axis is remembered rather than overwritten with zero.
+    #[test]
+    fn a_stick_is_one_call_carrying_both_axes_with_y_up_positive() {
+        use super::{axis_call, AxisCall, AxisState};
+        let layout = odin_axes();
+        let mut s = AxisState::default();
+
+        // Pushed straight down: Linux ABS_Y = +max.
+        let down = axis_call(&layout, &mut s, 1, 32767).unwrap();
+        assert_eq!(down, AxisCall { axis: 0, x: 0.0, y: -1.0, z: 0.0 });
+
+        // Then sideways while still down: the call carries both.
+        let half_right = axis_call(&layout, &mut s, 0, 16384).unwrap();
+        assert_eq!(half_right.axis, 0);
+        assert!((half_right.x - 16384.0 / 32767.0).abs() < 1e-6);
+        assert_eq!(half_right.y, -1.0, "the vertical axis is remembered, not zeroed");
+
+        // Up is positive in the engine.
+        let up = axis_call(&layout, &mut s, 1, -32767).unwrap();
+        assert_eq!(up.y, 1.0);
+
+        // Released.
+        axis_call(&layout, &mut s, 0, 0);
+        let rest = axis_call(&layout, &mut s, 1, 0).unwrap();
+        assert_eq!(rest, AxisCall { axis: 0, x: 0.0, y: 0.0, z: 0.0 });
+    }
+
+    /// The right stick is one call too, under `AXIS_Z`, because the engine's
+    /// table sends both `AXIS_Z` and `AXIS_RZ` to the same input. INFERRED for
+    /// the engine's side: nothing on the screen the landing page shows reads it.
+    #[test]
+    fn the_right_stick_is_one_call_under_axis_z() {
+        use super::{axis_call, AxisCall, AxisState};
+        let layout = odin_axes();
+        let mut s = AxisState::default();
+        // In the Odin's layout joydev index 3 is ABS_RX, given AXIS_Z, and
+        // index 4 is ABS_RY, given AXIS_RZ.
+        let x = axis_call(&layout, &mut s, 3, 32767).unwrap();
+        assert_eq!(x, AxisCall { axis: 11, x: 1.0, y: 0.0, z: 0.0 });
+        let y = axis_call(&layout, &mut s, 4, 32767).unwrap();
+        assert_eq!(y, AxisCall { axis: 11, x: 1.0, y: -1.0, z: 0.0 });
+    }
+
+    /// A released trigger is joydev's minimum and Android's 0.0, and the travel
+    /// is read from z. INFERRED for the engine's side, as above.
+    #[test]
+    fn a_trigger_is_zero_to_one_in_z() {
+        use super::{axis_call, AxisState};
+        let layout = odin_axes();
+        let mut s = AxisState::default();
+        // Index 2 is the left trigger (AXIS_LTRIGGER, 17), index 5 the right (18).
+        let released = axis_call(&layout, &mut s, 2, -32767).unwrap();
+        assert_eq!((released.axis, released.x, released.y, released.z), (17, 0.0, 0.0, 0.0));
+        let half = axis_call(&layout, &mut s, 2, 0).unwrap();
+        assert!((half.z - 0.5).abs() < 1e-6);
+        let full = axis_call(&layout, &mut s, 5, 32767).unwrap();
+        assert_eq!((full.axis, full.z), (18, 1.0));
+        // joydev's -32768 is not a value the scale has; it must not leave 0..1.
+        let over = axis_call(&layout, &mut s, 5, -32768).unwrap();
+        assert_eq!(over.z, 0.0);
+    }
+
+    /// The four hat directions, each as the engine answered it on the landing
+    /// screen: z carries the direction, right and up positive, and the hat's own
+    /// x and y ride beside it. Vertical up with both of those zero did nothing.
+    #[test]
+    fn a_hat_goes_out_in_z_with_its_own_x_and_y_beside_it() {
+        use super::{axis_call, AxisCall, AxisState};
+        let layout = super::Layout::standard();
+        // Standard-layout indices 6 and 7 are the hat's two axes.
+        let mut s = AxisState::default();
+        let right = axis_call(&layout, &mut s, 6, 32767).unwrap();
+        assert_eq!(right, AxisCall { axis: 15, x: 1.0, y: 0.0, z: 1.0 });
+        let left = axis_call(&layout, &mut s, 6, -32767).unwrap();
+        assert_eq!(left, AxisCall { axis: 15, x: -1.0, y: 0.0, z: -1.0 });
+        axis_call(&layout, &mut s, 6, 0);
+
+        // Linux and Android report down as +1; the engine wants z negative.
+        let down = axis_call(&layout, &mut s, 7, 32767).unwrap();
+        assert_eq!(down, AxisCall { axis: 16, x: 0.0, y: 1.0, z: -1.0 });
+        let up = axis_call(&layout, &mut s, 7, -32767).unwrap();
+        assert_eq!(up, AxisCall { axis: 16, x: 0.0, y: -1.0, z: 1.0 });
+        assert!(up.x != 0.0 || up.y != 0.0, "up with x and y both zero was ignored");
+
+        // Released: the all-zero call that lets go of both directions.
+        let rest = axis_call(&layout, &mut s, 7, 0).unwrap();
+        assert_eq!(rest, AxisCall { axis: 16, x: 0.0, y: 0.0, z: 0.0 });
+    }
+
+    /// `AXIS_RX` and `AXIS_RY` are absent from the engine's table, so a call for
+    /// them would be dropped there; none is made.
+    #[test]
+    fn axes_the_engine_has_no_input_for_make_no_call() {
+        use super::AxisState;
+        let mut s = AxisState::default();
+        assert_eq!(s.apply(12, 1.0), None);
+        assert_eq!(s.apply(13, 1.0), None);
+        assert_eq!(s.apply(-1, 1.0), None);
     }
 }

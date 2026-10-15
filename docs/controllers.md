@@ -80,6 +80,13 @@ cat /sys/class/input/js0/device/id/{vendor,product,version}
 Starting with `CORDIAL_TRACE_GAMEPAD=1` also prints the Android code each axis
 and button was given.
 
+Sticks, the D-pad hat and triggers are passed in the shape Roblox's own menu
+was seen to accept: a stick is one event carrying both its axes, with up as
+positive. The left stick and the hat were checked by moving the menu selection;
+**INFERRED:** the right stick and the triggers, which no screen reachable
+without a signed-in account reads. Why:
+[ADR-063](adr/ADR-063-a-gamepad-axis-call-is-a-stick-not-an-axis.md).
+
 **INFERRED:** the Odin 3 and DualShock 4 mappings come from Android's key
 layout and SDL's controller database, not from a pad plugged into the machine
 that wrote this. The table is `QUIRKS` in
