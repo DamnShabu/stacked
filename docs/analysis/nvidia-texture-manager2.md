@@ -1,5 +1,13 @@
 # NVIDIA, TextureManager2, and "shader translation": what was actually asked, and what was measured
 
+> **Read the 2026-10-15 section at the end first.** Everything above it was
+> measured on an Intel host with native ETC2 and ASTC. On a GPU without
+> native ETC2 (AMD RX 9060 XT, RADV) the engine's `Caps: Texture` line says
+> `ETC1 0 ETC2 0`, it comes from the `VkPhysicalDeviceFeatures` boolean this
+> document left uninstrumented, and Sober on the same host says `ETC1 1 ETC2 1`.
+> The claim below that the Caps line "still claims ETC2 1 regardless" was true
+> of the Intel host only.
+
 The request handed into this investigation was "shader translation for NVIDIA
 so texture manager v2 works." No NVIDIA hardware exists on this host (Intel
 RPL-P integrated graphics only), so this is a record of what could be
@@ -269,3 +277,64 @@ What was kept: a small, off-by-default observability addition
 answers a question TASKS.md explicitly left open, and a test-only masking
 switch for whoever next has NVIDIA hardware to point at this. Both are
 documented in [ADR-042](../adr/ADR-042-texture-format-query-observability.md).
+
+## 2026-10-15: a host without native ETC2
+
+The symptom this time was real and on this host: in-game textures blurry on
+Cordial and sharp in Sober, same machine, both rendering full size with a sharp
+UI. AMD Radeon RX 9060 XT, RADV GFX1200, Mesa 26.2.3. `vulkaninfo`:
+
+```
+samplerAnisotropy                       = true
+textureCompressionETC2                  = false
+textureCompressionASTC_LDR              = false
+textureCompressionBC                    = true
+```
+
+Every Cordial engine log on this host says
+`Caps: Texture: DXT 1 PVR 0 ETC1 0 ETC2 0 Half 1`; Sober's says `ETC1 1 ETC2 1`
+beside its own line `vulkan: using emulated fast ETC2 support`.
+
+`vulkan.rs` now counts `vkGetPhysicalDeviceFeatures`/`Features2`/`Features2KHR`
+and `vkCreateImage` by format family (`CORDIAL_COUNT_GL=1`), and has a
+test-only `CORDIAL_FAKE_ETC2=1` that reports `textureCompressionETC2` true.
+Signed-out landing screen, 40 s, three runs per arm, nested headless `cage`:
+
+| | Caps line | ETC2 format queries | ETC2 `vkCreateImage` |
+|---|---|---|---|
+| control | `ETC1 0 ETC2 0` (3/3) | 0 | 0 of 336 |
+| `CORDIAL_FAKE_ETC2=1` | `ETC1 1 ETC2 1` (3/3) | 0 | 0 of 336 |
+| `vk_require_etc2=true` | `ETC1 1 ETC2 1` (3/3) | 0 | 0 of 336 |
+
+So the engine decides ETC1/ETC2 from the feature boolean alone; it never asks
+the per-format question for ETC2. A normalised diff of the whole engine log
+finds the Caps line and nothing else different between the arms.
+
+**The fake alone cannot be used.** The engine copies the features it queried
+into `pEnabledFeatures`, RADV refuses the device with
+`VK_ERROR_FEATURE_NOT_PRESENT` (-8), and the engine logs
+`Mode 6 failed: Unable to create Vulkan device`, falls back to GL and crashes.
+The fake therefore hands the driver a copy with ETC2 cleared. With no decoder
+behind it, any ETC2 image it later causes would be unsampleable; none was
+created signed-out, so what actually happens in-game is not observed.
+
+**Mesa already has the decoder.** The driconf option `vk_require_etc2=true`
+(and `vk_require_astc=true`) set in the environment makes RADV advertise both
+features (measured with `vulkaninfo`) and decode them itself (INFERRED from
+Mesa's description of the option; no ETC2 image was observed). It is the driver's answer, not a lie in
+Cordial's shim. With `vk_require_astc=true` as well, the engine asked about
+six ASTC formats rather than two (one run). `radv_require_etc2` is not the
+name on this Mesa and does nothing.
+
+Still unmeasured: whether any of this changes in-game textures. Signed-out,
+the landing screen creates no ETC2 or ASTC image in any arm, and the
+`contentRepresentationSpecifier` fidelity masks only appear in signed-in
+asset failures. Every log on disk here shows only `/////Ck=`; the `SEA=`,
+`KEA=` and `CEA=` masks reported earlier were not found.
+
+The same session gave `DeviceParams` honest memory values (MemTotal; memory
+classes 4096, Sober's figure). The engine reads `memoryClass`,
+`largeMemoryClass` and `isLowRamDevice` once each and never
+`deviceTotalMemoryMB`. Three alternating signed-out runs each way moved no
+engine log line. The same diff did catch the Caps change above, so it is not
+an instrument that cannot see anything.

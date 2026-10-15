@@ -440,6 +440,47 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_get_physical_device_format_properties as *const () as *mut c_void
         }
+        // Counted, and altered only under the test-only `CORDIAL_FAKE_ETC2` --
+        // see [`note_features`]. The feature booleans are where the engine's
+        // `Caps: Texture: ... ETC2` line comes from on a driver without native
+        // ETC2; ADR-042 measured only the per-format query, on a host that had it.
+        b"vkGetPhysicalDeviceFeatures" => {
+            // SAFETY: as for the format-properties arm above.
+            HOST_GET_FEATURES.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_features as *const () as *mut c_void
+        }
+        b"vkGetPhysicalDeviceFeatures2" => {
+            // SAFETY: as above.
+            HOST_GET_FEATURES2.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_features2 as *const () as *mut c_void
+        }
+        // The KHR alias gets its own slot: a loader may resolve one and not the
+        // other, and sharing a slot would let a later null overwrite a good one.
+        b"vkGetPhysicalDeviceFeatures2KHR" => {
+            // SAFETY: as above.
+            HOST_GET_FEATURES2_KHR.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_features2_khr as *const () as *mut c_void
+        }
+        // Counted by format family and result, never altered. Peeled off here as
+        // well as in `vk_get_device_proc_addr` for the reason given at
+        // `vkCreateShaderModule` below.
+        b"vkCreateImage" => {
+            // SAFETY: as above.
+            HOST_CREATE_IMAGE.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_create_image as *const () as *mut c_void
+        }
         // Counted, not altered. A Vulkan session leaves every GLES counter at
         // zero, so without this the graphics report cannot tell "Vulkan is
         // presenting frames" from "nothing is drawing at all".
@@ -558,6 +599,10 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
             HOST_CREATE_SHADER_MODULE
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_shader_module as *const () as *mut c_void
+        }
+        b"vkCreateImage" => {
+            HOST_CREATE_IMAGE.store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_create_image as *const () as *mut c_void
         }
         _ => host(device, name),
     }
@@ -805,7 +850,9 @@ static HOST_CREATE_DEVICE: std::sync::atomic::AtomicUsize = std::sync::atomic::A
 /// `vkCreateDevice`, forwarded byte for byte after noting which physical device
 /// it was called against. Nothing else about it is touched, and deliberately so:
 /// `VkDeviceCreateInfo` carries queue priorities, enabled features and an
-/// extension list that this file has no business having an opinion about.
+/// extension list that this file has no business having an opinion about. The
+/// one exception is the test-only `CORDIAL_FAKE_ETC2`, which has to undo its
+/// own lie on the way to the driver; see the end of the function.
 extern "C" fn vk_create_device(
     physical_device: *mut c_void,
     create_info: *const c_void,
@@ -840,7 +887,43 @@ extern "C" fn vk_create_device(
     // SAFETY: resolved from the host loader for exactly this name, and called
     // with the caller's own arguments unchanged.
     let f: Fn_ = unsafe { std::mem::transmute(f) };
-    f(physical_device, create_info, allocator, device_out)
+    if !fake_etc2() || create_info.is_null() {
+        return f(physical_device, create_info, allocator, device_out);
+    }
+    // Under `CORDIAL_FAKE_ETC2` only. The engine copies the features it queried
+    // into `pEnabledFeatures`, so it asks the driver to enable the ETC2 it was
+    // told about, and RADV refuses the whole device with
+    // VK_ERROR_FEATURE_NOT_PRESENT -- measured: the engine then logs "Mode 6
+    // failed: Unable to create Vulkan device", falls back to GL and crashes.
+    // To see past that, the driver is handed a *copy* with ETC2 cleared; the
+    // engine's own structs are never written. A pNext
+    // `VkPhysicalDeviceFeatures2` is not walked: the spec forbids it alongside
+    // `pEnabledFeatures`, and this engine uses the latter.
+    // SAFETY: a valid `VkDeviceCreateInfo` (72 bytes) whose `pEnabledFeatures`
+    // is null or a valid 220-byte `VkPhysicalDeviceFeatures`; both are copied
+    // into locals that outlive the call.
+    unsafe {
+        let mut info = [0u8; 72];
+        std::ptr::copy_nonoverlapping(create_info as *const u8, info.as_mut_ptr(), 72);
+        let slot = info.as_mut_ptr().add(DEVICE_CREATE_INFO_ENABLED_FEATURES) as *mut *const u8;
+        let enabled = std::ptr::read_unaligned(slot);
+        let mut features = [0u32; 55];
+        let asked = if enabled.is_null() {
+            None
+        } else {
+            std::ptr::copy_nonoverlapping(enabled, features.as_mut_ptr() as *mut u8, 220);
+            let asked = features[FEATURES_ETC2 / 4];
+            features[FEATURES_ETC2 / 4] = 0;
+            std::ptr::write_unaligned(slot, features.as_ptr() as *const u8);
+            Some(asked)
+        };
+        let result = f(physical_device, info.as_ptr() as *const c_void, allocator, device_out);
+        eprintln!(
+            "[vulkan] vkCreateDevice: engine asked textureCompressionETC2={asked:?}; \
+             driver given 0 (CORDIAL_FAKE_ETC2) -> {result}"
+        );
+        result
+    }
 }
 
 /// What the present-mode setting asked for.
@@ -1501,6 +1584,157 @@ extern "C" fn vk_get_physical_device_format_properties(
             if unsupported { " UNSUPPORTED" } else { "" },
         ));
     }
+}
+
+static HOST_GET_FEATURES: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOST_GET_FEATURES2: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOST_GET_FEATURES2_KHR: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+static HOST_CREATE_IMAGE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// `CORDIAL_FAKE_ETC2=1`: tell the engine `textureCompressionETC2` is true
+/// when the driver said false. **Test-only, and a lie.** Nothing in Cordial
+/// decodes ETC2, so an engine that believes this creates images in a format the
+/// driver cannot sample -- AGENTS.md's lying stub, kept behind a name nobody
+/// sets by accident so the engine's response to the answer can be observed.
+/// Never set it in a shipped configuration. Mesa's own decoder
+/// (`vk_require_etc2=true`) is the honest way to get the same answer; see
+/// `docs/analysis/nvidia-texture-manager2.md`.
+fn fake_etc2() -> bool {
+    static FAKE: OnceLock<bool> = OnceLock::new();
+    *FAKE.get_or_init(|| std::env::var_os("CORDIAL_FAKE_ETC2").is_some())
+}
+
+// Byte offsets into `VkPhysicalDeviceFeatures` and `VkPhysicalDeviceFeatures2`,
+// printed by `offsetof` compiled against vulkan-headers 1.4.357's
+// `vulkan_core.h` rather than counted by hand: 55 packed `VkBool32`s is
+// exactly where a hand count goes wrong by one.
+const FEATURES_ETC2: usize = 80;
+const FEATURES_ASTC_LDR: usize = 84;
+const FEATURES_BC: usize = 88;
+const FEATURES2_FEATURES: usize = 16;
+/// `offsetof(VkDeviceCreateInfo, pEnabledFeatures)`, same header.
+const DEVICE_CREATE_INFO_ENABLED_FEATURES: usize = 64;
+/// `offsetof(VkImageCreateInfo, format)`, same header.
+const IMAGE_CREATE_INFO_FORMAT: usize = 24;
+
+/// Report what the driver said about the three compressed-format features and,
+/// under [`fake_etc2`], overwrite the ETC2 one in the caller's out-struct.
+fn note_features(features: *mut u8, via: &str) {
+    if features.is_null() {
+        return;
+    }
+    // SAFETY: `features` points at a `VkPhysicalDeviceFeatures` the host has
+    // just filled (220 bytes); the reads and the one write are
+    // inside it, 4-byte aligned as the struct is.
+    unsafe {
+        let etc2 = features.add(FEATURES_ETC2) as *mut u32;
+        let astc = *(features.add(FEATURES_ASTC_LDR) as *const u32);
+        let bc = *(features.add(FEATURES_BC) as *const u32);
+        let real = *etc2;
+        let faked = fake_etc2() && real == 0;
+        if faked {
+            *etc2 = 1;
+        }
+        let msg = format!(
+            "{via}: textureCompressionETC2={real} ASTC_LDR={astc} BC={bc}{}",
+            if faked { " -> ETC2 reported as 1 (CORDIAL_FAKE_ETC2, test-only)" } else { "" }
+        );
+        if faked {
+            eprintln!("[vulkan] {msg}");
+        } else {
+            crate::android::trace(format_args!("{msg}"));
+        }
+    }
+}
+
+extern "C" fn vk_get_physical_device_features(physical_device: *mut c_void, out: *mut u8) {
+    let f = HOST_GET_FEATURES.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return;
+    }
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: extern "C" fn(*mut c_void, *mut u8) = unsafe { std::mem::transmute(f) };
+    f(physical_device, out);
+    super::glcount::FEATURES_QUERY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    note_features(out, "vkGetPhysicalDeviceFeatures");
+}
+
+fn features2(slot: &std::sync::atomic::AtomicUsize, physical_device: *mut c_void, out: *mut u8, via: &str) {
+    let f = slot.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return;
+    }
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: extern "C" fn(*mut c_void, *mut u8) = unsafe { std::mem::transmute(f) };
+    f(physical_device, out);
+    super::glcount::FEATURES2_QUERY.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if !out.is_null() {
+        // SAFETY: `out` is a `VkPhysicalDeviceFeatures2`, whose `features`
+        // member is at FEATURES2_FEATURES. The pNext chain is not walked.
+        note_features(unsafe { out.add(FEATURES2_FEATURES) }, via);
+    }
+}
+
+extern "C" fn vk_get_physical_device_features2(physical_device: *mut c_void, out: *mut u8) {
+    features2(&HOST_GET_FEATURES2, physical_device, out, "vkGetPhysicalDeviceFeatures2");
+}
+
+extern "C" fn vk_get_physical_device_features2_khr(physical_device: *mut c_void, out: *mut u8) {
+    features2(&HOST_GET_FEATURES2_KHR, physical_device, out, "vkGetPhysicalDeviceFeatures2KHR");
+}
+
+/// `vkCreateImage`, forwarded unchanged and counted by format family and
+/// result. This is what shows whether a believed ETC2 answer turns into ETC2
+/// images, and what the driver does with them.
+extern "C" fn vk_create_image(
+    device: *mut c_void,
+    create_info: *const u8,
+    allocator: *const c_void,
+    image_out: *mut u64,
+) -> i32 {
+    let f = HOST_CREATE_IMAGE.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, *const u8, *const c_void, *mut u64) -> i32;
+    // SAFETY: resolved from the host loader for exactly this name, called with
+    // the caller's own arguments.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    let result = f(device, create_info, allocator, image_out);
+    use std::sync::atomic::Ordering::Relaxed;
+    super::glcount::CREATE_IMAGE.fetch_add(1, Relaxed);
+    if create_info.is_null() {
+        return result;
+    }
+    // SAFETY: a valid `VkImageCreateInfo`; only its `format` is read.
+    let format = unsafe { std::ptr::read_unaligned(create_info.add(IMAGE_CREATE_INFO_FORMAT) as *const u32) };
+    let family = format_family(format);
+    match family {
+        "etc2" => super::glcount::CREATE_IMAGE_ETC2.fetch_add(1, Relaxed),
+        "astc" => super::glcount::CREATE_IMAGE_ASTC.fetch_add(1, Relaxed),
+        "bc" => super::glcount::CREATE_IMAGE_BC.fetch_add(1, Relaxed),
+        _ => 0,
+    };
+    if result != 0 {
+        super::glcount::CREATE_IMAGE_FAILED.fetch_add(1, Relaxed);
+    }
+    if family == "etc2" || family == "astc" || result != 0 {
+        // SAFETY: as above; `extent` is three u32s at 28, `mipLevels` at 40.
+        let (w, h, mips) = unsafe {
+            (
+                std::ptr::read_unaligned(create_info.add(28) as *const u32),
+                std::ptr::read_unaligned(create_info.add(32) as *const u32),
+                std::ptr::read_unaligned(create_info.add(40) as *const u32),
+            )
+        };
+        let msg = format!("vkCreateImage(format={format}, family={family}, {w}x{h}, mips={mips}) = {result}");
+        if fake_etc2() {
+            eprintln!("[vulkan] {msg}");
+        } else {
+            crate::android::trace(format_args!("{msg}"));
+        }
+    }
+    result
 }
 
 /// The host's real `vkCreateShaderModule`, resolved once. Fetched through

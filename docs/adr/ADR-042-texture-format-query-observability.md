@@ -99,7 +99,15 @@ NVIDIA driver reports.
   budget was already spent).
 - Whether `vkGetPhysicalDeviceFeatures`/`Features2`'s compression booleans
   matter to whatever gates TM2, as opposed to the per-format query this ADR's
-  capability observes. Not instrumented this session.
+  capability observes. Not instrumented this session. **Since answered
+  (2026-10-15, AMD RADV without native ETC2):** the engine's
+  `Caps: Texture: ... ETC1/ETC2` line is driven by the
+  `textureCompressionETC2` boolean, not by a format query, and it never
+  queried an ETC2 format at all. The feature queries are now counted too, and
+  a second test-only switch, `CORDIAL_FAKE_ETC2=1`, reports that boolean true
+  under the same rules as the mask here: off by default, logged, never shipped.
+  Mesa's own `vk_require_etc2=true` gives the same Caps answer honestly. See
+  the analysis document's 2026-10-15 section.
 
 ## What would change this
 

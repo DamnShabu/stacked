@@ -58,6 +58,17 @@ counters! {
     FORMAT_QUERY_OTHER       => "vkGetPhysicalDeviceFormatProperties(other)",
     FORMAT_QUERY_UNSUPPORTED => "  ...of which unsupported (both tiling feature masks zero)",
     CREATE_SHADER_MODULE     => "vkCreateShaderModule",
+    // Whether the engine reads the device's feature booleans at all, and
+    // what it then creates. ADR-042 left the feature path uninstrumented;
+    // these are what `CORDIAL_FAKE_ETC2` is scored against. Incremented from
+    // `vulkan::vk_get_physical_device_features*` and `vulkan::vk_create_image`.
+    FEATURES_QUERY           => "vkGetPhysicalDeviceFeatures",
+    FEATURES2_QUERY          => "vkGetPhysicalDeviceFeatures2",
+    CREATE_IMAGE             => "vkCreateImage",
+    CREATE_IMAGE_ETC2        => "  ...in an ETC2/EAC format",
+    CREATE_IMAGE_ASTC        => "  ...in an ASTC format",
+    CREATE_IMAGE_BC          => "  ...in a BC format",
+    CREATE_IMAGE_FAILED      => "  ...that the driver refused",
 }
 
 /// The host implementation behind `sym`, looked up.

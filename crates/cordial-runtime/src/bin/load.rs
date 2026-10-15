@@ -184,6 +184,16 @@ env:
                                      texture-format-query-observability.md. Off
                                      by default; never changes what a shipped
                                      client tells the engine
+  CORDIAL_FAKE_ETC2=1                TEST-ONLY AND UNTRUE: report
+                                     textureCompressionETC2 as supported when
+                                     the driver says it is not. Cordial has no
+                                     ETC2 decoder, so ETC2 images the engine
+                                     then creates cannot be sampled. Logs every
+                                     feature query and ETC2 image it sees. Off
+                                     by default; never set it in a shipped
+                                     configuration. On Mesa, the honest
+                                     equivalent is the driver's own decoder:
+                                     vk_require_etc2=true
 ";
 
 fn parse() -> Result<Options, String> {
