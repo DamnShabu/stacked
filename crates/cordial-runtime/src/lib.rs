@@ -37,6 +37,7 @@ pub mod elf;
 // message-bus entry points, and nothing outside the crate should be reaching
 // for them. See ADR-036.
 mod ffi_util;
+mod flog_shape;
 pub mod flags;
 pub mod graphics;
 pub mod graphics_quality;
