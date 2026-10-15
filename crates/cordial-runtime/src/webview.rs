@@ -251,6 +251,22 @@ fn take_err(err: Vec<u8>) -> String {
 
 unsafe extern "C" {
     fn cordial_build_user_agent(buf: *mut c_char, n: usize) -> usize;
+    fn cordial_base_url(buf: *mut c_char, n: usize) -> usize;
+}
+
+/// The base URL `InitParams.baseURL` carries. Read back out of the native side
+/// so a test can hold it to the real client's, which the capture shows with a
+/// trailing slash (#2).
+pub fn base_url() -> Option<String> {
+    let mut buf = vec![0u8; 256];
+    // SAFETY: `cordial_base_url` is statically linked beside
+    // `cordial_build_user_agent` (native/init_params.cpp); the buffer outlives
+    // the call.
+    let len = unsafe { cordial_base_url(buf.as_mut_ptr() as *mut c_char, buf.len()) };
+    if len == 0 || len >= buf.len() {
+        return None;
+    }
+    std::str::from_utf8(&buf[..len]).ok().map(str::to_string)
 }
 
 /// The exact `User-Agent` `InitParams.userAgent` was built with.
