@@ -38,6 +38,17 @@ Usage:  tools/text-input-e2e.py [--profile NAME] [--keep]
         tools/text-input-e2e.py --visibility windowed,fullscreen,tiled-after,floating
                                 [--scale 1.5] [--gles] [--client-env ADW_DEBUG_COLOR_SCHEME=prefer-light]
 
+        tools/text-input-e2e.py --x11 [--wm openbox|xfwm4|xfwm4c|icewm] [--client-env CORDIAL_X11_EDITOR=off]
+
+`--x11` runs the same questions against the X11 backend (ADR-062) on a private
+Xvfb with its own window manager, typing with XTest *inside that server only*
+and photographing it with ImageMagick's `import`. It exists because the X11
+editor was, for a stretch of this project's history, specified in ADR-024 and
+absent: "typed text is sent and not drawn" was read from the code and never run,
+the one attempt to start Xwayland under the nested sway having failed. The
+control is `--client-env CORDIAL_X11_EDITOR=off`, which must fail every
+visibility assertion and none of the readback ones.
+
 `--visibility` is the one case here that asks whether typed text can be *seen*:
 it photographs the compositor's output with grim (the only instrument that sees
 a GTK widget) and compares the editor's rectangle with and without the text.
@@ -285,6 +296,23 @@ def main():
                          "synthetic box and photograph the composited output, asserting the typed "
                          "characters changed pixels where the editor is. cordial_textbox reports "
                          "what the field holds; this reports whether anyone could see it")
+    ap.add_argument("--x11", action="store_true",
+                    help="run the X11 backend's cases on a private Xvfb (see the module doc); "
+                         "needs xdotool, ImageMagick, xwininfo and a window manager in the container")
+    ap.add_argument("--wm", default="openbox", choices=["openbox", "xfwm4", "xfwm4c", "icewm", "none"],
+                    help="with --x11: the window manager on the private server. xfwm4c is xfwm4 "
+                         "with its compositor on, the only way to get a composited X server "
+                         "here, and so the transparent editor path; the others are opaque")
+    ap.add_argument("--xwayland", action="store_true",
+                    help="with --x11: use sway's own Xwayland instead of Xvfb, which is how most X11 "
+                         "clients run on a Wayland desktop. The window is placed by sway, the editor "
+                         "is an Xwayland override-redirect window, and the photograph is grim's")
+    ap.add_argument("--cases", default=None, metavar="X1,X2,..",
+                    help="with --x11: run only these sections (X1 is needed for nothing else)")
+    ap.add_argument("--vulkan", action="store_true",
+                    help="with --x11: leave Vulkan on. By default CORDIAL_NO_VULKAN=1 is set, "
+                         "because the Vulkan client has crashed on Xvfb (software GL); say which "
+                         "was used when reporting")
     ap.add_argument("--gles", action="store_true",
                     help="the engine is on GLES (no Vulkan), where `presents` stays 0 by design; "
                          "skips the presents-based startup-freeze check, which would mistake that for a freeze")
@@ -293,6 +321,9 @@ def main():
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     args = ap.parse_args()
+
+    if args.x11:
+        return main_x11(args)
 
     os.makedirs(OUT, exist_ok=True)
     log_path = os.path.join(OUT, "client.log")
@@ -1284,6 +1315,659 @@ def run_visibility(case, dev, kbd, pid, display, args):
             swaymsg("floating disable"); time.sleep(2.0)
         elif mode == "fullscreen":
             swaymsg("fullscreen disable"); time.sleep(2.0)
+
+
+# --------------------------------------------------------------------- X11
+
+
+class XSession:
+    """A private X server and window manager, and one shell inside the container that drives them.
+
+    **Never the developer's display.** Every command here runs with `DISPLAY`
+    set to the server this class started, and XTest key events go to that
+    server and nowhere else -- AGENTS.md forbids injecting at the developer's
+    session, and a private Xvfb is what makes injecting at all permissible. The
+    display number is chosen from ones with no socket and no lock file, and the
+    server's own pid is what is killed afterwards, never a name match.
+
+    One long-lived shell rather than a `distrobox enter` per command, because
+    entering the container costs most of a second and a typed string is a dozen
+    commands.
+    """
+
+    def __init__(self, wm, width, height, xwayland=False):
+        self.wm = wm
+        self.xwayland = xwayland
+        self.rt = os.path.join(OUT, "rt")
+        os.makedirs(self.rt, mode=0o700, exist_ok=True)
+        if xwayland:
+            return self._init_xwayland(width, height)
+        self.num = self._free_display()
+        self.display = f":{self.num}"
+        self.p = subprocess.Popen(
+            # `bash -c`, not `-lc`: the login shell's rc file reads stdin, and
+            # the first command sent was never answered.
+            ["distrobox", "enter", BOX, "--", "bash", "-c",
+             f"export DISPLAY={self.display} XDG_RUNTIME_DIR={self.rt} "
+             f"XDG_CONFIG_HOME={OUT}/wm-config; mkdir -p $XDG_CONFIG_HOME; "
+             'while IFS= read -r l; do eval "$l"; echo "__END__ $?"; done'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.pids = []
+        xvfb = self.sh(f"nohup setsid Xvfb {self.display} -screen 0 {width}x{height}x24 +extension COMPOSITE "
+                       f">{OUT}/xvfb.log 2>&1 & echo $!")
+        self.pids.append(xvfb.strip())
+        for _ in range(50):
+            if self.sh(f"test -S /tmp/.X11-unix/X{self.num} && echo up").strip() == "up":
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError(f"Xvfb never came up on {self.display}; see {OUT}/xvfb.log")
+        wm_cmd = {"openbox": "openbox", "xfwm4": "xfwm4 --compositor=off", "xfwm4c": "xfwm4 --compositor=on",
+                  "icewm": "icewm", "none": ""}[wm]
+        if wm_cmd:
+            self.pids.append(self.sh(f"nohup setsid {wm_cmd} >{OUT}/wm.log 2>&1 & echo $!").strip())
+            time.sleep(2.0)
+        print(f"== private X server {self.display} ({wm_cmd or 'no window manager'}), "
+              f"{width}x{height}", flush=True)
+
+    def _init_xwayland(self, width, height):
+        """sway with its own Xwayland, in a private mount namespace.
+
+        sway's integrated Xwayland refuses `/tmp/.X11-unix` because it is
+        root-owned -- the failure that stopped the first attempt at an X11
+        photograph. A user and mount namespace with a tmpfs over that directory
+        gets past it; the abstract socket Xwayland also listens on is per
+        *network* namespace, which is not unshared, so the client and xdotool
+        outside still connect. `focus_follows_mouse no` and borderless windows
+        keep the compositor from moving anything the cases measure.
+        """
+        stamp = lambda n: os.path.join(OUT, n)
+        for n in ("wl.display", "x.display", "swaysock"):
+            if os.path.exists(stamp(n)):
+                os.unlink(stamp(n))
+        cfg = os.path.join(OUT, "sway-xwl.cfg")
+        with open(cfg, "w") as fh:
+            fh.write(f"""xwayland enable
+output HEADLESS-1 mode {width}x{height}
+default_border none
+default_floating_border none
+focus_follows_mouse no
+for_window [title="^otherapp$"] floating enable
+exec sh -c 'printf %s "$WAYLAND_DISPLAY" > {stamp("wl.display")}; printf %s "$DISPLAY" > {stamp("x.display")}; printf %s "$SWAYSOCK" > {stamp("swaysock")}'
+""")
+        self.p = subprocess.Popen(
+            ["distrobox", "enter", BOX, "--", "bash", "-c", 'while IFS= read -r l; do eval "$l"; echo "__END__ $?"; done'],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+        self.pids = []
+        pid = self.sh(f"nohup setsid unshare -Urm sh -c 'mount -t tmpfs none /tmp/.X11-unix && "
+                      f"exec env -u WAYLAND_DISPLAY -u DISPLAY -u SWAYSOCK XDG_RUNTIME_DIR={self.rt} "
+                      f"WLR_BACKENDS=headless WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
+                      f"sway -c {cfg}' >{OUT}/sway-xwl.log 2>&1 < /dev/null & echo $!")
+        self.pids.append(pid.strip())
+        for _ in range(100):
+            if os.path.exists(stamp("x.display")) and os.path.getsize(stamp("x.display")):
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError(f"sway never reported an X display; see {OUT}/sway-xwl.log")
+        self.display = open(stamp("x.display")).read().strip()
+        self.wl = open(stamp("wl.display")).read().strip()
+        self.swaysock = open(stamp("swaysock")).read().strip()
+        self.sh(f"export DISPLAY={self.display} XDG_RUNTIME_DIR={self.rt} WAYLAND_DISPLAY={self.wl} "
+                f"SWAYSOCK={self.swaysock}")
+        print(f"== sway {self.wl} with Xwayland on {self.display}, {width}x{height}", flush=True)
+
+    def swaymsg(self, args):
+        return self.sh(f"swaymsg {args}")
+
+    def bind_accents(self):
+        """Give é, ü and ï keycodes of their own, once, before anything is typed.
+
+        `xdotool type` types a character the keymap lacks by remapping a spare
+        keycode for the length of one key press, and GTK sometimes sees the key
+        before the remap: the same string lost its é in one run and its ü in
+        another, on different servers, and `xev` loses the first key of a
+        remapped string in the same way. A flaky instrument asserting on a
+        non-ASCII string would say nothing about the editor, so the three
+        characters are bound permanently up front and sent as keysyms, on
+        keycodes 250 to 252. 200 to 202 were tried first and `ï` arrived as
+        Ctrl+ï: those keycodes carry a modifier in the default keymap, and the
+        character was dropped by the widget, correctly.
+        """
+        self.sh("xmodmap -e 'keycode 250 = eacute' -e 'keycode 251 = udiaeresis' -e 'keycode 252 = idiaeresis'")
+        time.sleep(0.5)
+
+    @staticmethod
+    def _free_display():
+        for n in range(90, 140):
+            if not os.path.exists(f"/tmp/.X11-unix/X{n}") and not os.path.exists(f"/tmp/.X{n}-lock"):
+                return n
+        raise RuntimeError("no free X display number between 90 and 139")
+
+    def sh(self, cmd, timeout=40):
+        """Run `cmd` in the container's shell and return its stdout."""
+        self.p.stdin.write(cmd + "\n")
+        self.p.stdin.flush()
+        out, deadline = [], time.time() + timeout
+        while time.time() < deadline:
+            line = self.p.stdout.readline()
+            if not line:
+                raise RuntimeError(f"the container shell closed while running {cmd!r}")
+            if line.startswith("__END__"):
+                return "".join(out)
+            out.append(line)
+        raise RuntimeError(f"{cmd!r} did not finish in {timeout}s")
+
+    def cmd(self, line, settle=0.15):
+        """The same two verbs the Wayland cases send a held virtual keyboard."""
+        import shlex
+        verb, _, rest = line.partition(" ")
+        if verb == "type":
+            self.sh(f"xdotool type --delay 45 -- {shlex.quote(rest)}")
+        elif verb == "key":
+            self.sh(f"xdotool key {rest}")
+        else:
+            raise ValueError(line)
+        time.sleep(settle)
+
+    primed = False
+
+    def prime(self):
+        """Send one harmless key, once, before the first typing.
+
+        Under Xwayland the first XTest key event after a window is first mapped
+        is lost: `xev`, which is not Cordial, loses the `h` of "hello" the same
+        way, on every new window. A lost first character here would be a
+        failure of the instrument read as a failure of the editor. Real
+        keyboard events do not come through XTest and were not measured.
+        """
+        if self.xwayland and not self.primed:
+            self.primed = True
+            self.cmd("key Shift_L", settle=0.4)
+
+    def info(self, win):
+        """`(x, y, w, h, mapped)` of a window, absolute on the root, or None if it does not exist."""
+        out = self.sh(f"xwininfo -id {win} 2>&1")
+        g = lambda k: re.search(k + r":\s+(-?\d+)", out)
+        if "Map State" not in out or not g("Absolute upper-left X"):
+            return None
+        return (int(g("Absolute upper-left X").group(1)), int(g("Absolute upper-left Y").group(1)),
+                int(g("Width").group(1)), int(g("Height").group(1)), "IsViewable" in out)
+
+    def find(self, name_regex):
+        import shlex
+        out = self.sh(f"xdotool search --name {shlex.quote(name_regex)}").split()
+        return out[0] if out else None
+
+    def focus_name(self):
+        return self.sh("xdotool getwindowfocus getwindowname 2>/dev/null").strip()
+
+    def topmost(self):
+        """The topmost top-level window under the root, as xwininfo prints it.
+
+        xwininfo lists children topmost first (it walks XQueryTree's bottom-to-top
+        array backwards), so the first line is the one on top. Assuming the
+        opposite made the stacking assertion fail against a correct stack.
+        """
+        tree = self.sh("xwininfo -root -tree")
+        tops = [l for l in tree.splitlines() if re.match(r"^     0x[0-9a-f]+ ", l)]
+        return tops[0].strip() if tops else ""
+
+    def grab(self, name):
+        ppm = os.path.join(OUT, name + ".ppm")
+        # `-depth 8`: ImageMagick's PPM is 16 bits a channel by default, which
+        # reads as a 1280x800 picture of diagonal stripes if parsed as 8.
+        if self.xwayland:
+            # The X root of a rootless Xwayland is empty; what is on screen is
+            # the compositor's output.
+            self.sh(f"grim -t ppm {ppm}")
+        else:
+            self.sh(f"import -depth 8 -window root ppm:{ppm}")
+        data = open(ppm, "rb").read()
+        os.unlink(ppm)
+        parts = data.split(b"\n", 3)
+        w, h = (int(v) for v in parts[1].split())
+        assert parts[2].strip() == b"255", f"not an 8-bit PPM: {parts[2]!r}"
+        write_png(os.path.join(OUT, name + ".png"), w, h, parts[3])
+        return w, h, parts[3]
+
+    def close(self):
+        for pid in reversed(self.pids):
+            try:
+                self.sh(f"kill {pid} 2>/dev/null; true", timeout=10)
+            except Exception:
+                pass
+        try:
+            self.p.stdin.close()
+            self.p.wait(timeout=5)
+        except Exception:
+            self.p.kill()
+
+
+def x11_box(dev, xs, multiline, x=None, y=None, w=None, h=None, text=""):
+    """Focus a synthetic box and wait for the editor window to be mapped and holding X focus.
+
+    Returns the engine window id and geometry, the editor window id and the box
+    reading. The editor is placed from the engine's spec, so the box rectangle
+    is a fraction of the *engine window's* own size: a box outside the canvas is
+    refused for the fallback bar by `info_fits_canvas`, correctly, and
+    photographing that bar would be reading a different rule.
+    """
+    dev.send("fakeblur")
+    time.sleep(0.8)
+    eng = xs.find(r"^Cordial [0-9]")
+    ex, ey, ew, eh, _ = xs.info(eng)
+    bw = w or min(400, int(ew * 0.5))
+    bh = h or (120 if multiline else 40)
+    bx = x if x is not None else int(ew * 0.15)
+    by = y if y is not None else int(eh * 0.35)
+    dev.send(f"fakefocus {1 if multiline else 0} {bx} {by} {bw} {bh}" + (f" {text}" if text else ""))
+    editor_off = os.environ.get("CORDIAL_X11_EDITOR_OFF_EXPECTED") == "1"
+    box = wait_for(dev, lambda b: b["focus"] != "none" and (editor_off or (b["x"] != "none" and float(b["w"]) > 0)),
+                   timeout=6.0)
+    if editor_off and box["x"] == "none":
+        # The control arm has no editor, and `textbox` reports where the editor
+        # is. The box is where this function asked the engine to put it.
+        box = dict(box, x=str(bx), y=str(by), w=str(bw), h=str(bh), placed="engine")
+    ed = None
+    for _ in range(40):
+        ed = xs.find(r"^Cordial text editor$")
+        if ed:
+            info = xs.info(ed)
+            if info and info[4] and xs.focus_name() == "Cordial text editor":
+                break
+        time.sleep(0.15)
+    xs.prime()
+    return eng, (ex, ey, ew, eh), ed, box
+
+
+def x11_visibility(case, label, dev, xs, multiline=False, editor_expected=True):
+    """Type into a synthetic box on X11 and assert the X display changed where the editor is.
+
+    The same instrument as `visibility_case`, for a different display server:
+    the photograph is of the whole private screen, so it is what a person
+    looking at that display would see.
+    """
+    eng, (ex, ey, ew, eh), ed, box = x11_box(dev, xs, multiline)
+    if not case.check(f"[{label}] the synthetic box took focus", box["focus"] != "none", True):
+        return
+    case.check(f"[{label}] the engine placed the box (not the fallback bar)", box.get("placed"), "engine")
+    info = xs.info(ed) if ed else None
+    bx, by, bw, bh = (float(box[k]) for k in ("x", "y", "w", "h"))
+    if info is None and not editor_expected:
+        # The control arm (CORDIAL_X11_EDITOR=off): no editor window exists, and
+        # the assertions below about where it is cannot be asked. What *can* be
+        # asked is the thing the editor is for -- does the typed text reach the
+        # screen -- and it must fail while the readback keeps passing.
+        case.note(f"[{label}]", "no editor window, as expected for the control; photographing anyway")
+    else:
+        case.check(f"[{label}] the editor window is mapped", bool(info and info[4]), True)
+        if not info:
+            return
+        # Exact, except under GDK_SCALE=N, where GDK keeps a window's position on
+        # its own logical grid and rounds it down: (193, 273) became (192, 272)
+        # at 2. Up to N-1 pixels is that rounding, and anything more is not.
+        tol = int(os.environ.get("CORDIAL_E2E_POS_TOL", "0"))
+        want_xy = (ex + round(bx), ey + round(by))
+        got_xy = (info[0], info[1])
+        near = all(0 <= w - g <= tol for g, w in zip(got_xy, want_xy))
+        case.check(f"[{label}] the editor window sits on the box (root x,y = engine origin + box"
+                   f"{f', down to GDK_SCALE rounding, {tol}px' if tol else ''})",
+                   got_xy if not near else want_xy, want_xy)
+        if not multiline:
+            case.check(f"[{label}] and is the box's size", (info[2], info[3]), (round(bw), round(bh)))
+        case.check(f"[{label}] the editor holds the X keyboard focus", xs.focus_name(), "Cordial text editor")
+    xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+    time.sleep(0.6)
+    rect = (ex + bx - 4, ey + by - 4, bw + 8, bh + 8)
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+    empty1 = xs.grab(f"{slug}-empty")
+    empty2 = xs.grab(f"{slug}-empty-again")
+    noise = crop_diff(empty1, empty2, 1.0, rect)
+    xs.cmd(f"type {VIS_TEXT}")
+    wait_for(dev, lambda b: b["chars"] == len(VIS_TEXT))
+    time.sleep(0.8)
+    typed = xs.grab(f"{slug}-typed")
+    delta = crop_diff(empty1, typed, 1.0, rect)
+    held = dev.textbox()
+    case.note("editor rect on the screen", f"{rect[0]:.0f},{rect[1]:.0f} {rect[2]:.0f}x{rect[3]:.0f}")
+    case.note("photographs", os.path.join(OUT, slug + "-{empty,typed}.png"))
+    case.check(f"[{label}] the field holds the typed characters", held["chars"], len(VIS_TEXT))
+    case.check(f"[{label}] two photographs of the same screen agree (noise <= {VIS_NOISE_MAX})",
+               noise <= VIS_NOISE_MAX, True)
+    case.note("noise / delta pixels", f"{noise} / {delta}")
+    case.check(f"[{label}] the typed characters are VISIBLE (>= {VIS_MIN_PIXELS} changed pixels)",
+               delta >= VIS_MIN_PIXELS, True)
+    # tol 10, not 6: GTK's glyph edges come out a little darker than the colour
+    # asked for -- the commonest ink pixel is (207, 207, 214) for #d5d5dd, seven
+    # off in blue -- and at tol 6 the count hangs on the few pixels that are not.
+    ink = count_colour(typed, 1.0, rect, FAKE_INK, tol=10)
+    ink_before = count_colour(empty1, 1.0, rect, FAKE_INK, tol=10)
+    case.note("pixels in the engine's text colour, before / after typing", f"{ink_before} / {ink}")
+    case.check(f"[{label}] the text is drawn in the box's own colour "
+               f"(>= {VIS_INK_MIN} more pixels of #d5d5dd)", ink - ink_before >= VIS_INK_MIN, True)
+
+
+def run_x11(case, dev, xs, log_path, args):
+    log = lambda: open(log_path, errors="replace").read()
+    editor_on = not any(kv.startswith("CORDIAL_X11_EDITOR=off") for kv in args.client_env)
+    case.note("compositing on the private server", "yes" if (args.wm == "xfwm4c" or args.xwayland) else "no")
+
+    def x1():
+        print("\n-- X1. the editor started on this display")
+        case.check("the log says the X11 text editor started",
+                   "[android] X11 text editor: a GTK window" in log(), editor_on)
+        case.check("the engine is on the X11 backend",
+                   "display backend: X11 (forced by CORDIAL_X11" in log(), True)
+
+    def x2():
+        print("\n-- X2. single-line: where it is, who holds the keyboard, whether it is visible")
+        x11_visibility(case, "single-line", dev, xs, multiline=False, editor_expected=editor_on)
+
+    def x3():
+        print("\n-- X3. editing keys belong to the widget")
+        x11_box(dev, xs, False)
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+        xs.cmd("type hello")
+        s = wait_for(dev, lambda b: b["chars"] == 5)
+        case.check("typed 'hello'", s["text"], "hello")
+        xs.cmd("key Left"); xs.cmd("key Left"); xs.cmd("type X")
+        s = wait_for(dev, lambda b: b["chars"] == 6)
+        case.check("a caret move then a character inserts at the caret, not the end", s["text"], "helXlo")
+        case.check("and the caret is after the inserted character", s["caret"], 4)
+        xs.cmd("key BackSpace")
+        s = wait_for(dev, lambda b: b["chars"] == 5)
+        case.check("Backspace deletes before the caret", s["text"], "hello")
+        xs.cmd("key ctrl+a"); xs.cmd("type Z")
+        s = wait_for(dev, lambda b: b["text"] == "Z")
+        case.check("select-all then a character replaces the lot", s["text"], "Z")
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+        xs.cmd("type h"); xs.cmd("key eacute"); xs.cmd("type llo "); xs.cmd("key udiaeresis")
+        xs.cmd("type n"); xs.cmd("key idiaeresis")
+        s = wait_for(dev, lambda b: b["chars"] >= 9, timeout=4)
+        case.check("non-ASCII text arrives whole", s["text"], "héllo ünï")
+
+    def x4():
+        print("\n-- X4. Enter on a single-line box is an editor action, and no raw key reaches the engine")
+        x11_box(dev, xs, False)
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+        xs.cmd("type go")
+        wait_for(dev, lambda b: b["chars"] == 2)
+        ret0 = dev.textbox()["returns"]
+        raw0 = len(re.findall(r"pass_key_event down=true code=(?:28|96) ", log()))
+        xs.cmd("key Return")
+        time.sleep(0.8)
+        case.check("one ReturnPressed call", dev.textbox()["returns"] - ret0, 1)
+        case.check("no raw Return reached the engine",
+                   len(re.findall(r"pass_key_event down=true code=(?:28|96) ", log())) - raw0, 0)
+        case.check("the text is still there (what happens next is the engine's)", dev.textbox()["text"], "go")
+        # Escape is how somebody leaves a box, and the editor holds the keyboard,
+        # so it has to be sent to the engine from there (evdev code 1).
+        esc = lambda: len(re.findall(r"pass_key_event down=true code=1 ", log()))
+        esc0 = esc()
+        xs.cmd("key Escape")
+        time.sleep(0.8)
+        case.check("Escape typed in the editor is forwarded to the engine", esc() - esc0, 1)
+
+    def x5():
+        print("\n-- X5. multi-line")
+        x11_visibility(case, "multi-line", dev, xs, multiline=True, editor_expected=editor_on)
+        x11_box(dev, xs, True)
+        ret1 = dev.textbox()["returns"]
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+        xs.cmd("type ab"); xs.cmd("key Return"); xs.cmd("type cd")
+        s = wait_for(dev, lambda b: b["chars"] == 5)
+        case.check("Return in a multi-line box is a newline in the text", s["text"], "ab\ncd")
+        case.check("and is not a ReturnPressed call", dev.textbox()["returns"] - ret1, 0)
+
+    def x6():
+        print("\n-- X6. focus out hands the keyboard back")
+        x11_box(dev, xs, False)
+        dev.send("fakeblur")
+        time.sleep(1.5)
+        ed = xs.find(r"^Cordial text editor$")
+        info = xs.info(ed) if ed else None
+        case.check("the editor window is unmapped once the box blurs", bool(info and info[4]), False)
+        case.check("X keyboard focus is back on the game window", xs.focus_name().startswith("Cordial 0"), True)
+        before = dev.textbox()["text"]
+        xs.cmd("type zz")
+        time.sleep(0.5)
+        case.check("a key typed after the blur changes nothing in the box's mirror", dev.textbox()["text"], before)
+
+    def x7():
+        print("\n-- X7. the window moves and resizes under the editor")
+        eng, (ex, ey, ew, eh), ed, box = x11_box(dev, xs, False)
+        want = (round(float(box["x"])), round(float(box["y"])))
+        if xs.xwayland:
+            # sway places the window; an X client's own move is a request it may
+            # ignore. Floating and then moved, which is what a user does.
+            xs.swaymsg('"[title=\\"^Cordial 0\\"] floating enable, resize set 1000 640, move position 180 90"')
+        else:
+            xs.sh(f"xdotool windowmove {eng} 180 90")
+        time.sleep(2.5)
+        nx, ny, nw, nh, _ = xs.info(eng)
+        case.note("window after move", f"{nw}x{nh} at {nx},{ny}")
+        bx, by, bw, bh = (int(float(box[k])) for k in ("x", "y", "w", "h"))
+
+        def refocus(dy):
+            # A fresh spec for the box, `dy` pixels lower. A resize does not make
+            # the engine re-report a box, and `text_geometry::Resolver` (the same
+            # rule Wayland has) treats a rectangle repeated *exactly* under a
+            # different canvas as stale and sends it to the fallback bar -- which
+            # is a different assertion, and was read here as a failure of the
+            # origin. sway resizes the window in the same step as it moves it.
+            dev.send("fakeblur"); time.sleep(0.5)
+            dev.send(f"fakefocus 0 {bx} {by + dy} {bw} {bh}")
+            wait_for(dev, lambda b: b["focus"] != "none" and b["x"] != "none" and float(b["w"]) > 0, timeout=5.0)
+            time.sleep(1.5)
+
+        if xs.xwayland:
+            refocus(1)
+        ei = xs.info(ed)
+        case.check("the editor followed the window", (ei[0] - nx, ei[1] - ny), (want[0], want[1] + (1 if xs.xwayland else 0)))
+        if xs.xwayland:
+            xs.swaymsg('"[title=\\"^Cordial 0\\"] resize set 900 600"')
+        else:
+            xs.sh(f"xdotool windowsize {eng} 900 600")
+        time.sleep(2.5)
+        nx, ny, nw, nh, _ = xs.info(eng)
+        case.note("window after resize", f"{nw}x{nh} at {nx},{ny}")
+        refocus(3)
+        ei = xs.info(ed)
+        case.check("the editor sits on its box under the resized window", (ei[0] - nx, ei[1] - ny), (want[0], want[1] + 3))
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace"); xs.cmd("type moved")
+        s = wait_for(dev, lambda b: b["text"] == "moved")
+        case.check("typing still lands in the field", s["text"], "moved")
+        if xs.xwayland:
+            xs.swaymsg('"[title=\\"^Cordial 0\\"] resize set 1000 640"')
+        else:
+            xs.sh(f"xdotool windowsize {eng} {ew} {eh}; xdotool windowmove {eng} 0 0")
+        time.sleep(2.0)
+
+    def x8():
+        print("\n-- X8. fullscreen: the editor is above the game, and typing is visible there")
+        dev.send("fullscreen")
+        time.sleep(4.0)
+        x11_visibility(case, "fullscreen single-line", dev, xs, multiline=False, editor_expected=editor_on)
+        case.check("the editor is the topmost window", "Cordial text editor" in xs.topmost(), True)
+        case.note("topmost top-level window", xs.topmost())
+        dev.send("windowed")
+        time.sleep(3.0)
+        # F11 pressed while the editor holds the keyboard is the backend's own
+        # fullscreen toggle, which the editor would otherwise swallow.
+        eng, _, _, _ = x11_box(dev, xs, False)
+        full = (args.width, args.height)
+        was = tuple(xs.info(eng)[2:4])
+        xs.cmd("key F11")
+        time.sleep(3.5)
+        now = tuple(xs.info(eng)[2:4])
+        case.check("F11 typed in the editor reaches the fullscreen toggle", now, full)
+        xs.cmd("key F11")
+        time.sleep(3.5)
+        case.check("and F11 again leaves fullscreen", tuple(xs.info(eng)[2:4]) == full, False)
+
+    def x9():
+        print("\n-- X9. another application takes the keyboard, and gives it back")
+        eng, _, ed, box = x11_box(dev, xs, False)
+        xs.sh("nohup setsid xev -name otherapp -geometry 300x200+900+100 >/dev/null 2>&1 & echo $! > " + OUT + "/xev.pid")
+        time.sleep(1.5)
+        other = xs.find(r"^otherapp$")
+        if xs.xwayland:
+            # A real focus change: the compositor gives the keyboard to the other
+            # window, which is what Alt-Tab does. (XSetInputFocus between two X
+            # windows is not.)
+            xs.swaymsg('"[title=\\"^otherapp$\\"] focus"')
+        else:
+            xs.sh(f"xdotool windowfocus {other}")
+        time.sleep(1.5)
+        ei = xs.info(ed)
+        case.check("the editor hides rather than float over the other application", bool(ei and ei[4]), False)
+        if xs.xwayland:
+            xs.swaymsg('"[title=\\"^Cordial 0\\"] focus"')
+        else:
+            xs.sh(f"xdotool windowfocus {eng}")
+        time.sleep(1.5)
+        ei = xs.info(ed)
+        case.check("it comes back when the game has focus again", bool(ei and ei[4]), True)
+        case.check("holding the keyboard", xs.focus_name(), "Cordial text editor")
+        xs.cmd("key ctrl+a"); xs.cmd("key BackSpace"); xs.cmd("type back")
+        s = wait_for(dev, lambda b: b["text"] == "back")
+        case.check("and typing works again", s["text"], "back")
+        xs.sh(f"kill $(cat {OUT}/xev.pid) 2>/dev/null; true")
+
+    def x10():
+        print("\n-- X10. the real sign-in fields (typed with dummy strings; nothing is submitted)")
+        if not editor_on:
+            case.note("X10", "skipped for the control arm: `textbox` reports where the editor is, and there is none")
+            return
+        dev.send("fakeblur"); time.sleep(0.8)
+        ex, ey, ew, eh, _ = xs.info(xs.find(r"^Cordial [0-9]"))
+        case.note("engine window at the click", f"{ew}x{eh} at {ex},{ey}")
+        xs.grab("x10-before-sign-in")
+        dev.send(f"click {ew // 2} {int(eh * 0.51)}")           # the landing page's Sign In
+        time.sleep(3.0)
+        xs.grab("x10-after-sign-in")
+        for label, fy in (("username", 0.407), ("password", 0.499)):
+            # The generation, not just "something is focused": the username box
+            # is still focused when the password is clicked, and reading at once
+            # returned *its* rectangle for the password's photograph.
+            gen0 = dev.textbox()["gen"]
+            dev.send(f"click {ew // 2} {int(eh * fy)}")
+            box = wait_for(dev, lambda b: b["gen"] != gen0 and b["focus"] != "none" and b["x"] != "none"
+                           and float(b["w"]) > 0, timeout=6.0)
+            if not case.check(f"[{label}] a click focuses the real field", box["gen"] != gen0 and box["focus"] != "none", True):
+                continue
+            time.sleep(1.2)
+            box = dev.textbox()
+            case.check(f"[{label}] placed from the engine's own spec", box.get("placed"), "engine")
+            case.check(f"[{label}] the editor holds the keyboard", xs.focus_name(), "Cordial text editor")
+            xs.prime()
+            rect = (ex + float(box["x"]) - 4, ey + float(box["y"]) - 4, float(box["w"]) + 8, float(box["h"]) + 8)
+            before = xs.grab(f"real-{label}-empty")
+            xs.cmd("type dummy1234")
+            wait_for(dev, lambda b: b["chars"] == 9)
+            time.sleep(0.8)
+            after = xs.grab(f"real-{label}-typed")
+            case.check(f"[{label}] the field holds the characters (readback)", dev.textbox()["chars"], 9)
+            delta = crop_diff(before, after, 1.0, rect)
+            case.note(f"[{label}] changed pixels in the field", delta)
+            case.check(f"[{label}] the characters are visible on the display", delta >= 60, True)
+            xs.cmd("key ctrl+a"); xs.cmd("key BackSpace")
+            wait_for(dev, lambda b: b["chars"] == 0)
+
+    # X10 clicks fixed fractions of the landing page, whose layout moves after
+    # any resize or fullscreen round trip (it was 30 px lower after X7 and X8,
+    # and the click then missed the Sign In button). So it runs first, on the
+    # page as it is when the client comes up.
+    every = [("X1", x1), ("X10", x10), ("X2", x2), ("X3", x3), ("X4", x4), ("X5", x5), ("X6", x6),
+             ("X7", x7), ("X8", x8), ("X9", x9)]
+    chosen = {c.strip().upper() for c in args.cases.split(",")} if args.cases else None
+    for name, fn in every:
+        if chosen is None or name in chosen:
+            fn()
+
+
+def main_x11(args):
+    os.makedirs(OUT, exist_ok=True)
+    log_path = os.path.join(OUT, "client.log")
+    binary = os.environ.get("CORDIAL_E2E_BINARY", os.path.join(ROOT, "target/release/cordial-run"))
+    apk = os.environ.get(
+        "CORDIAL_APK",
+        os.path.expanduser("~/.var/app/org.vinegarhq.Sober/data/sober/packages/"
+                           "x86_64/com.roblox.client/base.apk"))
+    lib = os.environ.get("CORDIAL_LIB_DIR", os.path.expanduser("~/.cache/cordial/lib/x86_64"))
+    for path, what in ((binary, "build"), (apk, "APK"), (lib, "library directory")):
+        if not os.path.exists(path):
+            sys.exit(f"FAIL: no {what} at {path}")
+    held = profile_holder(args.profile)
+    if held:
+        sys.exit(f"FAIL: profile {args.profile!r} is already open in pid {held}. Pick another with --profile.")
+    xdg_root = os.environ.get("CORDIAL_E2E_XDG_ROOT")
+    if not xdg_root:
+        sys.exit("FAIL: set CORDIAL_E2E_XDG_ROOT to a directory on disk: the client must not "
+                 "touch the real data, cache or config, and the shell's first-launch migration "
+                 "moves a real build store into whatever XDG_CACHE_HOME it is given")
+    case, xs, client = Case(), None, None
+    if any(kv.startswith("CORDIAL_X11_EDITOR=off") for kv in args.client_env):
+        os.environ["CORDIAL_X11_EDITOR_OFF_EXPECTED"] = "1"
+    for kv in args.client_env:
+        if kv.startswith("GDK_SCALE=") and kv.partition("=")[2].isdigit():
+            os.environ["CORDIAL_E2E_POS_TOL"] = str(max(0, int(kv.partition("=")[2]) - 1))
+    try:
+        xs = XSession(args.wm, args.width, args.height, xwayland=args.xwayland)
+        xs.bind_accents()
+        env = dict(os.environ)
+        for k in ("WAYLAND_DISPLAY", "XDG_SESSION_TYPE", "GDK_BACKEND"):
+            env.pop(k, None)
+        env.update(DISPLAY=xs.display, CORDIAL_X11="1", CORDIAL_DEV_CONTROL="1", CORDIAL_TRACE_TEXT="1",
+                   CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
+                   XDG_DATA_HOME=f"{xdg_root}/data", XDG_CACHE_HOME=f"{xdg_root}/cache",
+                   XDG_CONFIG_HOME=f"{xdg_root}/config")
+        if not args.vulkan:
+            env["CORDIAL_NO_VULKAN"] = "1"
+        for kv in args.client_env:
+            k, _, v = kv.partition("=")
+            env[k] = v
+        print(f"== engine graphics: {'Vulkan' if args.vulkan else 'GLES (CORDIAL_NO_VULKAN=1)'}", flush=True)
+        log = open(log_path, "w")
+        client = subprocess.Popen(
+            [binary, "--lib-dir", lib, "--apk", apk, "--host-libc",
+             "--game-activity", "--run", "0", "--profile", args.profile],
+            env=env, stdout=log, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL)
+        print(f"== client pid {client.pid}, log {log_path}", flush=True)
+        deadline, ready = time.time() + 150, None
+        while time.time() < deadline:
+            if client.poll() is not None:
+                sys.exit(f"FAIL: the client exited with {client.returncode} before it was ready; see {log_path}")
+            m = re.search(r"app ready: (Home|Landing)", open(log_path, errors="replace").read())
+            if m:
+                ready = m.group(1)
+                break
+            time.sleep(1)
+        if not ready:
+            sys.exit(f"FAIL: the app shell never became ready; see {log_path}")
+        print(f"== app ready: {ready}", flush=True)
+        time.sleep(8)
+        dev = Devctl(os.path.join(xdg_root, "data", "cordial", "profiles", args.profile, "devctl.sock"))
+        print(f"== {dev.send('info')}", flush=True)
+        run_x11(case, dev, xs, log_path, args)
+    finally:
+        if not args.keep:
+            if client and client.poll() is None:
+                client.terminate()
+                try:
+                    client.wait(timeout=20)
+                except Exception:
+                    client.kill()
+            if xs:
+                xs.close()
+    print()
+    if case.failed:
+        print(f"BROKEN -- {len(case.failed)} of {len(case.results)} assertions failed:")
+        for _, name, got, want in case.failed:
+            print(f"  {name}: got {got!r}, want {want!r}")
+        sys.exit(1)
+    print(f"PERFECT -- {len(case.results)} assertions, none failed.")
 
 
 if __name__ == "__main__":
