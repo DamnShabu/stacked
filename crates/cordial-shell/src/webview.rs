@@ -112,7 +112,7 @@ use libadwaita as adw;
 use libadwaita::glib;
 use webkit6::prelude::*;
 
-use crate::webview_policy;
+use crate::{webview_captcha, webview_policy};
 
 /// The two message-handler names mocktail's bridge registers, kept identical
 /// here so a page written against either app's bridge finds the same handler
@@ -385,6 +385,41 @@ fn forward_script_message(
             command.len()
         ),
     }
+    acknowledge_captcha_event(view, &command);
+}
+
+/// Answer a security-check page's `CaptchaShown`/`CaptchaSuccess` command, and
+/// close the window once the user has passed.
+///
+/// Forwarding to the engine is not enough on its own: the page waits for its
+/// `callbackID` to be answered in the page itself, and a window that never
+/// answers is left on "Verification complete" for ever (#83). See
+/// [`webview_captcha`] for the command shape and where it comes from. Any
+/// other command is left alone.
+///
+/// **The page answering `true` is what closes the window**, not merely a
+/// `CaptchaSuccess` having arrived, so a page with no bridge to answer is not
+/// closed on a guess.
+fn acknowledge_captcha_event(view: &webkit6::WebView, command: &str) {
+    let Some(event) = webview_captcha::parse_captcha_event(command) else {
+        return;
+    };
+    let name = event.kind.name();
+    let Some(script) = webview_captcha::callback_script(&event.callback_id) else {
+        eprintln!("[webview] {name} arrived with no callback id; there is nothing to answer");
+        return;
+    };
+    let kind = event.kind;
+    view.evaluate_javascript(&script, None, None, gtk4::gio::Cancellable::NONE, move |result| {
+        let answered = matches!(&result, Ok(value) if value.is_boolean() && value.to_boolean());
+        match &result {
+            Ok(_) => eprintln!("[webview] {name} answered: {answered}"),
+            Err(e) => eprintln!("[webview] {name} could not be answered: {e}"),
+        }
+        if answered && kind == webview_captcha::CaptchaEventKind::Success {
+            close_current();
+        }
+    });
 }
 
 /// Install the sink [`open`]'s bridge handler forwards an approved message

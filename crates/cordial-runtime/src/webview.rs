@@ -600,6 +600,227 @@ fn synthetic_open_window_request(url: String) -> OpenWindowRequest {
     }
 }
 
+// ---------------------------------------------------------- the security check
+//
+// Sign-in sometimes ends in a security check (bot verification, a security
+// code). The engine does not send `openWindow` for it; it sends the app-bridge
+// notification `OPEN_CAPTCHA_VIEW` and expects the platform to show the page.
+// Cordial printed the notification and dropped it, so sign-in stopped at the
+// check (#83).
+//
+// The payload keys, the page address and the "open it in the web view, close it
+// on success, then tell the engine focus is back" sequence are taken from
+// mocktail's `roblox_web_view_bridge.cc` (Copyright 2026 komaruworld,
+// Apache-2.0; see `NOTICE` and `third_party/mocktail-webview/`) and rewritten
+// here. **They are `INFERRED` for this client**: nothing in `docs/traces/` has
+// the notification, and a real check cannot be triggered without credentials.
+
+/// The app-bridge notification type the engine sends.
+pub const OPEN_CAPTCHA_VIEW: &str = "OPEN_CAPTCHA_VIEW";
+
+const CAPTCHA_LOGIN_URL: &str = "https://www.roblox.com/captcha/app/login";
+const CAPTCHA_SIGNUP_URL: &str = "https://www.roblox.com/captcha/app/signup";
+const CAPTCHA_TITLE: &str = "Roblox verification";
+/// `hybrid-return-token=1` is what makes the page report through the hybrid
+/// bridge instead of navigating on its own.
+const CAPTCHA_RETURN_QUERY: &str = "hybrid-return-token=1";
+const MAX_CAPTCHA_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_CAPTCHA_CREDENTIAL_BYTES: usize = 4096;
+
+/// Set while a security check is the window on screen, so its close is
+/// reported as focus returning rather than as an `openWindow` window closing.
+static CAPTCHA_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const BROADCAST_EVENT_SYMBOL: &str =
+    "Java_com_roblox_engine_jni_NativeGLInterface_nativeBroadcastEventWithNamespace";
+const BROADCAST_EVENT_CLASS: &str = "com/roblox/engine/jni/NativeGLInterface";
+static BROADCAST_EVENT_NATIVE: OnceLock<usize> = OnceLock::new();
+
+/// Percent-encode everything but RFC 3986 unreserved characters, which is what
+/// `curl_easy_escape` does and so what the page was written against.
+fn escape_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The page to show for an `OPEN_CAPTCHA_VIEW` payload.
+///
+/// `captchaType` is `login` for a sign-in check, which also needs the
+/// credential being signed in with (`cvalueType`: `username`, `email` or
+/// `phone_number`, and `cvalue`); anything else is the sign-up check, which
+/// needs nothing. Error text never contains the payload, because `cvalue` is a
+/// person's username, email address or phone number.
+pub fn captcha_url(payload: &str) -> Result<String, String> {
+    if payload.is_empty() || payload.len() > MAX_CAPTCHA_PAYLOAD_BYTES {
+        return Err("the payload is empty or too large".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|_| "the payload is not JSON".to_string())?;
+    let object = value.as_object().ok_or("the payload is not a JSON object")?;
+    let captcha_type = object
+        .get("captchaType")
+        .and_then(|v| v.as_str())
+        .ok_or("the payload has no captchaType")?;
+    if captcha_type != "login" {
+        return Ok(format!("{CAPTCHA_SIGNUP_URL}?{CAPTCHA_RETURN_QUERY}"));
+    }
+    let credential_type = match object.get("cvalueType").and_then(|v| v.as_str()) {
+        Some("username") => "username",
+        Some("email") => "email",
+        Some("phone_number") => "phonenumber",
+        Some(_) => return Err("the login check's credential type is not one Cordial knows".into()),
+        None => return Err("the login check has no credential type".into()),
+    };
+    let credential = object
+        .get("cvalue")
+        .and_then(|v| v.as_str())
+        .ok_or("the login check has no credential value")?;
+    if credential.is_empty()
+        || credential.len() > MAX_CAPTCHA_CREDENTIAL_BYTES
+        || credential.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return Err("the login check's credential value is not usable".into());
+    }
+    Ok(format!(
+        "{CAPTCHA_LOGIN_URL}?credentialsType={credential_type}&credentialsValue={}&{CAPTCHA_RETURN_QUERY}",
+        escape_query_value(credential)
+    ))
+}
+
+/// What [`dispatch_app_bridge`] did with a notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppBridgeOutcome {
+    /// Not a notification this module acts on.
+    Ignored,
+    /// A request was handed to the presenter.
+    Presented,
+    /// The payload could not be turned into a page; nothing was opened.
+    Refused(String),
+}
+
+/// Turn an app-bridge notification into a window, if it is one that wants one.
+///
+/// `present` is the presenter, passed in so the mapping can be tested without
+/// the process-global [`PRESENTER`].
+pub fn dispatch_app_bridge(
+    kind: &str,
+    data: &str,
+    present: impl FnOnce(OpenWindowRequest),
+) -> AppBridgeOutcome {
+    if kind != OPEN_CAPTCHA_VIEW {
+        return AppBridgeOutcome::Ignored;
+    }
+    match captcha_url(data) {
+        Ok(url) => {
+            present(OpenWindowRequest {
+                url,
+                title: Some(CAPTCHA_TITLE.to_string()),
+                hide_header: false,
+                back_button_visible: false,
+                show_domain_as_title: false,
+            });
+            AppBridgeOutcome::Presented
+        }
+        Err(reason) => AppBridgeOutcome::Refused(reason),
+    }
+}
+
+/// The sink the C side calls, on the engine's thread, for `OPEN_CAPTCHA_VIEW`.
+///
+/// The payload is not printed (it names the account being signed in), and the
+/// address is not either, for the reason [`on_open_window`] gives.
+extern "C" fn on_app_bridge(kind: *const c_char, data: *const c_char) {
+    // SAFETY: the C side passes NUL-terminated strings that outlive the call.
+    let (Some(kind), Some(data)) = (unsafe { crate::ffi_util::borrow_request(kind) }, unsafe {
+        crate::ffi_util::borrow_request(data)
+    }) else {
+        println!("[webview] an app-bridge notification arrived with a null field");
+        return;
+    };
+    let (Ok(kind), Ok(data)) = (kind.to_str(), data.to_str()) else {
+        println!("[webview] an app-bridge notification was not valid UTF-8");
+        return;
+    };
+    let outcome = dispatch_app_bridge(kind, data, |request| match PRESENTER.get() {
+        Some(present) => {
+            CAPTCHA_OPEN.store(true, Ordering::Release);
+            println!("[webview] OPEN_CAPTCHA_VIEW: opening the security check");
+            present(request);
+        }
+        None => println!(
+            "[webview] OPEN_CAPTCHA_VIEW arrived, but no presenter is installed; the security \
+             check cannot be shown"
+        ),
+    });
+    if let AppBridgeOutcome::Refused(reason) = outcome {
+        println!("[webview] OPEN_CAPTCHA_VIEW could not be opened: {reason}");
+    }
+}
+
+/// Start delivering `OPEN_CAPTCHA_VIEW` to [`on_app_bridge`].
+///
+/// Called once from `load.rs`, after the presenter is installed. The class hook
+/// that reports the notification is registered unconditionally, so a build that
+/// never calls this still logs that the engine asked, and says nothing is
+/// listening.
+pub fn install_app_bridge_sink() {
+    cordial_linker_sys::game_activity::app_bridge_set_sink(Some(on_app_bridge));
+}
+
+/// Development trigger behind `CORDIAL_WEBVIEW_TEST_CAPTCHA=signup`: send
+/// `OPEN_CAPTCHA_VIEW` for the sign-up check through the real C++ hook and sink.
+///
+/// A real sign-in check needs an account's credentials in the payload, which
+/// nothing here should ever fabricate or type, so only the sign-up check can be
+/// triggered. It carries nothing but a type, and the page it opens is the
+/// public one a new visitor would see.
+pub fn dev_trigger_captcha(kind: &str) {
+    if kind != "signup" {
+        println!("[webview] CORDIAL_WEBVIEW_TEST_CAPTCHA={kind:?} is not a check this trigger sends (only `signup`)");
+        return;
+    }
+    cordial_linker_sys::game_activity::app_bridge_test_fire(
+        OPEN_CAPTCHA_VIEW,
+        r#"{"captchaType":"signup"}"#,
+    );
+}
+
+/// Tell the engine app focus is back, after a security check closed.
+///
+/// `INFERRED`, as the section above: the call and its three arguments
+/// (`AppInput`, empty, `Focused`) are mocktail's, and nothing here has seen the
+/// engine act on it. It is the same call whether or not it does anything, so a
+/// wrong guess leaves the engine as it was.
+fn return_focus_to_engine() {
+    let Some(native) = BROADCAST_EVENT_NATIVE.get() else {
+        println!(
+            "[webview] the security check closed, but {BROADCAST_EVENT_SYMBOL} was never \
+             resolved; the engine will not be told focus is back"
+        );
+        return;
+    };
+    let f = *native as *mut c_void;
+    // SAFETY: resolved under its own symbol name in `arm` and used for nothing
+    // else; `call_static_strings` owns the buffers it passes for the call.
+    match unsafe {
+        cordial_linker_sys::game_activity::call_static_strings(
+            f,
+            BROADCAST_EVENT_CLASS,
+            &["AppInput", "", "Focused"],
+        )
+    } {
+        Ok(()) => println!("[webview] the security check closed; the engine was told focus is back"),
+        Err(e) => println!("[webview] telling the engine focus is back failed: {e}"),
+    }
+}
+
 static KEYS: OnceLock<OpenWindowKeys> = OnceLock::new();
 
 static CONNECTION: AtomicI64 = AtomicI64::new(0);
@@ -670,6 +891,9 @@ extern "C" fn on_open_window(json: *const c_char) {
     };
     match parse_open_window(json, keys) {
         Ok(request) => {
+            // The engine's own window takes over: whatever closes next is
+            // answered on the message bus, not as a security check.
+            CAPTCHA_OPEN.store(false, Ordering::Release);
             let verdict = cordial_shell::webview_policy::evaluate(&request.url);
             println!(
                 "[webview] openWindow message arrived: {} bytes, host {} (scheme {}), privileged \
@@ -763,6 +987,18 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
         None => println!(
             "  webview: signalJavascriptCallback is not exported by this build; bridge messages \
              will not be forwarded to the engine"
+        ),
+    }
+
+    // `nativeBroadcastEventWithNamespace`, which a closed security check uses
+    // to hand app focus back to the engine -- see [`report_window_closed`].
+    match symbol(BROADCAST_EVENT_SYMBOL) {
+        Some(f) => {
+            let _ = BROADCAST_EVENT_NATIVE.set(f as usize);
+        }
+        None => println!(
+            "  webview: {BROADCAST_EVENT_SYMBOL} is not exported by this build; a closed \
+             security check will not hand focus back to the engine"
         ),
     }
 
@@ -1009,6 +1245,13 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
 /// run. Silence here would read as "the report was sent" to whoever is
 /// reading the log next to a canvas that is still blank.
 pub fn report_window_closed() {
+    // A security check was not opened by the engine's `openWindow`, so the
+    // engine is not waiting for `handleWindowClose` -- it is told app focus is
+    // back, which is what mocktail does for the same window.
+    if CAPTCHA_OPEN.swap(false, Ordering::AcqRel) {
+        return_focus_to_engine();
+        return;
+    }
     let (Some(bus_id), Some(publish_raw)) = (CLOSE_BUS_ID.get(), PUBLISH_RAW_NATIVE.get()) else {
         println!(
             "[webview] a window closed, but this build never armed a handle-window-close report \
@@ -1523,6 +1766,91 @@ mod tests {
     /// same thing, defeating the reason this diagnostic sets them at all (see
     /// `dev_trigger_open_window`'s own doc). Deliberately does not touch
     /// `PRESENTER`, so it cannot race with `set_presenter_keeps_the_first_installation`.
+    #[test]
+    fn a_login_check_carries_the_credential_escaped() {
+        let url = captcha_url(
+            r#"{"captchaType":"login","cvalueType":"email","cvalue":"a b+c@example.com"}"#,
+        )
+        .expect("a login payload");
+        assert_eq!(
+            url,
+            "https://www.roblox.com/captcha/app/login?credentialsType=email\
+             &credentialsValue=a%20b%2Bc%40example.com&hybrid-return-token=1"
+        );
+    }
+
+    #[test]
+    fn a_phone_number_is_named_phonenumber_in_the_address() {
+        let url = captcha_url(
+            r#"{"captchaType":"login","cvalueType":"phone_number","cvalue":"+15551234"}"#,
+        )
+        .unwrap();
+        assert!(url.contains("credentialsType=phonenumber&credentialsValue=%2B15551234&"), "{url}");
+    }
+
+    #[test]
+    fn any_other_captcha_type_is_the_sign_up_check() {
+        assert_eq!(
+            captcha_url(r#"{"captchaType":"signup"}"#).unwrap(),
+            "https://www.roblox.com/captcha/app/signup?hybrid-return-token=1"
+        );
+    }
+
+    #[test]
+    fn a_bad_payload_is_refused_without_echoing_the_credential() {
+        for payload in [
+            "",
+            "not json",
+            "[]",
+            r#"{}"#,
+            r#"{"captchaType":"login"}"#,
+            r#"{"captchaType":"login","cvalueType":"fax","cvalue":"secret-name"}"#,
+            r#"{"captchaType":"login","cvalueType":"username"}"#,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":""}"#,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":"se\ncret-name"}"#,
+        ] {
+            let err = captcha_url(payload).expect_err(payload);
+            assert!(!err.contains("secret-name"), "{err}");
+        }
+        let long = format!(
+            r#"{{"captchaType":"login","cvalueType":"username","cvalue":"{}"}}"#,
+            "x".repeat(MAX_CAPTCHA_CREDENTIAL_BYTES + 1)
+        );
+        assert!(captcha_url(&long).is_err());
+    }
+
+    #[test]
+    fn open_captcha_view_is_presented_as_a_window_and_nothing_else_is() {
+        let mut seen = None;
+        let outcome = dispatch_app_bridge(
+            OPEN_CAPTCHA_VIEW,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":"someone"}"#,
+            |request| seen = Some(request),
+        );
+        assert_eq!(outcome, AppBridgeOutcome::Presented);
+        let request = seen.expect("the presenter was called");
+        assert!(request.url.starts_with("https://www.roblox.com/captcha/app/login?"));
+        assert_eq!(request.title.as_deref(), Some("Roblox verification"));
+        assert!(!request.hide_header);
+
+        let mut called = false;
+        for kind in ["APP_READY", "PURCHASE_ROBUX", ""] {
+            assert_eq!(
+                dispatch_app_bridge(kind, "{}", |_| called = true),
+                AppBridgeOutcome::Ignored
+            );
+        }
+        assert!(!called);
+    }
+
+    #[test]
+    fn a_refused_open_captcha_view_never_reaches_the_presenter() {
+        let mut called = false;
+        let outcome = dispatch_app_bridge(OPEN_CAPTCHA_VIEW, "garbage", |_| called = true);
+        assert!(matches!(outcome, AppBridgeOutcome::Refused(_)), "{outcome:?}");
+        assert!(!called);
+    }
+
     #[test]
     fn the_synthetic_request_is_visibly_a_diagnostic() {
         let request = synthetic_open_window_request("https://www.roblox.com/home".to_string());

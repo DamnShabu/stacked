@@ -640,6 +640,10 @@ pub mod game_activity {
             n: usize,
         ) -> c_int;
         fn cordial_app_ready_set_sink(on_ready: Option<extern "C" fn(*const c_char)>);
+        fn cordial_app_bridge_set_sink(
+            on_notification: Option<extern "C" fn(*const c_char, *const c_char)>,
+        );
+        fn cordial_app_bridge_test_fire(kind: *const c_char, payload: *const c_char);
         fn cordial_report_battery_state_changed(
             f: *mut c_void,
             status: c_int,
@@ -1247,6 +1251,30 @@ pub mod game_activity {
         // SAFETY: the far side stores the pointer in an atomic and calls it
         // from the engine's thread; a null clears it.
         unsafe { cordial_app_ready_set_sink(on_ready) }
+    }
+
+    /// Install the sink `OPEN_CAPTCHA_VIEW` is delivered to, or clear it with `None`.
+    ///
+    /// Called with the notification type and its JSON payload, both
+    /// NUL-terminated and valid only for the call, on the engine's own thread.
+    /// The payload names the account being signed in, so a sink must not print
+    /// it; the C side already elides it from its own log line.
+    pub fn app_bridge_set_sink(on_notification: Option<extern "C" fn(*const c_char, *const c_char)>) {
+        // SAFETY: the far side stores the pointer in an atomic and calls it
+        // from the engine's thread; a null clears it.
+        unsafe { cordial_app_bridge_set_sink(on_notification) }
+    }
+
+    /// Deliver an app-bridge notification the way the engine's own call would,
+    /// for a development trigger. Goes through the same C++ handler and sink as
+    /// a real one; only the JNI argument unwrapping is skipped.
+    pub fn app_bridge_test_fire(kind: &str, payload: &str) {
+        let (Ok(kind), Ok(payload)) = (CString::new(kind), CString::new(payload)) else {
+            return;
+        };
+        // SAFETY: both pointers are valid NUL-terminated strings for the call,
+        // and the C side copies them before returning.
+        unsafe { cordial_app_bridge_test_fire(kind.as_ptr(), payload.as_ptr()) }
     }
 
     /// Hand the framework layer the identity its Java mirrors answer from.

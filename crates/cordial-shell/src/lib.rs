@@ -76,6 +76,7 @@ pub mod webview_policy;
 // file handling, its tests run everywhere, and `build-appimage.sh` runs its
 // patcher from an example built without the WebKitGTK headers.
 pub mod webkit_helpers;
+pub mod webview_captcha;
 #[cfg(feature = "webview")]
 pub mod webview;
 
