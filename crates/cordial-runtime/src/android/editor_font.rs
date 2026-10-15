@@ -254,7 +254,40 @@ static DEFAULT_REGISTERED: std::sync::atomic::AtomicBool =
 /// here -- see the note on [`log_unresolved`]. The caller draws the default
 /// face and says which id it could not resolve, rather than drawing nothing.
 pub fn face_for_id(id: i32) -> Option<&'static Face> {
-    table().by_id.get(&id)
+    let face = table().by_id.get(&id);
+    if let Some(face) = face {
+        log_resolved(id, face);
+    }
+    face
+}
+
+/// Say once, per distinct id, which face an id was drawn in.
+///
+/// Not behind `CORDIAL_TRACE_TEXT`, because the report this exists for could
+/// not be answered without it: text drawn slanted in one game's chat box
+/// needed the number the game asked for, and a person who plays on a desktop
+/// launcher is not going to start a terminal with a trace variable set. The
+/// client's output goes into the logs `Report a Problem` saves, so a line here
+/// reaches the issue without anybody being asked to do anything. It names the
+/// id and the face and carries nothing the player typed.
+fn log_resolved(id: i32, face: &Face) {
+    static SEEN: OnceLock<Mutex<HashSet<i32>>> = OnceLock::new();
+    let seen = SEEN.get_or_init(|| Mutex::new(HashSet::new()));
+    let mut seen = seen.lock().unwrap_or_else(|e| e.into_inner());
+    if seen.insert(id) {
+        eprintln!("[cordial] editor font: {}", describe_resolved(id, face));
+    }
+}
+
+/// The words for [`log_resolved`], split out so the wording is testable
+/// without a process-wide set that only ever answers once.
+fn describe_resolved(id: i32, face: &Face) -> String {
+    format!(
+        "id {id} is drawn in {} weight {}{}",
+        face.family,
+        face.weight,
+        if face.italic { " italic" } else { "" }
+    )
 }
 
 /// The face to use for an id that resolved to nothing, or `None` when there is
@@ -1143,6 +1176,21 @@ mod tests {
         let t = rows_to_faces(&entries, &faces);
         assert!(!t.contains_key(&3), "id 3 must not be drawn slanted");
         assert!(t[&6].italic);
+    }
+
+    /// The line a bug report quotes has to say the one thing the report is
+    /// about: whether the face is slanted, and how heavy.
+    #[test]
+    fn the_resolved_line_names_the_id_the_family_the_weight_and_the_slant() {
+        let t = shipped_shape();
+        assert_eq!(
+            describe_resolved(6, &t[&6]),
+            "id 6 is drawn in Source Sans Pro weight 400 italic"
+        );
+        assert_eq!(
+            describe_resolved(46, &t[&46]),
+            "id 46 is drawn in Builder Sans weight 400"
+        );
     }
 
     /// The Login-screen capture the default rests on, kept as a regression: if
