@@ -144,10 +144,62 @@ fn fetch_and_decompress(url: &str) -> Result<String, String> {
     String::from_utf8(decompressed).map_err(|e| format!("not utf-8: {e}"))
 }
 
-fn fresh(path: &Path) -> Option<String> {
+/// How old a cached engine document may be and still be handed to the engine
+/// at once, with a fresh copy fetched behind it for the next launch.
+///
+/// Past [`MAX_AGE`] this used to be a synchronous fetch of about 1.3 MB inside
+/// `bootstrapTheApp`, so anybody who launched less often than every six hours
+/// waited on a CDN round trip before the engine could go on, and on a network
+/// that drops packets rather than refusing, up to the client's twenty-second
+/// timeout before the stale copy was used anyway. Flags drift slowly enough
+/// that a document a few days old starts the same client; one older than this
+/// is fetched first, as before.
+const STALE_SERVE_MAX: Duration = Duration::from_secs(7 * 24 * 60 * 60);
+
+fn age(path: &Path) -> Option<Duration> {
     let meta = std::fs::metadata(path).ok()?;
-    let age = SystemTime::now().duration_since(meta.modified().ok()?).ok()?;
-    (age < MAX_AGE).then(|| std::fs::read_to_string(path).ok())?
+    SystemTime::now().duration_since(meta.modified().ok()?).ok()
+}
+
+fn fresh(path: &Path) -> Option<String> {
+    (age(path)? < MAX_AGE).then(|| std::fs::read_to_string(path).ok())?
+}
+
+/// A cached copy past [`MAX_AGE`] but inside [`STALE_SERVE_MAX`].
+fn stale_but_usable(path: &Path) -> Option<String> {
+    (age(path)? < STALE_SERVE_MAX)
+        .then(|| std::fs::read_to_string(path).ok())?
+        .filter(|body| plausible(body))
+}
+
+/// Replace the cache whole. Several clients start at once from one cache, and
+/// a plain write let one of them read another's half-written document.
+fn write_cache(path: &Path, body: &str) {
+    let Some(parent) = path.parent() else { return };
+    let _ = std::fs::create_dir_all(parent);
+    let tmp = parent.join(format!(".enginesettings.{}.tmp", std::process::id()));
+    if std::fs::write(&tmp, body).is_ok() && std::fs::rename(&tmp, path).is_err() {
+        let _ = std::fs::remove_file(&tmp);
+    }
+}
+
+/// Fetch the engine document for the next launch, off the startup path. A
+/// failure leaves the cache as it was; the next launch past
+/// [`STALE_SERVE_MAX`] fetches in the foreground and says why.
+fn refresh_in_background(path: PathBuf) {
+    let spawned = std::thread::Builder::new().name("settings-refresh".into()).spawn(move || {
+        match fetch_and_decompress(ENGINE_URL) {
+            Ok(body) if plausible(&body) => {
+                write_cache(&path, &body);
+                println!("  client settings: refreshed the cache for the next launch");
+            }
+            Ok(_) => println!("  client settings: refresh answered with something that is not a settings document"),
+            Err(why) => println!("  client settings: refresh failed: {why}"),
+        }
+    });
+    if let Err(e) = spawned {
+        println!("  client settings: could not start the refresh: {e}");
+    }
 }
 
 /// Looks like a settings document rather than an error page.
@@ -191,6 +243,10 @@ pub enum Source {
     EngineDocumentCached,
     /// The default since 2026-09-24, live fetch.
     EngineDocumentFetched,
+    /// [`ENGINE_URL`]'s cache past [`MAX_AGE`] but inside
+    /// [`STALE_SERVE_MAX`], handed over at once while a fresh copy is fetched
+    /// for the next launch.
+    EngineDocumentStale,
 }
 
 impl std::fmt::Display for Source {
@@ -201,6 +257,7 @@ impl std::fmt::Display for Source {
             Source::Fetched => write!(f, "fetched"),
             Source::EngineDocumentCached => write!(f, "engine document, cache"),
             Source::EngineDocumentFetched => write!(f, "engine document, fetched"),
+            Source::EngineDocumentStale => write!(f, "engine document, stale cache, refreshing for next launch"),
             Source::StaleCache => write!(f, "stale cache, fetch failed"),
             Source::Nothing(why) => write!(f, "nothing: {why}"),
         }
@@ -282,6 +339,10 @@ fn load_base(explicit: Option<&str>) -> (Option<String>, Source) {
         if let Some(body) = fresh(&cache) {
             return (Some(body), Source::EngineDocumentCached);
         }
+        if let Some(body) = stale_but_usable(&cache) {
+            refresh_in_background(cache);
+            return (Some(body), Source::EngineDocumentStale);
+        }
         // No fallback to `cache_path()` (the old AndroidApp cache) on
         // failure here, on purpose: a warm `clientsettings.json` from before
         // this switch flipped holds the *other* document, and serving it as
@@ -298,10 +359,7 @@ fn load_base(explicit: Option<&str>) -> (Option<String>, Source) {
             // settings document, and caching that would look like a flag
             // problem rather than a fetch problem for MAX_AGE afterwards.
             Ok(body) if plausible(&body) => {
-                if let Some(parent) = cache.parent() {
-                    let _ = std::fs::create_dir_all(parent);
-                }
-                let _ = std::fs::write(&cache, &body);
+                write_cache(&cache, &body);
                 (Some(body), Source::EngineDocumentFetched)
             }
             Ok(_) => {
@@ -599,6 +657,7 @@ mod history {
                 Source::Nothing(_) => "cordial-androidapp-nothing",
                 Source::EngineDocumentCached => "cordial-enginedoc-cached",
                 Source::EngineDocumentFetched => "cordial-enginedoc-fetched",
+                Source::EngineDocumentStale => "cordial-enginedoc-stale",
             };
             save(dir, tag, body.as_bytes());
         }
@@ -744,6 +803,56 @@ mod tests {
     #[test]
     fn a_document_without_application_settings_is_refused() {
         assert!(merge(r#"{"nope":{}}"#, map(&[("FFlagX", serde_json::json!(1))])).is_err());
+    }
+
+    const DOC: &str = r#"{"applicationSettings":{"FFlagX":"True"}}"#;
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir = std::env::temp_dir()
+            .join(format!("cordial-settings-stale-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn aged(dir: &Path, body: &str, age: Duration) -> PathBuf {
+        let path = dir.join("enginesettings.json");
+        std::fs::write(&path, body).unwrap();
+        let file = std::fs::File::options().write(true).open(&path).unwrap();
+        file.set_modified(SystemTime::now() - age).unwrap();
+        path
+    }
+
+    const DAY: Duration = Duration::from_secs(24 * 60 * 60);
+
+    #[test]
+    fn a_cache_a_day_old_is_handed_over_rather_than_waited_on() {
+        let path = aged(&scratch("day"), DOC, DAY);
+        assert_eq!(fresh(&path), None, "past MAX_AGE it is not fresh");
+        assert_eq!(stale_but_usable(&path).as_deref(), Some(DOC));
+    }
+
+    #[test]
+    fn a_cache_past_a_week_is_fetched_first_as_before() {
+        let path = aged(&scratch("week"), DOC, STALE_SERVE_MAX + Duration::from_secs(60));
+        assert_eq!(stale_but_usable(&path), None);
+    }
+
+    #[test]
+    fn a_stale_error_body_is_never_handed_over() {
+        let path = aged(&scratch("error"), r#"{"errors":[]}"#, DAY);
+        assert_eq!(stale_but_usable(&path), None);
+    }
+
+    #[test]
+    fn the_cache_is_replaced_whole_and_leaves_no_temporary_behind() {
+        let dir = scratch("whole");
+        let path = aged(&dir, "old", Duration::ZERO);
+        write_cache(&path, DOC);
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), DOC);
+        let names: Vec<_> =
+            std::fs::read_dir(&dir).unwrap().map(|e| e.unwrap().file_name()).collect();
+        assert_eq!(names, [std::ffi::OsString::from("enginesettings.json")]);
     }
 
     #[test]
