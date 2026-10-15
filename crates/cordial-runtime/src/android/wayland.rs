@@ -1734,6 +1734,30 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         eprintln!("[android] wayland: the seat advertises no keyboard; running without one");
         std::ptr::null_mut()
     };
+    // The frame-watching pointer, Hyprland only and only when the drag lock is
+    // wanted there: a second seat object at version 5, because the first is
+    // version 1 and a version 1 pointer is sent no frames. See [`DragHold`].
+    let watch_pointer = if on_hyprland()
+        && drag_lock_allowed(true, std::env::var("CORDIAL_DRAG_LOCK").ok().as_deref())
+        && !no_drag_lock()
+        && caps & WL_SEAT_CAPABILITY_POINTER != 0
+        && seat_ver >= 5
+    {
+        // SAFETY: `seat_interface` is libwayland-client's exported interface
+        // table, which lives as long as the loaded library.
+        let watch_seat = bind(seat_name, 5, seat_ver, unsafe { &*wl.seat_interface }, "wl_seat");
+        if watch_seat.is_null() {
+            std::ptr::null_mut()
+        } else {
+            // SAFETY: `watch_seat` is a live seat proxy bound just above, and
+            // `get_pointer` takes one new-id argument, the null here.
+            unsafe {
+                (wl.marshal_flags)(watch_seat, WL_SEAT_GET_POINTER, wl.pointer_interface, 5, 0, std::ptr::null_mut::<c_void>())
+            }
+        }
+    } else {
+        std::ptr::null_mut()
+    };
     // The touchscreen, on the same terms and for the same protocol reason:
     // `wl_seat.get_touch` on a seat with no touch capability is a
     // `missing_capability` error and the compositor answers it by disconnecting
@@ -1950,6 +1974,19 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
             // `hide_pointer`. Sending it at setup was wrong twice over: there
             // is no valid serial to send yet, and the request has to be
             // repeated on every enter regardless.
+        }
+        if !watch_pointer.is_null() {
+            (host.wl.add_listener)(
+                watch_pointer,
+                &WATCH_POINTER_LISTENER as *const PointerListener as *const c_void,
+                std::ptr::null_mut(),
+            );
+            FRAME_WATCH_ACTIVE.store(true, Ordering::Release);
+            println!(
+                "[android] wayland: Hyprland takes the camera button away when the pointer lock \
+                 activates and never reports its release; a version-5 pointer is watching for \
+                 the frame that does, so right-drag can hold the lock"
+            );
         }
         if !keyboard.is_null() {
             (host.wl.add_listener)(keyboard, &KEYBOARD_LISTENER as *const KeyboardListener as *const c_void, std::ptr::null_mut());
@@ -3354,7 +3391,17 @@ impl WaylandWindow {
     /// A canvas leave can be followed by a toplevel lock in the same batch;
     /// releasing inside that callback cuts off a held fire or aim button.
     fn reconcile_pointer_buttons(&self) {
-        let owns_pointer = engine_owns_pointer(self);
+        // A release set aside with no `leave` behind it was the player's, and a
+        // hold whose lock never arrived has waited long enough.
+        let due = drag_hold().batch_end(
+            self.now_ms(),
+            POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
+            LAST_COUNTED_EVENT_MS.load(Ordering::Relaxed),
+        );
+        if due != 0 {
+            self.release_buttons(due);
+        }
+        let owns_pointer = engine_owns_pointer(self) || drag_hold().holding();
         if !owns_pointer || dialog_in_front(self) || self.host.0.focused() == Some(false) {
             self.release_held_buttons();
         }
@@ -3365,6 +3412,12 @@ impl WaylandWindow {
     /// loss, with no real release left to correct it.
     fn release_held_buttons(&self) {
         let held = self.pointer_buttons.load(Ordering::Relaxed);
+        self.release_buttons(held);
+    }
+
+    /// Release each of the buttons in `mask` that is believed down.
+    fn release_buttons(&self, mask: i32) {
+        let held = self.pointer_buttons.load(Ordering::Relaxed) & mask;
         if held == 0 {
             return;
         }
@@ -3404,6 +3457,7 @@ impl WaylandWindow {
                 );
             }
         } else {
+            drag_hold().forget(android_button);
             self.pointer_buttons.fetch_and(!android_button, Ordering::Relaxed);
             let buttons = self.pointer_buttons.load(Ordering::Relaxed);
             LAST_POINTER_BUTTONS.store(buttons, Ordering::Relaxed);
@@ -3748,6 +3802,15 @@ unsafe extern "C" fn pointer_leave(_data: *mut c_void, _pointer: *mut c_void, _s
     POINTER_VIA_PARENT.store(false, Ordering::Release);
     super::input::reset_mouse_delta();
     super::input::forget_pending_unlocked_delta();
+    if let Some(w) = current() {
+        let promoted = drag_hold().left_canvas(w.now_ms());
+        if promoted != 0 && super::input::trace_mouse() {
+            eprintln!(
+                "[cordial] pointer lock: the canvas lost focus with the release ({promoted}); \
+                 that was the compositor's, so the drag is still held"
+            );
+        }
+    }
 }
 unsafe extern "C" fn pointer_motion(_data: *mut c_void, _pointer: *mut c_void, _time: u32, x: i32, y: i32) {
     if !POINTER_ON_CANVAS.load(Ordering::Acquire) {
@@ -3776,7 +3839,21 @@ unsafe extern "C" fn pointer_button(
 ) {
     let Some(w) = current() else { return };
     let Some(android_button) = linux_button_to_android(button) else { return };
-    let owns_pointer = engine_owns_pointer(&w) && !dialog_in_front(&w);
+    let owns_pointer = engine_owns_pointer(w) && !dialog_in_front(w);
+    // A press of a camera button already believed down means its release went
+    // by unseen -- the compositor took it, and the frame that would have said so
+    // did not arrive. Tell the engine now, or the press below is refused as a
+    // duplicate and the drag it starts never begins.
+    if state == 1 {
+        let stale = drag_hold().press(android_button);
+        if stale != 0 {
+            eprintln!(
+                "[android] wayland: a camera button was pressed that was still believed held \
+                 after the compositor released it for the lock; ending that drag first"
+            );
+            w.dispatch_pointer_button(stale, false);
+        }
+    }
     // A release belongs to whoever received its press, even if the lock or
     // focus changed meanwhile. Conversely, a release for GTK's press is not
     // an engine event, and a duplicate press must not restart a held gesture.
@@ -3786,10 +3863,26 @@ unsafe extern "C" fn pointer_button(
         android_button,
         state == 1,
     ) {
-        if state == 1 && dialog_in_front(&w) && super::input::trace_mouse() {
+        if state == 1 && dialog_in_front(w) && super::input::trace_mouse() {
             eprintln!("[cordial] click withheld from the engine: a web-view dialog is in front");
         }
         return;
+    }
+    // Hyprland's release for a button held under a lock it is just activating:
+    // set aside until the `leave` that follows it says whose it was. See
+    // [`DragHold`].
+    if state == 0 {
+        let pending = !w.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null()
+            && !POINTER_LOCK_ACTIVE.load(Ordering::Acquire);
+        if drag_hold().release(android_button, pending, FRAME_WATCH_ACTIVE.load(Ordering::Acquire)) {
+            if super::input::trace_mouse() {
+                eprintln!(
+                    "[cordial] pointer lock: camera button released while the lock is pending; \
+                     waiting to see whether the canvas loses focus with it"
+                );
+            }
+            return;
+        }
     }
     w.dispatch_pointer_button(android_button, state == 1);
 }
@@ -3800,7 +3893,7 @@ unsafe extern "C" fn pointer_axis(_data: *mut c_void, _pointer: *mut c_void, _ti
     // first person holds the cursor was dropped because the canvas no longer
     // has pointer focus. See `pointer_event_is_the_engines`.
     if let Some(w) = current() {
-        if dialog_in_front(&w) || !engine_owns_pointer(&w) {
+        if dialog_in_front(w) || !engine_owns_pointer(w) {
             return;
         }
         w.dispatch_pointer_axis(axis, fixed_to_f32(value));
@@ -3836,6 +3929,80 @@ static POINTER_LISTENER: PointerListener = PointerListener {
     axis_discrete: pointer_axis_discrete,
     axis_value120: pointer_axis_value120,
     axis_relative_direction: pointer_axis_relative_direction,
+};
+
+// -------------------------------------------------- the frame-watching pointer
+//
+// A second `wl_seat` bound at version 5, and a pointer taken from it, whose only
+// job is to receive `wl_pointer.frame`. Cordial's own pointer is version 1
+// because the seat it was taken from is, and a child object cannot be newer than
+// its parent; raising that seat would also change what the keyboard and touch
+// objects deliver, which is a separate change with its own testing. Binding a
+// global twice gives independent objects, so this one costs the others nothing.
+//
+// It exists for one fact: on Hyprland the physical release of a camera button
+// is never reported once the lock has activated, and a frame with nothing in
+// it is the only trace it leaves. See [`DragHold`].
+
+/// Every event other than `frame` counts as "something happened", because the
+/// question asked of a frame is only whether it closed an empty batch.
+unsafe extern "C" fn watch_enter(_: *mut c_void, _: *mut c_void, _: u32, _: *mut c_void, _: i32, _: i32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_leave(_: *mut c_void, _: *mut c_void, _: u32, _: *mut c_void) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_motion(_: *mut c_void, _: *mut c_void, _: u32, _: i32, _: i32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_button(_: *mut c_void, _: *mut c_void, _: u32, _: u32, _: u32, _: u32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis(_: *mut c_void, _: *mut c_void, _: u32, _: u32, _: i32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis_source(_: *mut c_void, _: *mut c_void, _: u32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis_stop(_: *mut c_void, _: *mut c_void, _: u32, _: u32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis_discrete(_: *mut c_void, _: *mut c_void, _: u32, _: i32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis_value120(_: *mut c_void, _: *mut c_void, _: u32, _: i32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_axis_relative_direction(_: *mut c_void, _: *mut c_void, _: u32, _: u32) {
+    count_pointer_event();
+}
+unsafe extern "C" fn watch_frame(_: *mut c_void, _: *mut c_void) {
+    let events = EVENTS_SINCE_FRAME.swap(0, Ordering::AcqRel);
+    let Some(w) = current() else { return };
+    let released = drag_hold().frame(events, POINTER_LOCK_ACTIVE.load(Ordering::Acquire));
+    if released != 0 {
+        if super::input::trace_mouse() {
+            eprintln!(
+                "[cordial] pointer lock: a frame with no event in it while a camera button is \
+                 held for the lock ({released}); that is the physical release, ending the drag"
+            );
+        }
+        w.release_buttons(released);
+    }
+}
+
+static WATCH_POINTER_LISTENER: PointerListener = PointerListener {
+    enter: watch_enter,
+    leave: watch_leave,
+    motion: watch_motion,
+    button: watch_button,
+    axis: watch_axis,
+    frame: watch_frame,
+    axis_source: watch_axis_source,
+    axis_stop: watch_axis_stop,
+    axis_discrete: watch_axis_discrete,
+    axis_value120: watch_axis_value120,
+    axis_relative_direction: watch_axis_relative_direction,
 };
 
 // -------------------------------------------------------------------- touch
@@ -4115,6 +4282,155 @@ static SHIFT_DURING_RIGHT_DRAG: AtomicBool = AtomicBool::new(false);
 /// which is the same shape as the Escape latch this release just removed.
 static RIGHT_DRAG_LATCH_SINCE: AtomicI64 = AtomicI64::new(0);
 
+/// The camera buttons, as the bits `pointer_buttons` holds them in.
+const CAMERA_BUTTONS: i32 = super::input::BUTTON_SECONDARY | super::input::BUTTON_TERTIARY;
+
+/// How a camera drag survives the release Hyprland invents when its lock
+/// activates, and how the real release is found afterwards.
+///
+/// **The mechanism, read from Hyprland 0.56.2's source and then seen on the
+/// wire in a nested Hyprland.** Activating a lock on the toplevel moves pointer
+/// focus off the canvas subsurface, and `CWLPointerResource::sendLeave` answers
+/// a focus change by releasing every button that pointer had pressed, with the
+/// *current* time (not the press's: the reporter's trace showed the two equal
+/// only because they fell in the same millisecond). The pointer then holds no
+/// pressed buttons, so when the physical release comes
+/// `CWLPointerResource::sendButton` drops it as "a release on a non-pressed
+/// button" -- no `wl_pointer.button` ever arrives -- but
+/// `CInputManager::onMouseButton` still ends in `sendPointerFrame()`. A
+/// `wl_pointer.frame` with nothing in front of it is therefore the one thing
+/// that says the button came up.
+///
+/// So a camera-button release that arrives while the lock is still pending is
+/// *set aside* rather than delivered. If the canvas's `leave` follows in the
+/// same batch it was Hyprland's, and the drag carries on as held; if not it was
+/// the player's, and the batch's end delivers it. Once held, a frame carrying no
+/// event of any kind, seen after `locked`, is the physical release.
+///
+/// Pure bookkeeping, so every transition can be tested without a compositor.
+#[derive(Default, Debug, PartialEq, Eq)]
+struct DragHold {
+    /// Camera buttons whose release arrived with the lock pending and is waiting
+    /// to learn whether a `leave` follows.
+    deferred: i32,
+    /// Camera buttons the compositor released for us, still down for real.
+    held: i32,
+    /// `now_ms` at which `held` last became non-zero.
+    since_ms: i64,
+}
+
+impl DragHold {
+    /// A release arrived. True when it was set aside.
+    fn release(&mut self, button: i32, lock_pending: bool, watching: bool) -> bool {
+        if !watching || !lock_pending || button & CAMERA_BUTTONS == 0 {
+            return false;
+        }
+        self.deferred |= button;
+        true
+    }
+
+    /// The canvas lost pointer focus. Anything set aside just before it was the
+    /// compositor's, not the player's. Returns the buttons now held.
+    fn left_canvas(&mut self, now_ms: i64) -> i32 {
+        let promoted = std::mem::take(&mut self.deferred);
+        if promoted != 0 {
+            self.held |= promoted;
+            self.since_ms = now_ms;
+        }
+        promoted
+    }
+
+    /// The batch of events has been dispatched. A release still set aside had no
+    /// `leave` behind it, so it was real; a hold whose lock never confirmed has
+    /// run out of time to. Returns the buttons to release now.
+    ///
+    /// **A hold also gives up after a long silence**, whatever the lock says. The
+    /// frame that ends it is read off Hyprland 0.56.2's source and one nested
+    /// run, and a compositor that stops sending it would leave the camera turning
+    /// with the mouse until the next click. `last_event_ms` is the last pointer
+    /// event of any kind; a button held that long without one is let go.
+    fn batch_end(&mut self, now_ms: i64, lock_active: bool, last_event_ms: i64) -> i32 {
+        let mut out = std::mem::take(&mut self.deferred);
+        if self.held != 0 {
+            let waited = now_ms.saturating_sub(self.since_ms) > DRAG_HOLD_CONFIRM_MS && !lock_active;
+            let silent = now_ms.saturating_sub(self.since_ms.max(last_event_ms)) > DRAG_HOLD_SILENCE_MS;
+            if waited || silent {
+                out |= std::mem::take(&mut self.held);
+            }
+        }
+        out
+    }
+
+    /// A `wl_pointer.frame` arrived having carried `events` events. Returns the
+    /// buttons to release: all of them, because every held button came up in
+    /// something the pointer could not report, and only one is needed to say so.
+    fn frame(&mut self, events: u32, lock_active: bool) -> i32 {
+        if events == 0 && lock_active {
+            return std::mem::take(&mut self.held);
+        }
+        0
+    }
+
+    /// A press of a button already believed held. The player cannot press what
+    /// is down, so its release went by unseen.
+    fn press(&mut self, button: i32) -> i32 {
+        let stale = self.held & button;
+        self.held &= !button;
+        stale
+    }
+
+    /// A real release was delivered, or the engine was told one.
+    fn forget(&mut self, button: i32) {
+        self.held &= !button;
+        self.deferred &= !button;
+    }
+
+    /// The lock went away under a held drag; no frame will say when it ended.
+    fn lock_lost(&mut self) -> i32 {
+        std::mem::take(&mut self.held) | std::mem::take(&mut self.deferred)
+    }
+
+    fn holding(&self) -> bool {
+        self.held != 0 || self.deferred != 0
+    }
+}
+
+/// How long a held drag may go without any pointer event before it is let go.
+/// Long enough that nobody holds a camera button this still, short enough that a
+/// compositor which never reports the release costs seconds and not a session.
+const DRAG_HOLD_SILENCE_MS: i64 = 20_000;
+
+/// How long a held drag waits for `locked` before it stops waiting. The refusal
+/// timeout beside it, for the same reason.
+const DRAG_HOLD_CONFIRM_MS: i64 = 1_000;
+
+static DRAG_HOLD: Mutex<DragHold> =
+    Mutex::new(DragHold { deferred: 0, held: 0, since_ms: 0 });
+
+/// Events the frame-watching pointer, and the relative-pointer object, have
+/// delivered since the last `wl_pointer.frame`. Zero at a frame means the frame
+/// closed something the pointer was not allowed to report.
+static EVENTS_SINCE_FRAME: AtomicU32 = AtomicU32::new(0);
+
+/// `now_ms` of the last event counted into [`EVENTS_SINCE_FRAME`].
+static LAST_COUNTED_EVENT_MS: AtomicI64 = AtomicI64::new(0);
+
+/// Count one pointer event towards the frame it will be closed by.
+fn count_pointer_event() {
+    EVENTS_SINCE_FRAME.fetch_add(1, Ordering::AcqRel);
+    if let Some(w) = current() {
+        LAST_COUNTED_EVENT_MS.store(w.now_ms(), Ordering::Relaxed);
+    }
+}
+
+/// Whether a second, version-5 `wl_pointer` exists to receive frames. Cordial's
+/// own pointer is version 1, which the compositor sends no frames to.
+static FRAME_WATCH_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+fn drag_hold() -> std::sync::MutexGuard<'static, DragHold> {
+    DRAG_HOLD.lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The engine, not a right-button drag, is what holds the pointer lock -- shift
 /// lock or first person -- and so Cordial keeps the engine's pointer at the
 /// canvas centre while it is held. Set from `sync_pointer_lock`, read when the
@@ -4189,59 +4505,47 @@ fn no_pointer_lock() -> bool {
 /// Whether a held camera button asks for the pointer lock.
 ///
 /// Pure so the Hyprland case can be tested without a compositor: the inputs are
-/// the switch, whether this compositor keeps a held button across a lock
-/// activation ([`drag_lock_keeps_the_button`]), whether a camera button is
-/// down, and whether the pointer is the engine's to capture.
+/// the switch, whether the drag lock is usable here ([`drag_lock_usable`]),
+/// whether a camera button is down, and whether the pointer is the engine's to
+/// capture.
 fn drag_takes_the_lock(
     no_drag_lock: bool,
-    compositor_keeps_the_button: bool,
+    drag_lock_usable: bool,
     camera_button_held: bool,
     owns_pointer: bool,
 ) -> bool {
-    !no_drag_lock && compositor_keeps_the_button && camera_button_held && owns_pointer
+    !no_drag_lock && drag_lock_usable && camera_button_held && owns_pointer
 }
 
-/// Whether the compositor keeps a held button when a lock activates under it.
+/// Whether a held camera button may ask for the pointer lock on this compositor.
 ///
-/// **Hyprland does not, and taking the lock at the press ended every right-drag
-/// before it began.** 0.26.0 moved Hyprland to a lock on the toplevel so that
-/// it would answer `locked`; the reporter of #56 then traced 0.27.0 on 0.56.2
-/// and found the right-button camera dead. Activating the constraint moves
-/// pointer focus from the canvas to the toplevel, and Hyprland releases the
-/// button that was held on the surface focus left: a `wl_pointer.button`
-/// release carrying the *press's own timestamp*, 133 microseconds after it and
-/// before the `leave`. `dispatch_pointer_button` took that for the drag ending
-/// and destroyed the lock, so `locked` arrived 62 microseconds after the
-/// `destroy` and was discarded. The physical release never arrived either --
-/// every right press in the trace has exactly one release and it is always the
-/// synthetic one -- which is why a grace period around the release is not a fix
-/// and only turns the dead camera into a stuck one (that was tried on a local
-/// 0.13.2 build, and every drag then lasted until Escape).
+/// Everywhere but Hyprland, always. **On Hyprland it needs the means to find the
+/// button coming up**, because Hyprland takes the button away from the client
+/// when the lock activates and never reports the physical release (see
+/// [`DragHold`] for the whole mechanism). Without a version-5 pointer to
+/// receive frames there is no way to see it, and a drag that took the lock
+/// would last until the next click -- which is what the reporter of #56 tried
+/// with a grace window and rejected. So there the answer is no, and the camera
+/// pans on an unlocked cursor as it did before 0.26.0.
 ///
-/// So on Hyprland a held button never asks for the lock. That is the behaviour
-/// before 0.26.0 for a drag: the camera pans from relative motion and the
-/// cursor is free, which is worse than a lock and better than no camera. The
-/// engine's own request -- shift lock, first person -- still takes the toplevel
-/// lock, because no button is held when it activates, and that half is
-/// confirmed working on 0.56.2.
+/// 0.28.0 answered no on Hyprland unconditionally, which kept the camera but let
+/// the cursor drift and jump on release (#56 again). `CORDIAL_DRAG_LOCK=0`
+/// restores that; anything else, or nothing, takes the lock.
 ///
-/// `INFERRED` for the mechanism: it is read off that wire trace, and could not
-/// be reproduced here: Hyprland 0.56.2 needs a host compositor offering
-/// `wl_compositor` and `xdg_wm_base` at version 6, weston and sway offer 5, and
-/// headless mutter never configured its window. What *is* measured is
-/// Cordial's side: with `XDG_CURRENT_DESKTOP=Hyprland` the `pointerlock` readback
-/// no longer reports a request during a right drag. Whether the camera then
-/// pans on a real Hyprland is the reporter's to confirm.
-/// `CORDIAL_DRAG_LOCK=1` puts the old behaviour back for anyone who wants to
-/// try a newer Hyprland.
-fn drag_lock_keeps_the_button() -> bool {
+/// `CORDIAL_DRAG_LOCK=1` used to mean "put the lock back at the press". It now
+/// means the same as unset, because the lock at the press without the hold is
+/// the bug.
+fn drag_lock_usable() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
-    *ON.get_or_init(|| {
-        if std::env::var_os("CORDIAL_DRAG_LOCK").is_some() {
-            return true;
-        }
-        !on_hyprland()
-    })
+    let allowed = *ON.get_or_init(|| {
+        drag_lock_allowed(on_hyprland(), std::env::var("CORDIAL_DRAG_LOCK").ok().as_deref())
+    });
+    allowed && (!on_hyprland() || FRAME_WATCH_ACTIVE.load(Ordering::Acquire))
+}
+
+/// The environment half of [`drag_lock_usable`], pure so it can be tested.
+fn drag_lock_allowed(hyprland: bool, var: Option<&str>) -> bool {
+    !(hyprland && var == Some("0"))
 }
 
 /// Whether the compositor is Hyprland, by the same two variables
@@ -4341,6 +4645,12 @@ unsafe extern "C" fn locked_pointer_locked(_data: *mut c_void, _lp: *mut c_void)
 unsafe extern "C" fn locked_pointer_unlocked(_data: *mut c_void, _lp: *mut c_void) {
     POINTER_LOCK_ACTIVE.store(false, Ordering::Release);
     if let Some(w) = current() {
+        // A drag held for the lock cannot outlive it: nothing is left to say when
+        // the button comes up.
+        let lost = drag_hold().lock_lost();
+        if lost != 0 {
+            w.release_buttons(lost);
+        }
         let mut since = w.lock_inactive_since.lock().unwrap_or_else(|e| e.into_inner());
         if since.is_none() {
             *since = Some(std::time::Instant::now());
@@ -4427,6 +4737,9 @@ unsafe extern "C" fn relative_pointer_motion(
     dx_unaccel: i32,
     dy_unaccel: i32,
 ) {
+    // Counted before any early return: the frame that follows is not empty for
+    // having been ignored here. See [`DragHold`].
+    count_pointer_event();
     // Relative motion arrives whenever the seat's pointer has focus, lock or no
     // lock — this object is bound to the seat's one `wl_pointer`, not to a
     // surface, so `POINTER_ON_CANVAS` is the same focus test `wl_pointer.motion`
@@ -4752,12 +5065,14 @@ impl WaylandWindow {
         // drag this was reported for and middle is the pan; both are gestures
         // where the cursor is meant to stay put, which is exactly the
         // distinction Roblox's own desktop client draws.
-        const CAMERA_BUTTONS: i32 = super::input::BUTTON_SECONDARY | super::input::BUTTON_TERTIARY;
         let dragging = drag_takes_the_lock(
             no_drag_lock(),
-            drag_lock_keeps_the_button(),
+            drag_lock_usable(),
             self.pointer_buttons.load(Ordering::Relaxed) & CAMERA_BUTTONS != 0,
-            engine_owns_pointer(self),
+            // A drag the compositor released for us is still the engine's
+            // between the canvas's `leave` and the lock's `locked`, when
+            // neither of the other two says so.
+            engine_owns_pointer(self) || drag_hold().holding(),
         );
         let asked = engine_wants || dragging || force_pointer_lock();
 
@@ -5309,7 +5624,7 @@ pub(crate) fn pointer_lock_report() -> String {
     format!(
         "ok requested={} confirmed={} focused={} engine={engine} \
          awaiting_drag_unlock={} shift_in_drag={} on_canvas={} buttons={} \
-         confine_requested={} confined={}",
+         confine_requested={} confined={} held_for_lock={} frame_watch={}",
         POINTER_LOCK_REQUESTED.load(Ordering::Acquire),
         POINTER_LOCK_ACTIVE.load(Ordering::Acquire),
         match current().and_then(|w| w.host.0.focused()) {
@@ -5325,6 +5640,11 @@ pub(crate) fn pointer_lock_report() -> String {
             !w.confined_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null()
         }),
         POINTER_CONFINE_ACTIVE.load(Ordering::Acquire),
+        {
+            let h = drag_hold();
+            h.held | h.deferred
+        },
+        FRAME_WATCH_ACTIVE.load(Ordering::Acquire),
     )
 }
 
@@ -7129,19 +7449,95 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 mod tests {
     use super::*;
 
-    /// #56 and #105: on Hyprland the lock activating under a held right button
-    /// makes the compositor release that button, and the real release never
-    /// comes, so a drag that asks for the lock is a drag that ends at once.
+    /// The three ways a held camera button never asks for the lock, on any
+    /// compositor, and the one way it may not on Hyprland.
     #[test]
-    fn a_camera_drag_asks_for_the_lock_unless_the_compositor_would_drop_the_button() {
-        // Every other compositor: a held camera button over the canvas asks.
+    fn a_camera_drag_asks_for_the_lock_when_the_drag_lock_is_usable() {
         assert!(drag_takes_the_lock(false, true, true, true));
-        // Hyprland: the same drag does not, whatever else is true.
-        assert!(!drag_takes_the_lock(false, false, true, true));
-        // The three ways it never asked, on any compositor.
+        assert!(!drag_takes_the_lock(false, false, true, true), "Hyprland with nothing watching for frames");
         assert!(!drag_takes_the_lock(true, true, true, true), "CORDIAL_NO_DRAG_LOCK");
         assert!(!drag_takes_the_lock(false, true, false, true), "no camera button down");
         assert!(!drag_takes_the_lock(false, true, true, false), "the pointer is not the engine's");
+    }
+
+    /// `CORDIAL_DRAG_LOCK=0` is the way back to 0.28.0 on Hyprland and nothing
+    /// else; `1` no longer means anything because the lock at the press without
+    /// the hold is the bug.
+    #[test]
+    fn the_drag_lock_variable_only_turns_it_off_and_only_on_hyprland() {
+        assert!(drag_lock_allowed(true, None));
+        assert!(drag_lock_allowed(true, Some("1")));
+        assert!(!drag_lock_allowed(true, Some("0")));
+        assert!(drag_lock_allowed(false, Some("0")), "other compositors never lost the drag lock");
+    }
+
+    const RIGHT: i32 = super::super::input::BUTTON_SECONDARY;
+
+    /// #56 and #105, in the order the nested Hyprland put them on the wire: the
+    /// lock is requested at the press, the compositor releases the button and
+    /// takes the canvas's focus before it answers, and the physical release is
+    /// only ever a frame with nothing in it. The drag must survive the first
+    /// and end on the last.
+    #[test]
+    fn a_drag_survives_hyprlands_release_and_ends_on_the_empty_frame() {
+        let mut hold = DragHold::default();
+        // The compositor's release, with the lock requested and not yet answered.
+        assert!(hold.release(RIGHT, true, true), "set aside rather than delivered");
+        assert!(hold.holding());
+        // The canvas's `leave` follows it: that was the compositor's doing.
+        assert_eq!(hold.left_canvas(100), RIGHT);
+        // The batch ends before `locked`: the drag is still the player's.
+        assert_eq!(hold.batch_end(101, false, 100), 0);
+        // Frames closing the activation (leave, enter) are not the release.
+        assert_eq!(hold.frame(3, false), 0);
+        assert_eq!(hold.frame(0, false), 0, "an empty frame before `locked` is the activation's");
+        // Camera motion under the lock arrives as relative motion plus a frame.
+        assert_eq!(hold.frame(1, true), 0);
+        assert!(hold.holding(), "still dragging");
+        // The player lets go: Hyprland drops the button and sends only a frame.
+        assert_eq!(hold.frame(0, true), RIGHT);
+        assert!(!hold.holding());
+    }
+
+    /// A release that no `leave` follows was the player's, and is delivered
+    /// when the batch ends. Without this a click shorter than the compositor's
+    /// reply would never reach the engine.
+    #[test]
+    fn a_release_with_no_leave_behind_it_is_delivered_at_the_batch_end() {
+        let mut hold = DragHold::default();
+        assert!(hold.release(RIGHT, true, true));
+        assert_eq!(hold.batch_end(5, false, 0), RIGHT);
+        assert!(!hold.holding());
+    }
+
+    #[test]
+    fn nothing_is_set_aside_unless_it_could_be_hyprlands() {
+        let mut hold = DragHold::default();
+        assert!(!hold.release(RIGHT, false, true), "no lock pending: a normal release");
+        assert!(!hold.release(RIGHT, true, false), "nothing is watching for frames, so it could never end");
+        assert!(!hold.release(super::super::input::BUTTON_PRIMARY, true, true), "the primary button never takes the lock");
+        assert!(!hold.holding());
+    }
+
+    /// The ways a hold ends that are not the frame: the player presses again,
+    /// the compositor takes the lock away, or the lock never arrived.
+    #[test]
+    fn a_held_drag_cannot_outlive_the_things_that_make_it_possible() {
+        let mut hold = DragHold::default();
+        hold.release(RIGHT, true, true);
+        hold.left_canvas(0);
+        assert_eq!(hold.press(RIGHT), RIGHT, "a press means its release went by unseen");
+        assert!(!hold.holding());
+
+        hold.release(RIGHT, true, true);
+        hold.left_canvas(0);
+        assert_eq!(hold.lock_lost(), RIGHT, "`unlocked` leaves nothing to report the release");
+
+        hold.release(RIGHT, true, true);
+        hold.left_canvas(0);
+        assert_eq!(hold.batch_end(DRAG_HOLD_CONFIRM_MS, false, 0), 0, "within the wait");
+        assert_eq!(hold.batch_end(DRAG_HOLD_CONFIRM_MS + 1, false, 0), RIGHT, "the lock never confirmed");
+        assert!(!hold.holding());
     }
 
     /// The hint is in the coordinates of the surface that was locked. On the
@@ -7152,6 +7548,20 @@ mod tests {
         assert_eq!(release_hint(true, (640.0, 360.5), (25, 71)), (665.0, 431.5));
         assert_eq!(release_hint(true, (500.0, 300.0), (0, 46)), (500.0, 346.0));
         assert_eq!(release_hint(false, (640.0, 360.5), (25, 71)), (640.0, 360.5));
+    }
+
+    /// A confirmed lock does not time out while the pointer is doing anything,
+    /// however long the drag; with nothing at all for twenty seconds the compositor
+    /// has stopped reporting and the button is let go rather than stuck.
+    #[test]
+    fn a_confirmed_hold_lasts_while_events_come_and_gives_up_in_silence() {
+        let mut hold = DragHold::default();
+        hold.release(RIGHT, true, true);
+        hold.left_canvas(0);
+        assert_eq!(hold.batch_end(60_000, true, 59_000), 0, "events a second ago");
+        assert!(hold.holding());
+        assert_eq!(hold.batch_end(60_000, true, 30_000), RIGHT, "thirty seconds of nothing");
+        assert!(!hold.holding());
     }
 
     /// The Hyprland switch decides the case above, so its detection is pinned

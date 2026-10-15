@@ -47,7 +47,7 @@ releases of its own yet.
 | **Signing in** | ✅ **via Quick Sign-in**, which is a code flow and needs no typing |
 | **Keyboard in an experience** | ✅ WASD, space, the lot |
 | Mouse: navigation, buttons, field focus | ✅ |
-| Mouse: turning the camera | ✅ right-drag, using the compositor's accelerated delta by default, so your desktop mouse settings apply to the camera too; `stacked config set pointer_acceleration unlockedcursor` gives raw movement |
+| Mouse: turning the camera | ✅ right-drag, using the compositor's accelerated delta by default, so your desktop mouse settings apply to the camera too; `stacked config set pointer_acceleration unlockedcursor` gives raw movement. The pointer lock holds the cursor still during the drag; on Hyprland that needs a workaround for the compositor dropping the button ([ADR-060](adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates.md)), and `CORDIAL_DRAG_LOCK=0` turns it off |
 | Scroll wheel | ✅ |
 | Frame rate | 🟡 **the records disagree and neither has been re-measured.** This row read "a flat 60 on MAILBOX, where FIFO gave a variable 35–50"; `crates/cordial-runtime/src/android/vulkan.rs` instead records FIFO tracking the output exactly — 60.0 on a 59.88 Hz panel, 49.4 on a 49.96 Hz one — with Sober exceeding both. A later uncapped arm under the MAILBOX default read 34.6–47.2 (`docs/analysis/flag-init.md` §49), the same range this row attributed to FIFO. Whether a flat 60 is a display lock or the engine's own pacing is open |
 | Feral GameMode | ✅ registered while the client runs |
