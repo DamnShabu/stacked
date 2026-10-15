@@ -270,6 +270,16 @@ pub fn deliver_mouse(
     if no_agdk_touch() {
         return;
     }
+    // `CORDIAL_TRACE_MOUSE` shows the AGDK half of a click as well as the
+    // `nativePassMouseButton` half. `super::trace` is the general switch that
+    // aborts the engine, so until now the action sequence a held button chord
+    // produced could not be read at all.
+    if trace_mouse() && action != ACTION_MOVE && action != ACTION_HOVER_MOVE {
+        eprintln!(
+            "[cordial] onTouchEventNative(action={action}, buttons={button_state}, \
+             action_button={action_button})"
+        );
+    }
     match cordial_linker_sys::game_activity::touch(
         handle,
         action,
@@ -285,6 +295,56 @@ pub fn deliver_mouse(
         }
         Ok(None) => report_unregistered("onTouchEventNative"),
         Err(e) => super::trace(format_args!("onTouchEventNative(action={action}) failed: {e}")),
+    }
+}
+
+/// The AGDK `MotionEvent`s one mouse button press or release produces, as
+/// `(action, button_state, action_button)` in delivery order.
+///
+/// **`ACTION_DOWN` starts a gesture and `ACTION_UP` ends it, and a second button
+/// does neither.** Android reports the first button down as `ACTION_DOWN` then
+/// `ACTION_BUTTON_PRESS`, every further button as `ACTION_BUTTON_PRESS` alone,
+/// and the last button up as `ACTION_BUTTON_RELEASE` then `ACTION_UP`. Both
+/// backends sent the full pair for every button, so a right press under a held
+/// left restarted the gesture and the right release ended it while the left was
+/// still down -- the engine was told the left button had come up, and nothing
+/// more was said about it until the real release. Reported as the left click
+/// stopping when the right button is held.
+///
+/// `held_before` is the mask before this change; `button` is the one changing.
+pub fn mouse_button_events(press: bool, held_before: i32, button: i32) -> Vec<(i32, i32, i32)> {
+    if press {
+        let after = held_before | button;
+        let mut out = Vec::with_capacity(2);
+        if held_before == 0 {
+            out.push((ACTION_DOWN, after, 0));
+        }
+        out.push((ACTION_BUTTON_PRESS, after, button));
+        out
+    } else {
+        let after = held_before & !button;
+        let mut out = vec![(ACTION_BUTTON_RELEASE, after, button)];
+        if after == 0 {
+            out.push((ACTION_UP, after, 0));
+        }
+        out
+    }
+}
+
+/// Deliver [`mouse_button_events`] for one button, through AGDK.
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_mouse_button(
+    handle: i64,
+    press: bool,
+    held_before: i32,
+    button: i32,
+    x: f32,
+    y: f32,
+    event_time_ms: i64,
+    down_time_ms: i64,
+) {
+    for (action, state, action_button) in mouse_button_events(press, held_before, button) {
+        deliver_mouse(handle, action, x, y, state, action_button, event_time_ms, down_time_ms);
     }
 }
 
@@ -3126,6 +3186,25 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Two buttons are one gesture. `ACTION_DOWN` for the first, `ACTION_UP` for
+    /// the last, a press and a release for each: the sequence Android's own mouse
+    /// input produces, and what both backends failed to send.
+    #[test]
+    fn a_second_mouse_button_neither_starts_nor_ends_the_gesture() {
+        use super::{
+            mouse_button_events as ev, ACTION_BUTTON_PRESS as PRESS, ACTION_BUTTON_RELEASE as RELEASE,
+            ACTION_DOWN as DOWN, ACTION_UP as UP, BUTTON_PRIMARY as L, BUTTON_SECONDARY as R,
+        };
+        // Left down, right down, right up, left up.
+        assert_eq!(ev(true, 0, L), vec![(DOWN, L, 0), (PRESS, L, L)]);
+        assert_eq!(ev(true, L, R), vec![(PRESS, L | R, R)], "no second ACTION_DOWN");
+        assert_eq!(ev(false, L | R, R), vec![(RELEASE, L, R)], "no ACTION_UP while left is down");
+        assert_eq!(ev(false, L, L), vec![(RELEASE, 0, L), (UP, 0, 0)]);
+        // The other order, and a release of the first button before the second.
+        assert_eq!(ev(false, L | R, L), vec![(RELEASE, R, L)]);
+        assert_eq!(ev(false, R, R), vec![(RELEASE, 0, R), (UP, 0, 0)]);
+    }
+
     use super::*;
 
     #[test]

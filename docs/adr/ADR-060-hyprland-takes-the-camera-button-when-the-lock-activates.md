@@ -101,6 +101,21 @@ which recentres and added the offset, was right. In a nested KWin 6.7.5 the
 hint is not acted on for a drag and nothing moved, so this was not the KDE
 report, but it is the "jumps on release" half of #56.
 
+## A second button held under the drag (#114)
+
+The same focus change releases **every** button the pointer held, and the hold
+above is only for the camera buttons, so a left button held when the right one
+went down was passed on as a real release: the engine was told it had come up
+about 0.7 s before it did. A camera button pressed while another button is held
+therefore takes no lock on Hyprland, as before 0.26.0; the camera turns on a free
+cursor and the held button stays held. Measured in the nested Hyprland: with the
+change the engine sees left pressed once and released once, after the real
+release, where before it was released as the right button went down. A lock
+already held when the second button goes down is kept (right first, then left
+passes both ways). Not fixed: right, then left, then right released while left
+is still held — giving the lock back moves focus again and the left button is
+released early. Elsewhere a lock leaves held buttons alone and nothing changed.
+
 ## Alternatives rejected
 
 - **A grace window around the release.** Tried by the reporter on a local build

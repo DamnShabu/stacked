@@ -3448,25 +3448,17 @@ impl WaylandWindow {
             if before == 0 {
                 self.down_time_ms.store(now, Ordering::Relaxed);
             }
-            let buttons = self.pointer_buttons.load(Ordering::Relaxed);
             let down_time = self.down_time_ms.load(Ordering::Relaxed);
             if handle != 0 {
-                super::input::deliver_mouse(handle, super::input::ACTION_DOWN, x, y, buttons, 0, now, down_time);
-                super::input::deliver_mouse(
-                    handle, super::input::ACTION_BUTTON_PRESS, x, y, buttons, android_button, now, down_time,
-                );
+                super::input::deliver_mouse_button(handle, true, before, android_button, x, y, now, down_time);
             }
         } else {
             drag_hold().forget(android_button);
-            self.pointer_buttons.fetch_and(!android_button, Ordering::Relaxed);
-            let buttons = self.pointer_buttons.load(Ordering::Relaxed);
-            LAST_POINTER_BUTTONS.store(buttons, Ordering::Relaxed);
+            let before = self.pointer_buttons.fetch_and(!android_button, Ordering::Relaxed);
+            LAST_POINTER_BUTTONS.store(before & !android_button, Ordering::Relaxed);
             let down_time = self.down_time_ms.load(Ordering::Relaxed);
             if handle != 0 {
-                super::input::deliver_mouse(
-                    handle, super::input::ACTION_BUTTON_RELEASE, x, y, buttons, android_button, now, down_time,
-                );
-                super::input::deliver_mouse(handle, super::input::ACTION_UP, x, y, buttons, 0, now, down_time);
+                super::input::deliver_mouse_button(handle, false, before, android_button, x, y, now, down_time);
             }
         }
 
@@ -4517,6 +4509,27 @@ fn drag_takes_the_lock(
     !no_drag_lock && drag_lock_usable && camera_button_held && owns_pointer
 }
 
+/// Whether another button is held under a camera button, on a compositor that
+/// takes every held button away when a lock moves pointer focus.
+///
+/// **Hyprland releases every button the pointer had pressed, not only the
+/// camera's.** [`DragHold`] finds the camera button's real release afterwards,
+/// but a left button held under a right-button drag is not a camera button, so
+/// its invented release was delivered as a real one: the engine saw the left
+/// button come up the instant the right one went down, and heard nothing more
+/// about it until the physical release arrived (reproduced in a nested Hyprland
+/// 0.56.2, `tools/hyprland-drag-e2e.py`). A chord therefore takes no drag lock
+/// there, as before 0.26.0 -- the camera still turns, on a cursor that is free
+/// to leave the window, and the held button stays held. Elsewhere a lock leaves
+/// the buttons alone and nothing changes.
+///
+/// Only the *taking* of the lock is refused. A lock already held when the second
+/// button goes down is kept, because dropping it mid-drag would be the same
+/// focus change.
+fn chord_defeats_drag_lock(hyprland: bool, held: i32) -> bool {
+    hyprland && held & !CAMERA_BUTTONS != 0
+}
+
 /// Whether a held camera button may ask for the pointer lock on this compositor.
 ///
 /// Everywhere but Hyprland, always. **On Hyprland it needs the means to find the
@@ -5157,8 +5170,23 @@ impl WaylandWindow {
 
         let held = !self.locked_pointer.lock().unwrap_or_else(|e| e.into_inner()).is_null();
         let lockable_here = !Self::constrain_toplevel() || POINTER_ON_CANVAS.load(Ordering::Acquire);
+        // A drag with another button already down is not given the lock where
+        // taking it would release that button. See `chord_defeats_drag_lock`.
+        // The engine's own request and the forced one still are: they are not
+        // a camera drag, and refusing them would strand first person.
+        let chord = !engine_wants
+            && !force_pointer_lock()
+            && chord_defeats_drag_lock(on_hyprland(), self.pointer_buttons.load(Ordering::Relaxed));
+        if chord && want && !held && super::input::trace_mouse() {
+            static SAID: AtomicBool = AtomicBool::new(false);
+            if !SAID.swap(true, Ordering::Relaxed) {
+                eprintln!(
+                    "[cordial] pointer lock: not taken for a camera button held beside another                      button; Hyprland would release the other one"
+                );
+            }
+        }
         if want && !held {
-            if lockable_here {
+            if lockable_here && !chord {
                 self.lock_pointer();
             }
         } else if !want && held {
@@ -7448,6 +7476,22 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A left button held under a right-button drag stays held on Hyprland
+    /// because the drag does not take the lock that would release it.
+    #[test]
+    fn a_chord_takes_no_drag_lock_on_hyprland_and_nowhere_else() {
+        use crate::android::input::{BUTTON_BACK, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_TERTIARY};
+        assert!(chord_defeats_drag_lock(true, BUTTON_PRIMARY | BUTTON_SECONDARY));
+        assert!(chord_defeats_drag_lock(true, BUTTON_BACK | BUTTON_TERTIARY));
+        assert!(!chord_defeats_drag_lock(false, BUTTON_PRIMARY | BUTTON_SECONDARY), "other compositors keep their lock");
+        assert!(!chord_defeats_drag_lock(true, BUTTON_SECONDARY), "a lone right drag still locks");
+        assert!(
+            !chord_defeats_drag_lock(true, BUTTON_SECONDARY | BUTTON_TERTIARY),
+            "two camera buttons are DragHold's to find"
+        );
+        assert!(!chord_defeats_drag_lock(true, 0));
+    }
 
     /// The three ways a held camera button never asks for the lock, on any
     /// compositor, and the one way it may not on Hyprland.

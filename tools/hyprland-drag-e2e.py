@@ -331,6 +331,7 @@ def run_cases(case, dev, ptr, log_path, args):
 
     if not args.control:
         extra_gestures(case, dev, ptr, log_path)
+    chord_gestures(case, dev, ptr, log_path)
 
     print("\n-- the engine's own request (shift lock) still takes the lock")
     dev.send("fakeenginelock true")
@@ -351,6 +352,88 @@ def engine_buttons(text):
         d = out.setdefault(int(android), [0, 0])
         d[0 if down == "true" else 1] += 1
     return out
+
+
+def agdk_actions(text):
+    """The (action, button_state, action_button) triples handed to AGDK's
+    `onTouchEventNative`, in order, motion left out."""
+    return [tuple(int(v) for v in m) for m in re.findall(
+        r"onTouchEventNative\(action=(\d+), buttons=(\d+), action_button=(\d+)\)", text)]
+
+
+def chord_gestures(case, dev, ptr, log_path):
+    """Two buttons at once, which a camera drag in the middle of a swing is.
+
+    Hyprland releases every button the pointer held when a pointer lock moves
+    focus off the canvas, so a left button held under a right-button drag came
+    up in the engine with the physical button still down. The readback is what
+    the engine was told, per button, and when: a left release may not appear
+    before the left button is released.
+    """
+    print("\n-- hold LEFT, then hold RIGHT, release RIGHT, release LEFT")
+    mark = len(log_text(log_path))
+    ptr.cmd("move 640 460", 0.3)
+    ptr.cmd("down left", 0.4)
+    ptr.cmd("down right", 0.7)
+    for _ in range(4):
+        ptr.cmd("rel 30 5", 0.1)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("left was pressed once and not released by the right press",
+               seen.get(1, [0, 0]), [1, 0])
+    ptr.cmd("up right", 0.7)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("the right button went down and up once", seen.get(BUTTON_SECONDARY, [0, 0]), [1, 1])
+    case.check("left is still held when right comes up", seen.get(1, [0, 0]), [1, 0])
+    case.check("and the client still counts it held",
+               str(int(dev.lock().get("buttons", "0")) & 1), "1")
+    ptr.cmd("up left", 0.7)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("left: one press and one release", seen.get(1, [0, 0]), [1, 1])
+    case.check("right: one press and one release", seen.get(BUTTON_SECONDARY, [0, 0]), [1, 1])
+    actions = agdk_actions(log_text(log_path)[mark:])
+    case.note("AGDK (action, buttons, action_button)", actions)
+    case.check("AGDK saw one ACTION_DOWN for the whole chord",
+               sum(1 for a in actions if a[0] == 0), 1)
+    case.check("and one ACTION_UP, after the last button", sum(1 for a in actions if a[0] == 1), 1)
+    after = dev.lock()
+    case.check("nothing held for the lock afterwards", after.get("held_for_lock"), "0")
+    case.check("and the lock is not left requested", after.get("requested"), "false")
+    ptr.cmd("rel 3 0", 0.4)
+
+    print("\n-- hold RIGHT, then LEFT, release LEFT, release RIGHT")
+    mark = len(log_text(log_path))
+    ptr.cmd("down right", 0.6)
+    ptr.cmd("down left", 0.4)
+    ptr.cmd("rel 20 0", 0.1)
+    ptr.cmd("up left", 0.5)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("left: one press and one release", seen.get(1, [0, 0]), [1, 1])
+    case.check("right is still held", seen.get(BUTTON_SECONDARY, [0, 0]), [1, 0])
+    ptr.cmd("up right", 0.7)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("right: one press and one release", seen.get(BUTTON_SECONDARY, [0, 0]), [1, 1])
+    ptr.cmd("rel 3 0", 0.4)
+
+    print("\n-- hold RIGHT, then LEFT, release RIGHT (the lock goes), nudge, release LEFT (known gap)")
+    mark = len(log_text(log_path))
+    ptr.cmd("down right", 0.6)
+    ptr.cmd("down left", 0.4)
+    ptr.cmd("up right", 0.7)
+    ptr.cmd("rel 3 0", 0.5)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    # **Not asserted, because it is not fixed.** Giving the lock back while a
+    # second button is held hands pointer focus back to the canvas, and
+    # `reconcile_pointer_buttons` lets go of the left button in the same tick
+    # because neither the canvas nor a lock owns the pointer yet (measured:
+    # left [1, 1] here, 0.7 s before the physical release). Holding it instead
+    # would strand it if Hyprland drops the physical release as it does for a
+    # camera button, which nothing here has measured.
+    case.note("left after the lock was given back (known gap: released early)", seen.get(1, [0, 0]))
+    ptr.cmd("up left", 0.7)
+    seen = engine_buttons(log_text(log_path)[mark:])
+    case.check("left: one press and one release", seen.get(1, [0, 0]), [1, 1])
+    case.check("right: one press and one release", seen.get(BUTTON_SECONDARY, [0, 0]), [1, 1])
+    ptr.cmd("rel 3 0", 0.4)
 
 
 def extra_gestures(case, dev, ptr, log_path):

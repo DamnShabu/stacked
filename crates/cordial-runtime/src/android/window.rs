@@ -1519,10 +1519,11 @@ fn android_meta_state(x11_state: c_uint) -> i32 {
 // why the keysym table in particular carries over unchanged: X11 keysyms and
 // XKB keysyms are the same numbering.
 use super::input::{
-    deliver_key, deliver_surface_redraw, deliver_mouse, edit_text_buffer, keysym_to_android,
+    deliver_key, deliver_surface_redraw, deliver_mouse, deliver_mouse_button, edit_text_buffer,
+    keysym_to_android,
     pass_key_event, pass_mouse_button, pass_mouse_move, pass_text, report_keyboard_state, Caret,
-    Edit, ACTION_BUTTON_PRESS, ACTION_BUTTON_RELEASE, ACTION_DOWN, ACTION_HOVER_MOVE, ACTION_MOVE,
-    ACTION_UP, BUTTON_BACK, BUTTON_FORWARD, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_TERTIARY,
+    Edit, ACTION_HOVER_MOVE, ACTION_MOVE,
+    BUTTON_BACK, BUTTON_FORWARD, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_TERTIARY,
 };
 
 /// X11 numbers buttons 1/2/3 as left/middle/right; Android's bit assignment
@@ -1611,25 +1612,21 @@ impl HostWindow {
         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
 
+        let before = state.buttons;
         if press {
-            if state.buttons == 0 {
+            if before == 0 {
                 state.down_time_ms = now;
             }
             state.buttons |= android_button;
-            let (buttons, down_time) = (state.buttons, state.down_time_ms);
-            drop(state);
-            // Real Android mouse input delivers exactly this pair for a
-            // click: ACTION_DOWN establishes the gesture, then
-            // ACTION_BUTTON_PRESS names which button did it.
-            deliver_mouse(handle, ACTION_DOWN, x, y, buttons, 0, now, down_time);
-            deliver_mouse(handle, ACTION_BUTTON_PRESS, x, y, buttons, android_button, now, down_time);
         } else {
             state.buttons &= !android_button;
-            let (buttons, down_time) = (state.buttons, state.down_time_ms);
-            drop(state);
-            deliver_mouse(handle, ACTION_BUTTON_RELEASE, x, y, buttons, android_button, now, down_time);
-            deliver_mouse(handle, ACTION_UP, x, y, buttons, 0, now, down_time);
         }
+        let down_time = state.down_time_ms;
+        drop(state);
+        // Real Android mouse input delivers `ACTION_DOWN` for the first button
+        // only, `ACTION_BUTTON_PRESS` for each, and `ACTION_UP` when the last
+        // comes up. See `mouse_button_events`.
+        deliver_mouse_button(handle, press, before, android_button, x, y, now, down_time);
 
         // The interface's own input path, alongside AGDK's — and every button,
         // not only the primary one. The gate that used to stand here dropped
