@@ -2233,9 +2233,13 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
     (Apache-2.0, `src/runtime/roblox_text_editor.cc`) additionally drives
     `nativePassText(handle, text, finished=true)` and closes its own editor
     unless `manualFocusRelease` is set, and says that mirrors `RbxKeyboard`'s
-    action listener; Cordial does not, and the sign-in measurement above needed
-    nothing more. If a signed-in box stays focused after Enter, that call gated
-    on `manual_focus_release` is the first thing to try.
+    action listener. **Cordial now does the same** (`input::return_pressed`,
+    after the return call, for a real box whose `manualFocusRelease` is 0;
+    `CORDIAL_RETURN_PASSTEXT=0` is the control): a game's phone chat box
+    stopped sending on Enter after this commit, which the sign-in fields
+    (`manualFocusRelease=1`) could not show. `INFERRED` that it restores the
+    send -- no signed-in run has held it; look for the
+    `nativePassText(.., finished=true)` line under `CORDIAL_TRACE_TEXT=1`.
   - Escape and an outside click still need no code here: both reach the engine
     as ordinary input and it decides whether the box blurs.
     `returnKeyType`/`manualFocusRelease` (slots 11/12) are read only to be

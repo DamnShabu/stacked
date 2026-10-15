@@ -1802,6 +1802,54 @@ pub fn return_pressed(which: i64) {
     if trace_text() {
         eprintln!("[cordial] nativeReturnPressedFromOnScreenKeyboard({which}) -> {r:?}");
     }
+    // **Then the final text, as the soft keyboard's action listener sends it.**
+    //
+    // `nativeReturnPressedFromOnScreenKeyboard` alone only says Enter was hit.
+    // A game's own TextBox (a chat box, a phone's message field) is submitted
+    // when it loses focus with Enter as the reason, and that is the engine's
+    // answer to the final `nativePassText(.., finished = true)`, which the
+    // Android listener sends right after the return call unless the box asked
+    // to release its own focus. Without it Enter synced the text and told the
+    // engine and then nothing happened: reported against a game's phone chat as
+    // "pressing Enter no longer sends" after 3e21de0 replaced the raw Return
+    // key. The sign-in fields declare `manualFocusRelease=1` and never needed
+    // it, which is why the signed-out check of that commit passed.
+    //
+    // mocktail (Apache-2.0, `src/runtime/roblox_text_editor.cc`, `FinishLocked`)
+    // does exactly this sequence and is the reference for the order. `INFERRED`
+    // for a real chat box: no signed-in run has held it.
+    if r.is_ok() && finish_text_after_return(spec_release_flag(), return_passtext_enabled()) {
+        let pass = PASS_TEXT.load(Ordering::Relaxed);
+        if pass.is_null() {
+            report_unregistered("nativePassText");
+        } else {
+            let (text, caret) = text_buffer_snapshot();
+            // SAFETY: `pass` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded; `which` is the handle `showKeyboard` issued for the focused box.
+            let p = unsafe { cordial_linker_sys::game_activity::pass_text(pass, which, &text, true, caret) };
+            if trace_text() {
+                eprintln!("[cordial] nativePassText({which}, <{} bytes>, finished=true) -> {p:?}", text.len());
+            }
+        }
+    }
+}
+
+/// `manualFocusRelease` of the focused box, if there is one.
+fn spec_release_flag() -> Option<i32> {
+    cordial_linker_sys::game_activity::focused_textbox_info().map(|i| i.manual_focus_release)
+}
+
+/// `CORDIAL_RETURN_PASSTEXT=0` turns the final-text call off, as the control.
+fn return_passtext_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CORDIAL_RETURN_PASSTEXT").map_or(true, |v| v != "0"))
+}
+
+/// Whether Enter on a single-line box also sends the final text. The Android
+/// listener does unless the box releases its own focus; a box whose spec could
+/// not be read is treated as not releasing, which is the common case. Pure, so
+/// the cases are tested.
+fn finish_text_after_return(manual_focus_release: Option<i32>, enabled: bool) -> bool {
+    enabled && manual_focus_release.unwrap_or(0) == 0
 }
 
 /// Whether this evdev code is an Enter key: the main one and the keypad's.
@@ -3322,6 +3370,12 @@ mod tests {
         assert!(enter_belongs_to_editor(28, true, true, false));
         assert!(enter_belongs_to_editor(96, true, true, true));
         assert!(enter_belongs_to_editor(28, true, false, true));
+        // A game's own box sends its final text after the return call; a box that
+        // releases its own focus (the sign-in fields) does not.
+        assert!(finish_text_after_return(Some(0), true));
+        assert!(finish_text_after_return(None, true));
+        assert!(!finish_text_after_return(Some(1), true), "the box releases its own focus");
+        assert!(!finish_text_after_return(Some(0), false), "the control switch");
         assert!(!enter_belongs_to_editor(28, true, false, false), "no native: the raw key is all there is");
         assert!(!enter_belongs_to_editor(28, false, true, true), "no box, no editor");
         assert!(!enter_belongs_to_editor(30, true, true, true), "only Enter");
