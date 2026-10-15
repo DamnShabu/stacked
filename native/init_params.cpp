@@ -383,7 +383,8 @@ const DeviceProfile& device_profile() {
 /// Everything shared between the arms — memory, resolution, density, engine
 /// version, where those appear at all — is unchanged, because none of it is
 /// Android- or Windows-specific in the first place.
-static std::string build_user_agent() {
+/// `MemTotal` from `/proc/meminfo` in MiB, or 0 if it cannot be read.
+static long host_mem_total_mb() {
     long ram_mb = 0;
     if (FILE* f = fopen("/proc/meminfo", "re")) {
         char line[256];
@@ -396,6 +397,11 @@ static std::string build_user_agent() {
         }
         fclose(f);
     }
+    return ram_mb;
+}
+
+static std::string build_user_agent() {
+    long ram_mb = host_mem_total_mb();
 
     // The engine build is four parts (2.730.0.790); the app version the real
     // client puts in its User-Agent is three (2.732.1043 for engine
@@ -1551,7 +1557,7 @@ public:
     jboolean cpu64Bit = true;
     jboolean isChrome = false;
     jboolean isLowRamDevice = false;
-    jint deviceTotalMemoryMB = 8192;
+    jint deviceTotalMemoryMB = 0;  // set from MemTotal in Create
     jint displayPhysicalWidthPixels = 1280;
     jint displayPhysicalHeightPixels = 720;
     jint largeMemoryClass = 512;
@@ -1597,6 +1603,46 @@ public:
         p->displayResolution = S(res);
         p->displayPhysicalWidthPixels = width;
         p->displayPhysicalHeightPixels = height;
+        // Memory. `CORDIAL_TRACE_PARAM_READS` shows the engine reads
+        // memoryClass, largeMemoryClass and isLowRamDevice once each at
+        // start-up, and never deviceTotalMemoryMB (three signed-out runs on
+        // 2026-10-15). These used to be 8192/256/512, invented, on a 64 GB
+        // host.
+        //
+        // deviceTotalMemoryMB is just MemTotal. The two classes are Android's
+        // per-app Java heap limits, which have no desktop equivalent at all:
+        // the engine's allocations are native and bounded by RAM. 4096 is what
+        // Sober reports on this same host (`device_memory_class_mib` in its
+        // log), whose textures are sharp where ours were blurry; it is capped
+        // at half of RAM so a small machine is not told it has a heap larger
+        // than it can back. Whether the engine tiers anything visible on these
+        // is INFERRED -- nothing in a signed-out log moved when they changed.
+        // `CORDIAL_LEGACY_MEMORY_CLASS=1` restores the old answers, for an A/B.
+        {
+            long total = host_mem_total_mb();
+            if (getenv("CORDIAL_LEGACY_MEMORY_CLASS")) {
+                p->deviceTotalMemoryMB = 8192;
+                p->memoryClass = 256;
+                p->largeMemoryClass = 512;
+            } else {
+                long cls = 4096;
+                if (total > 0 && cls > total / 2) cls = total / 2;
+                if (total > 0) p->deviceTotalMemoryMB = static_cast<jint>(total);
+                p->memoryClass = static_cast<jint>(cls);
+                p->largeMemoryClass = static_cast<jint>(cls);
+            }
+            // Once: Create runs three times per start-up.
+            static bool said = false;
+            if (!said) {
+                said = true;
+                fprintf(stderr,
+                        "[cordial] DeviceParams memory: deviceTotalMemoryMB=%d memoryClass=%d"
+                        " largeMemoryClass=%d isLowRamDevice=%d%s\n",
+                        p->deviceTotalMemoryMB, p->memoryClass, p->largeMemoryClass,
+                        p->isLowRamDevice,
+                        getenv("CORDIAL_LEGACY_MEMORY_CLASS") ? " (legacy)" : "");
+            }
+        }
         // Prime the class. Without this the object reaches Roblox with a null
         // clazz, GetObjectClass falls back to FindClass("Invalid"), and every
         // field read against it returns nothing.
@@ -1623,13 +1669,25 @@ public:
                 note_param_read("DeviceParams", "osVersion");
                 return o ? static_cast<DeviceParams*>(o)->osVersion : nullptr;
             });
+            // The memory fields, which a blurry-texture report on a 64 GB
+            // host suspected of tiering texture quality on the 8192 MB this
+            // object used to claim. Probed rather than changed first, so a
+            // value nobody reads is not "fixed" and credited with an effect.
+#define G(name, T)                                                              \
+            c->HookInstanceGetterFunction(env, #name, [](Object* o) -> T {      \
+                note_param_read("DeviceParams", #name);                         \
+                return o ? static_cast<DeviceParams*>(o)->name : T{};           \
+            })
+            G(isLowRamDevice, jboolean); G(deviceTotalMemoryMB, jint);
+            G(largeMemoryClass, jint); G(memoryClass, jint);
+            G(lowMemoryKillerBackgroundAppThreshold, jlong);
+            G(lowMemoryKillerForegroundAppThreshold, jlong);
+#undef G
 #define F(name) c->HookInstance(env, #name, &DeviceParams::name)
             F(appBuildVariant); F(appVersion); F(country); F(deviceSku);
             F(displayResolution); F(manufacturer); F(networkType);
-            F(socModel); F(testDeviceName); F(cpu64Bit); F(isChrome); F(isLowRamDevice);
-            F(deviceTotalMemoryMB); F(displayPhysicalWidthPixels); F(displayPhysicalHeightPixels);
-            F(largeMemoryClass); F(memoryClass);
-            F(lowMemoryKillerBackgroundAppThreshold); F(lowMemoryKillerForegroundAppThreshold);
+            F(socModel); F(testDeviceName); F(cpu64Bit); F(isChrome);
+            F(displayPhysicalWidthPixels); F(displayPhysicalHeightPixels);
 #undef F
             return;
         }
