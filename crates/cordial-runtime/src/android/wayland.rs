@@ -6798,6 +6798,7 @@ impl WaylandWindow {
 static DISPLAY_ERROR_REPORTED: AtomicBool = AtomicBool::new(false);
 
 pub fn pump_input_events(handle: i64) {
+    super::input::note_pump_tick();
     if let Some(w) = current() {
         w.pump(handle);
     }

@@ -1418,6 +1418,42 @@ fn keys_to_game_while_typing() -> bool {
     *ON.get_or_init(|| std::env::var_os("CORDIAL_KEYS_TO_GAME_WHILE_TYPING").is_some())
 }
 
+/// Longest gap between two input pumps that is not worth a line.
+const PUMP_STALL_MS: u64 = 1000;
+
+/// Whether a gap between two input pumps is one to report: long enough to
+/// matter, and not during start-up, when the loop is legitimately busy loading
+/// the engine for tens of seconds. Pure so the cases are tested.
+fn pump_gap_is_a_stall(gap_ms: u64, since_first_pump_ms: u64) -> bool {
+    gap_ms >= PUMP_STALL_MS && since_first_pump_ms >= 60_000
+}
+
+/// Called once per input pump by both display backends. Says so, once per
+/// occurrence, when the loop that delivers input did not run for a second or
+/// more.
+///
+/// "My character keeps walking and nothing I press does anything" (#108) has
+/// two very different causes: input that is dropped, and a loop that is not
+/// running so that input waits in the compositor's queue and is delivered, late
+/// and all at once, afterwards. Nothing in the log could tell them apart, and
+/// the symptom is identical from the player's chair. This line is the second
+/// cause's footprint; its absence next to a reported freeze points at the
+/// first.
+pub fn note_pump_tick() {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    static LAST_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+    let start = *START.get_or_init(std::time::Instant::now);
+    let now = start.elapsed().as_millis() as u64;
+    let last = LAST_MS.swap(now, Ordering::Relaxed);
+    if last != u64::MAX && pump_gap_is_a_stall(now.saturating_sub(last), now) {
+        eprintln!(
+            "[cordial] input pump: the loop that delivers input did not run for {} ms; keys and \
+             mouse that arrived meanwhile were queued and are being delivered now, none were dropped",
+            now - last
+        );
+    }
+}
+
 pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     if no_pass_key() {
         return;
@@ -2912,6 +2948,13 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_pump_gap_is_a_stall_only_after_a_second_and_once_the_engine_runs() {
+        assert!(!pump_gap_is_a_stall(999, 120_000));
+        assert!(pump_gap_is_a_stall(1000, 120_000));
+        assert!(!pump_gap_is_a_stall(30_000, 20_000), "loading the engine is not a stall");
+    }
 
     /// The whole policy table, because the interesting cases are the ones
     /// nobody thinks about: a backend that does not know, and a window that is

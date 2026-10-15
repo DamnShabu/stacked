@@ -2131,6 +2131,7 @@ impl HostWindow {
 /// one is open — the loader/asset-only paths that never call `open()` make
 /// this a no-op).
 pub fn pump_input_events(handle: i64) {
+    super::input::note_pump_tick();
     if let Some(w) = current() {
         w.pump_input_events(handle);
     }
