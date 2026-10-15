@@ -765,6 +765,14 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     // `deadline`; it is now the idle period rather than the input period.
     let watching = game_activity_handle.is_some()
         && super::connection_fd().is_some_and(watch_input_fd);
+    // The X11 editor's own connection, which is a second descriptor: GTK reads
+    // it, not the engine's Xlib. Without it a key typed into the editor waited
+    // out the pump's 50 ms idle timeout before anything saw it.
+    if watching {
+        if let Some(fd) = super::x11_text::connection_fd() {
+            let _ = watch_input_fd(fd);
+        }
+    }
 
     // TEMPORARY INSTRUMENTATION -- not for commit.
     let instr = std::env::var_os("CORDIAL_INSTR").is_some();

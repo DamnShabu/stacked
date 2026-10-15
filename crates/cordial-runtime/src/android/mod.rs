@@ -26,9 +26,11 @@ pub mod hidden;
 pub mod input;
 pub mod looper;
 pub mod system;
+pub mod text_geometry;
 pub mod vulkan;
 pub mod wayland;
 pub mod window;
+pub mod x11_text;
 
 use std::ffi::{c_int, c_void};
 use std::sync::atomic::{AtomicBool, Ordering};

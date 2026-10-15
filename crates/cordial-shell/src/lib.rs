@@ -39,7 +39,9 @@
 #![allow(unsafe_code)]
 
 pub mod branding;
+pub mod editor;
 pub mod host_window;
+pub mod x11_editor;
 pub mod network;
 pub mod profile;
 pub mod theme;

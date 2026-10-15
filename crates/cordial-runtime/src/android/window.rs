@@ -696,7 +696,12 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
     // what `isTouchDevice` is for. A user on a touchscreen who wants the mobile
     // interface on X11 has `CORDIAL_INPUT_TOUCH=1`, which overrides this.
     super::input::report_touchscreen(false);
-    Ok(WINDOW.get_or_init(|| host))
+    let host = WINDOW.get_or_init(|| host);
+    // The editor is a GTK window over the focused box, so GTK has to be up on
+    // this display. A failure leaves the backend on the buffer path, which is
+    // what it was before there was an editor at all.
+    super::x11_text::init(host.window);
+    Ok(host)
 }
 
 /// Whether the pointer lock should be held, and what the Escape-suppression
@@ -1235,6 +1240,7 @@ impl HostWindow {
     }
 
     pub fn close(&self) {
+        super::x11_text::close();
         // SAFETY: both handles came from this struct's own creation calls.
         unsafe {
             (self.xlib.destroy_window)(self.display, self.window);
@@ -1680,6 +1686,40 @@ impl HostWindow {
         pass_mouse_move(x, y);
     }
 
+    /// A key the editor window received that the engine must also hear. Returns
+    /// whether it was consumed, so the editor does not act on it too.
+    ///
+    /// The editor holds X focus while a box is focused, which means the engine's
+    /// own connection hears nothing. Two keys cannot wait for the box to blur:
+    /// Escape, which is how the engine's `hideKeyboard` is reached from the
+    /// keyboard; and F11, because fullscreen is this backend's own and the editor
+    /// would otherwise swallow it. Everything else stays with
+    /// the widget -- the engine is not told a key was pressed in a text field,
+    /// as Android's `EditText` consumes them.
+    ///
+    /// `keyval` is a keysym and `keycode` an X keycode, which is what GDK's X11
+    /// backend reports; `state` carries the same modifier bits as an X event.
+    pub fn forward_editor_key(&self, keyval: u32, keycode: u32, state: u32, down: bool) -> bool {
+        let meta = android_meta_state(state);
+        if keyval == 0xffc8 {
+            if down {
+                self.set_fullscreen(!self.fullscreen.load(Ordering::Relaxed));
+            }
+            return true;
+        }
+        if keyval == 0xff1b {
+            let now = self.now_ms();
+            let handle = super::x11_text::active_handle();
+            if let Some(android) = keysym_to_android(keyval as c_ulong) {
+                if handle != 0 {
+                    deliver_key(handle, down, android, keycode as i32, meta, 0, 0, now, now);
+                }
+            }
+            pass_key_event(down, keycode as i32 - 8, meta);
+        }
+        false
+    }
+
     fn dispatch_key(&self, handle: i64, buf: &mut [u8; 256], down: bool) {
         let mut keysym: c_ulong = 0;
         let mut text = [0u8; 8];
@@ -1781,6 +1821,17 @@ impl HostWindow {
             let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else {
                 return;
             };
+            // **The editor window owns the text while it holds the keyboard.**
+            // X delivers keys to one focus window, so this is rarely reached
+            // then -- a key typed in the few ticks between a box taking focus
+            // and the editor taking X focus still goes down the buffer path
+            // below, and the editor is seeded from that buffer when it shows.
+            // The guard is for the case where one arrives anyway, because
+            // inserting it here as well as in the widget is every character
+            // twice.
+            if super::x11_text::owns_keyboard() {
+                return;
+            }
             // Ctrl+V, before anything reads the character.
             //
             // There is no engine call to look for here and that is correct
@@ -1825,6 +1876,12 @@ impl HostWindow {
     /// See the module-level comment above for why this never blocks.
     fn pump_input_events(&self, handle: i64) {
         self.sync_pointer_lock();
+
+        // GTK first, then the editor's placement: a keystroke typed into the
+        // editor arrives through GTK's own connection and is turned into an
+        // edit here, before the engine's connection is drained below. Ahead of
+        // the early return so an idle pump still runs it.
+        super::x11_text::pump(handle);
 
         // Before draining input: if the engine has opened or closed an editor
         // since last time, acknowledge it. Cheap — an atomic load and a
