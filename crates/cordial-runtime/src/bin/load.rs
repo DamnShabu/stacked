@@ -1857,7 +1857,18 @@ fn main() -> ExitCode {
     // Before the engine loads, so the governor is already up when the shader
     // compiles and the asset cache warms — the part of a launch most obviously
     // bound by a CPU that has not been asked to hurry yet.
-    gamemode::register();
+    //
+    // On a thread of its own, because nothing below waits on the answer and
+    // the call has no timeout: a session bus that has to activate gamemoded,
+    // or a daemon slow to reply, held the whole launch up behind it. A
+    // registration still in flight at exit is simply never unregistered, and
+    // gamemoded drops a pid that has gone.
+    if let Err(e) = std::thread::Builder::new()
+        .name("gamemode".into())
+        .spawn(gamemode::register)
+    {
+        println!("[gamemode] could not start registering: {e}");
+    }
 
     // Before the table is built, because `symtab::build` consults the same
     // selection to decide whether `libaaudio.so` exists at all, and a reader
