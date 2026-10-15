@@ -44,7 +44,7 @@ releases of its own yet.
 | App shell reaches `APP_READY (Landing)` | ✅ |
 | Renders — Vulkan on both backends | ✅ |
 | Networking / HTTPS | ✅ |
-| **Signing in** | ✅ **via Quick Sign-in**, which is a code flow and needs no typing |
+| **Signing in** | ✅ **via Quick Sign-in**, which is a code flow and needs no typing. The security check a password sign-in can ask for (`OPEN_CAPTCHA_VIEW`, and the two-step verification window) now opens in a web view with the app's native bridge; `INFERRED` to complete a sign-in, not yet seen with a real challenge ([ADR-063](adr/ADR-063-sign-in-challenge-windows-get-the-native-bridge.md)) |
 | **Keyboard in an experience** | ✅ WASD, space, the lot |
 | Mouse: navigation, buttons, field focus | ✅ |
 | Mouse: turning the camera | ✅ right-drag, and the delta is the compositor's *unaccelerated* one — using the accelerated pair made sensitivity depend on your desktop mouse settings and made the camera speed up through a fast sweep |

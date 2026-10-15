@@ -341,6 +341,12 @@ pub struct OpenWindowRequest {
     pub hide_header: bool,
     pub back_button_visible: bool,
     pub show_domain_as_title: bool,
+    /// Whether the page has to run as a page inside an app, with a native
+    /// bridge to answer, rather than as a page in a desktop client. Never set
+    /// by the parser, which only knows what the engine wrote; set by whoever
+    /// knows what the window is for. See [`native_bridge_user_agent`] for what
+    /// it changes and why (#83).
+    pub native_bridge: bool,
 }
 
 /// Parse one `openWindow` payload against this build's own key names.
@@ -367,6 +373,7 @@ pub fn parse_open_window(json: &str, keys: &OpenWindowKeys) -> Result<OpenWindow
         hide_header: flag(&keys.hide_header),
         back_button_visible: flag(&keys.back_button_visible),
         show_domain_as_title: flag(&keys.show_domain_as_title),
+        native_bridge: false,
     })
 }
 
@@ -591,13 +598,86 @@ pub fn dev_trigger_open_window(url: String) {
 /// `PRESENTER` — see `set_presenter_keeps_the_first_installation`'s own
 /// comment for why that static is exercised by exactly one test.
 fn synthetic_open_window_request(url: String) -> OpenWindowRequest {
+    // The same decision a real `openWindow` gets, from the same screen, so the
+    // path that reads the screen is exercised here too. `CORDIAL_WEBVIEW_TEST_NATIVE=1`
+    // forces it on, so one page can be opened both ways in one session and the
+    // two compared (#83).
+    let screen = cordial_linker_sys::game_activity::last_app_ready();
+    let native_bridge = std::env::var_os("CORDIAL_WEBVIEW_TEST_NATIVE").is_some()
+        || screen_needs_native_bridge(screen.as_deref());
+    println!(
+        "[webview] synthetic openWindow: engine screen {}, native bridge {native_bridge}",
+        screen.as_deref().unwrap_or("(none yet)")
+    );
     OpenWindowRequest {
         url,
         title: Some("CORDIAL_WEBVIEW_TEST".to_string()),
         hide_header: false,
         back_button_visible: true,
         show_domain_as_title: true,
+        native_bridge,
     }
+}
+
+// ---------------------------------------------------------- the native bridge
+//
+// roblox.com decides from the User-Agent whether it is running inside an app
+// with a native bridge, and Cordial's default identity says it is not, so a page
+// in a web window has nobody to tell when it finishes a task. Windows whose whole
+// purpose is to tell the app something are given the identity that says it is.
+
+/// The screen the engine reports (`APP_READY`) while it is asking the platform
+/// to run a sign-in challenge: the two-step verification code, the security
+/// question, and the checks that follow a password.
+///
+/// Both #83 reporters' logs have it 60 to 75 ms before the `openWindow`:
+/// `APP_READY ChallengeHybridWebView`, then the window. It is the engine saying
+/// what the window is for, which is why this is a screen name and not a
+/// guess at the window's address.
+pub const CHALLENGE_SCREEN: &str = "ChallengeHybridWebView";
+
+/// Whether a window the engine opens while `screen` is up must run with the
+/// native bridge.
+pub fn screen_needs_native_bridge(screen: Option<&str>) -> bool {
+    screen == Some(CHALLENGE_SCREEN)
+}
+
+/// The User-Agent that makes roblox.com run its hybrid layer natively.
+///
+/// **Measured, not inferred** (`docs/analysis/webview-surface.md` section 10):
+/// one page, one injected bridge, only the User-Agent changed. Under the
+/// default `Windows App ... Desktop` identity `Roblox.Hybrid.Bridge.isNative` is
+/// `false` and `Roblox.Hybrid.Navigation.navigateToFeature(...)` reaches
+/// nothing. Under `Android App ... Tablet Hybrid()` it is `true`, and the same
+/// call posts `{"moduleID":"Navigation","functionName":"navigateToFeature",
+/// "params":{"params":{"feature":"CaptchaShown"}},"callbackID":"..."}` to
+/// `window.__globalRobloxAndroidBridge__.executeRoblox`. A page that finishes a
+/// sign-in challenge tells the app through that bridge, so a window without it
+/// finishes the challenge and the engine never hears (#83). mocktail and Sober
+/// both send this shape to their web views whatever they tell the engine.
+///
+/// Both tokens are needed (`ROBLOX Android App` and `Hybrid()`): the same string
+/// without `Hybrid()` is not native. The channel stays `Cordial` rather than
+/// borrowing `GooglePlayStore`, and a string that already says Android hybrid
+/// is returned as it is. `None` when the version cannot be read out of
+/// `engine_ua`, in which case the caller keeps the engine's own string and says
+/// so.
+pub fn native_bridge_user_agent(engine_ua: &str) -> Option<String> {
+    if engine_ua.contains("ROBLOX Android App") && engine_ua.contains("Hybrid()") {
+        return Some(engine_ua.to_string());
+    }
+    let after = engine_ua.split("RobloxApp/").nth(1)?;
+    let version: String =
+        after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let well_formed = !version.is_empty()
+        && version.len() <= 32
+        && version.split('.').all(|part| !part.is_empty());
+    well_formed.then(|| {
+        format!(
+            "Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko)  ROBLOX Android App \
+             {version} Tablet Hybrid()  Cordial RobloxApp/{version} (GlobalDist; Cordial)"
+        )
+    })
 }
 
 // ---------------------------------------------------------- the security check
@@ -725,6 +805,8 @@ pub fn dispatch_app_bridge(
                 hide_header: false,
                 back_button_visible: false,
                 show_domain_as_title: false,
+                // The check's whole job is to tell the app it was passed.
+                native_bridge: true,
             });
             AppBridgeOutcome::Presented
         }
@@ -894,17 +976,24 @@ extern "C" fn on_open_window(json: *const c_char) {
             // The engine's own window takes over: whatever closes next is
             // answered on the message bus, not as a security check.
             CAPTCHA_OPEN.store(false, Ordering::Release);
+            let mut request = request;
+            let screen = cordial_linker_sys::game_activity::last_app_ready();
+            request.native_bridge = screen_needs_native_bridge(screen.as_deref());
             let verdict = cordial_shell::webview_policy::evaluate(&request.url);
             println!(
-                "[webview] openWindow message arrived: {} bytes, host {} (scheme {}), privileged \
-                 {}, hideHeader {}, backButtonVisible {}, showDomainAsTitle {}",
+                "[webview] openWindow message arrived: {} bytes, host {} (scheme {}), path {}, \
+                 privileged {}, hideHeader {}, backButtonVisible {}, showDomainAsTitle {}, \
+                 engine screen {}, native bridge {}",
                 bytes.len(),
                 verdict.host,
                 verdict.scheme,
+                cordial_shell::webview_policy::loggable_path(&request.url),
                 verdict.privileged_bridge_allowed,
                 request.hide_header,
                 request.back_button_visible,
                 request.show_domain_as_title,
+                screen.as_deref().unwrap_or("(none yet)"),
+                request.native_bridge,
             );
             match PRESENTER.get() {
                 Some(present) => present(request),
@@ -1495,7 +1584,31 @@ pub fn to_shell_request(
         // to be. `None` here means `cordial_shell::webview::open` leaves
         // WebKitGTK's own default in place rather than fabricating a string;
         // see that module for why a mismatch is worse than a fallback.
-        user_agent: user_agent(),
+        //
+        // The one exception is a window that has to run with the native
+        // bridge, which gets the Android hybrid shape of the same identity.
+        user_agent: window_user_agent(request.native_bridge, user_agent()),
+    }
+}
+
+/// The User-Agent one window is opened with. Split from [`to_shell_request`]
+/// so the choice can be tested without a native shim to ask.
+pub fn window_user_agent(native_bridge: bool, engine_ua: Option<String>) -> Option<String> {
+    if !native_bridge {
+        return engine_ua;
+    }
+    match engine_ua.as_deref().and_then(native_bridge_user_agent) {
+        Some(ua) => {
+            println!("[webview] this window runs with the app's native bridge (Android hybrid User-Agent)");
+            Some(ua)
+        }
+        None => {
+            println!(
+                "[webview] this window needs the app's native bridge, but the engine's \
+                 User-Agent has no version to build one from; it keeps the engine's own"
+            );
+            engine_ua
+        }
     }
 }
 
@@ -1733,6 +1846,7 @@ mod tests {
                 hide_header: false,
                 back_button_visible: false,
                 show_domain_as_title: false,
+                native_bridge: false,
             });
         }
         assert_eq!(CALLS.load(O::SeqCst), 1, "the second presenter must never run");
@@ -1832,6 +1946,7 @@ mod tests {
         assert!(request.url.starts_with("https://www.roblox.com/captcha/app/login?"));
         assert_eq!(request.title.as_deref(), Some("Roblox verification"));
         assert!(!request.hide_header);
+        assert!(request.native_bridge, "the check reports its result through the app's bridge");
 
         let mut called = false;
         for kind in ["APP_READY", "PURCHASE_ROBUX", ""] {
@@ -1841,6 +1956,72 @@ mod tests {
             );
         }
         assert!(!called);
+    }
+
+    /// The User-Agent the second #83 reporter's client sent, from their log.
+    const DESKTOP_UA: &str = "Mozilla/5.0 (31440MB; 1720x1350; 160x160; 1720x1350; Cordial) \
+        AppleWebKit/537.36 (KHTML, like Gecko)  ROBLOX Windows App 2.738.1397 Desktop Hybrid()  \
+        Cordial RobloxApp/2.738.1397 (GlobalDist; Cordial)";
+
+    /// The window the engine opens for a sign-in challenge is the one that must
+    /// reach the app, and nothing else is changed by it: Join works under the
+    /// desktop identity (#40) and is not to be put at risk by a fix for sign-in.
+    #[test]
+    fn only_the_challenge_screen_asks_for_the_native_bridge() {
+        assert!(screen_needs_native_bridge(Some("ChallengeHybridWebView")));
+        for other in ["Login", "Home", "Landing", "Startup", "", "challengehybridwebview"] {
+            assert!(!screen_needs_native_bridge(Some(other)), "{other:?}");
+        }
+        assert!(!screen_needs_native_bridge(None), "no screen reported yet");
+    }
+
+    /// Measured on 2026-10-16 against roblox.com: this string and mocktail's
+    /// make `Roblox.Hybrid.Bridge.isNative` true, the desktop one makes it
+    /// false, and the same string without `Hybrid()` is false too.
+    #[test]
+    fn the_native_bridge_user_agent_says_android_hybrid_and_keeps_the_cordial_channel() {
+        let ua = native_bridge_user_agent(DESKTOP_UA).expect("the version is in the string");
+        assert!(ua.contains("ROBLOX Android App 2.738.1397 Tablet Hybrid()"), "{ua}");
+        assert!(ua.ends_with("Cordial RobloxApp/2.738.1397 (GlobalDist; Cordial)"), "{ua}");
+        assert!(!ua.contains("Windows") && !ua.contains("GooglePlayStore"), "{ua}");
+        // The engine's own User-Agent is untouched: only the window changes.
+        assert!(DESKTOP_UA.contains("Windows App"));
+    }
+
+    #[test]
+    fn a_user_agent_that_is_already_android_hybrid_is_kept_as_it_is() {
+        let already = "Mozilla/5.0 AppleWebKit/537.36 ROBLOX Android App 2.738.1397 Tablet \
+            Hybrid()  GooglePlayStore RobloxApp/2.738.1397 (GlobalDist; GooglePlayStore)";
+        assert_eq!(native_bridge_user_agent(already).as_deref(), Some(already));
+    }
+
+    #[test]
+    fn no_version_means_no_native_user_agent_rather_than_an_invented_one() {
+        for ua in ["", "Mozilla/5.0", "x RobloxApp/ (GlobalDist)", "x RobloxApp/2. y", "x RobloxApp/.2 y"] {
+            assert_eq!(native_bridge_user_agent(ua), None, "{ua:?}");
+        }
+    }
+
+    #[test]
+    fn a_window_gets_the_native_user_agent_only_when_it_asks() {
+        let plain = window_user_agent(false, Some(DESKTOP_UA.into()));
+        assert_eq!(plain.as_deref(), Some(DESKTOP_UA));
+        let native = window_user_agent(true, Some(DESKTOP_UA.into())).expect("a string");
+        assert!(native.contains("Android App") && native.contains("Hybrid()"), "{native}");
+        // Asking for the bridge with nothing to build it from keeps what there is.
+        assert_eq!(window_user_agent(true, Some("no version".into())).as_deref(), Some("no version"));
+        assert_eq!(window_user_agent(true, None), None);
+        assert_eq!(window_user_agent(false, None), None);
+    }
+
+    /// The parser only knows what the engine wrote. Whether a window needs the
+    /// bridge is decided by whoever knows what it is for, so a parsed request
+    /// never asks for it on its own.
+    #[test]
+    fn a_parsed_open_window_never_asks_for_the_native_bridge() {
+        let request =
+            parse_open_window(r#"{"url":"https://www.roblox.com/x"}"#, &stand_in_keys()).unwrap();
+        assert!(!request.native_bridge);
     }
 
     #[test]

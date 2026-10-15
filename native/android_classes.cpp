@@ -656,6 +656,16 @@ std::atomic<void (*)()> g_identity_logout_sink{nullptr};
 // other native call in this process is made from.
 std::atomic<void (*)(const char*)> g_app_ready_sink{nullptr};
 
+// The screen the engine most recently reported with `APP_READY` (`Login`,
+// `ChallengeHybridWebView`, `Home`...). A sink is for acting on an event; this
+// is for the one reader that needs the *state* when something else happens --
+// `webview.rs` asks which screen is up at the moment the engine opens a web
+// window, because the screen is the only thing that says what the window is
+// for (#83). A string under a mutex rather than an atomic pointer: the engine's
+// thread writes it and the thread opening the window reads it.
+std::mutex g_app_screen_mutex;
+std::string g_app_screen;
+
 // App-bridge notifications that need the platform to act rather than merely be
 // told. Today that is `OPEN_CAPTCHA_VIEW` alone; the rest are still reports.
 std::atomic<void (*)(const char*, const char*)> g_app_bridge_sink{nullptr};
@@ -1057,6 +1067,10 @@ public:
                 type ? type->c_str() : "(null)", payload.c_str());
 
         if (kind == "APP_READY") {
+            {
+                std::lock_guard<std::mutex> lock(g_app_screen_mutex);
+                g_app_screen = payload;
+            }
             if (auto* sink = g_app_ready_sink.load(std::memory_order_acquire)) {
                 sink(payload.c_str());
             }
@@ -1547,6 +1561,22 @@ extern "C" void cordial_identity_set_sinks(void (*on_login)(const char*),
 /// be mistaken for "the engine never called".
 extern "C" void cordial_app_ready_set_sink(void (*on_ready)(const char*)) {
     cordial::g_app_ready_sink.store(on_ready, std::memory_order_release);
+}
+
+/// The screen the engine last reported with `APP_READY`, copied into `buf`.
+///
+/// Returns the full length whether or not it fit, as `snprintf` does, and 0 when
+/// the engine has reported none yet. The payload is a screen name, not
+/// anything about the user.
+extern "C" size_t cordial_last_app_ready(char* buf, size_t n) {
+    std::lock_guard<std::mutex> lock(cordial::g_app_screen_mutex);
+    const std::string& screen = cordial::g_app_screen;
+    if (buf && n > 0) {
+        size_t copy = screen.size() < n - 1 ? screen.size() : n - 1;
+        screen.copy(buf, copy);
+        buf[copy] = '\0';
+    }
+    return screen.size();
 }
 
 /// Where `OPEN_CAPTCHA_VIEW` is delivered, or null to stop delivering it.

@@ -640,6 +640,7 @@ pub mod game_activity {
             n: usize,
         ) -> c_int;
         fn cordial_app_ready_set_sink(on_ready: Option<extern "C" fn(*const c_char)>);
+        fn cordial_last_app_ready(buf: *mut c_char, n: usize) -> usize;
         fn cordial_app_bridge_set_sink(
             on_notification: Option<extern "C" fn(*const c_char, *const c_char)>,
         );
@@ -1251,6 +1252,25 @@ pub mod game_activity {
         // SAFETY: the far side stores the pointer in an atomic and calls it
         // from the engine's thread; a null clears it.
         unsafe { cordial_app_ready_set_sink(on_ready) }
+    }
+
+    /// The screen the engine most recently reported with `APP_READY`, or `None`
+    /// before it has reported one.
+    ///
+    /// State rather than an event, for a reader that needs to know which screen
+    /// is up when something else happens: the web view asks it when the engine
+    /// opens a window, because the screen is what says what the window is for.
+    /// The payload is a screen name (`Login`, `ChallengeHybridWebView`, `Home`).
+    pub fn last_app_ready() -> Option<String> {
+        let mut buf = vec![0u8; 128];
+        // SAFETY: the far side fills a caller-owned buffer, NUL-terminates it
+        // when `n > 0`, and returns the full length whether or not it fit.
+        let len = unsafe { cordial_last_app_ready(buf.as_mut_ptr() as *mut c_char, buf.len()) };
+        if len == 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8(buf[..end].to_vec()).ok()
     }
 
     /// Install the sink `OPEN_CAPTCHA_VIEW` is delivered to, or clear it with `None`.

@@ -376,6 +376,17 @@ fn forward_script_message(
         eprintln!("[webview] rejected a bridge message (host {}): {reason}", verdict.host);
         return;
     }
+    // Named, not quoted: the module and function the page called, and the
+    // feature for a sign-in check, so a report says what the page asked of the
+    // app even without `CORDIAL_TRACE_BRIDGE`. A sign-in that stalls after the
+    // window opened was indistinguishable from one where the page never spoke
+    // (#83), and the difference is the whole diagnosis.
+    eprintln!(
+        "[webview] bridge command {} ({} bytes, via {})",
+        webview_policy::describe_command(&command).as_deref().unwrap_or("(not a hybrid command)"),
+        command.len(),
+        handler.name(),
+    );
     match BRIDGE_SINK.get() {
         Some(sink) => sink(&command),
         None => eprintln!(
@@ -624,6 +635,32 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
     // from the argument type instead, giving the owned widget `upcast` needs.
     install_popup_handling(&view, Clone::clone(parent).upcast(), request.user_agent.clone());
 
+    // Whether the page decided it is running inside an app. roblox.com reads
+    // that from the User-Agent, and the answer decides whether anything the page
+    // does reaches the engine at all (#83): `Roblox.Hybrid.Bridge.isNative` is
+    // `false` under the default desktop identity and `true` under the Android
+    // hybrid one. Asked of every window, a couple of seconds after it finishes
+    // loading because the page builds `Roblox.Hybrid` after its own scripts run,
+    // and reported as a fact either way. A boolean read in the page's own world,
+    // which is where `Roblox` lives; it carries no address and no account.
+    view.connect_load_changed(|v, event| {
+        if event != webkit6::LoadEvent::Finished {
+            return;
+        }
+        let view = v.clone();
+        glib::timeout_add_local_once(std::time::Duration::from_secs(2), move || {
+            const ASK: &str = "(window.Roblox && Roblox.Hybrid && Roblox.Hybrid.Bridge) \
+                ? String(Roblox.Hybrid.Bridge.isNative) : 'no Roblox.Hybrid.Bridge on this page'";
+            view.evaluate_javascript(ASK, None, None, gtk4::gio::Cancellable::NONE, |r| match r {
+                Ok(value) => eprintln!(
+                    "[webview] the page's hybrid bridge is native: {}",
+                    value.to_str()
+                ),
+                Err(e) => eprintln!("[webview] could not ask the page whether its bridge is native: {e}"),
+            });
+        });
+    });
+
     // Whether this WebKitGTK build has WebAuthn at all, asked of a live page,
     // once per process. A Roblox account with a passkey enrolled cannot finish
     // sign-in without `navigator.credentials.get`, and when the binding is
@@ -703,27 +740,50 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
             // bridge global is injected there and a named world would not see
             // it -- which would make this report "absent" on a perfectly
             // healthy build.
-            if std::env::var_os("CORDIAL_WEBVIEW_BRIDGE_TEST").is_some() {
+            //
+            // `CORDIAL_WEBVIEW_BRIDGE_TEST=hybrid` goes one step further and has
+            // the page call its *own* `Roblox.Hybrid.Navigation.navigateToFeature`
+            // (the call a sign-in check makes), three seconds after the load so
+            // the page has built `Roblox.Hybrid`. That is the test of whether the
+            // page believes it is in an app (#83): the plain self-test posts to
+            // the bridge directly and passes under any User-Agent, which is why
+            // it could not have found the stall.
+            if let Some(mode) = std::env::var_os("CORDIAL_WEBVIEW_BRIDGE_TEST") {
                 const SELF_TEST: &str = r#"(() => {
   const bridge = window.__globalRobloxAndroidBridge__;
   if (!bridge || typeof bridge.executeRoblox !== "function") { return "no bridge on this page"; }
   bridge.executeRoblox(JSON.stringify({ cordial: "bridge-self-test" }));
   return "called";
 })()"#;
-                v.evaluate_javascript(
-                    SELF_TEST,
-                    None,
-                    None,
-                    gtk4::gio::Cancellable::NONE,
-                    |r| match r {
-                        Ok(value) => eprintln!(
-                            "[webview] bridge self-test: {} (a `forwarded a bridge message` line \
-                             below is the round trip; its absence is the finding)",
-                            value.to_str()
-                        ),
-                        Err(e) => eprintln!("[webview] bridge self-test could not run: {e}"),
-                    },
-                );
+                const HYBRID_TEST: &str = r#"(() => {
+  const nav = window.Roblox && Roblox.Hybrid && Roblox.Hybrid.Navigation;
+  if (!nav || typeof nav.navigateToFeature !== "function") { return "no Roblox.Hybrid.Navigation on this page"; }
+  nav.navigateToFeature({ feature: "CaptchaShown" }, () => {});
+  return "called the page's own navigateToFeature";
+})()"#;
+                let hybrid = mode == "hybrid";
+                let view = v.clone();
+                let run = move || {
+                    view.evaluate_javascript(
+                        if hybrid { HYBRID_TEST } else { SELF_TEST },
+                        None,
+                        None,
+                        gtk4::gio::Cancellable::NONE,
+                        |r| match r {
+                            Ok(value) => eprintln!(
+                                "[webview] bridge self-test: {} (a `forwarded a bridge message` \
+                                 line below is the round trip; its absence is the finding)",
+                                value.to_str()
+                            ),
+                            Err(e) => eprintln!("[webview] bridge self-test could not run: {e}"),
+                        },
+                    );
+                };
+                if hybrid {
+                    glib::timeout_add_local_once(std::time::Duration::from_secs(3), run);
+                } else {
+                    run();
+                }
             }
 
             // **`CORDIAL_WEBVIEW_CLICK_PROBE=1`: fire a script-driven `.click()`
