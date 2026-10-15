@@ -38,6 +38,7 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         // FORTIFY wrappers.
         f!("__strlen_chk", strlen_chk),
         f!("__strchr_chk", strchr_chk),
+        f!("__strrchr_chk", strrchr_chk),
         f!("__strncpy_chk2", strncpy_chk2),
         f!("__write_chk", write_chk),
         f!("__umask_chk", umask_chk),
@@ -202,6 +203,7 @@ extern "C" {
     fn __errno_location() -> *mut c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strchr(s: *const c_char, c: c_int) -> *mut c_char;
+    fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
     // glibc's `strerror_r` is the GNU one: it returns `char*` and may leave
     // `buf` untouched. The XSI one bionic's plain `strerror_r` means is
@@ -386,6 +388,13 @@ extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_ch
     unsafe { strchr(s, c) }
 }
 
+/// Absent until Roblox 2.702.0.622, whose `libroblox.so` imports it: glibc has
+/// no `__strrchr_chk`, so the load stopped at "cannot locate symbol" before a
+/// single engine instruction ran. Same contract as `__strchr_chk`.
+extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
+    unsafe { strrchr(s, c) }
+}
+
 extern "C" fn strncpy_chk2(
     dst: *mut c_char,
     src: *const c_char,
@@ -556,6 +565,25 @@ extern "C" fn bionic_sysconf(name: c_int) -> i64 {
 
     eprintln!("[bionic] sysconf({name}) is not a selector bionic defines; returning -1");
     -1
+}
+
+#[cfg(test)]
+mod fortify_tests {
+    use super::*;
+
+    #[test]
+    fn strrchr_chk_is_provided_and_finds_the_last_match() {
+        let overrides = function_overrides();
+        assert!(
+            overrides.iter().any(|(name, _)| *name == "__strrchr_chk"),
+            "2.702.0.622 imports __strrchr_chk and glibc does not define it"
+        );
+        let path = c"/a/b/c.txt";
+        let got = strrchr_chk(path.as_ptr(), b'/' as c_int, path.to_bytes_with_nul().len());
+        // SAFETY: `got` points into `path`.
+        assert_eq!(unsafe { CStr::from_ptr(got) }, c"/c.txt");
+        assert!(strrchr_chk(path.as_ptr(), b'z' as c_int, 11).is_null());
+    }
 }
 
 // ----------------------------------------------------------------------- liblog
