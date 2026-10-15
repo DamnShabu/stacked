@@ -319,6 +319,12 @@ fn load_host() -> Option<HostVulkan> {
         return None;
     }
 
+    // A compositor with no dma-buf global cannot be presented to by a hardware
+    // device, and the engine mishandles the failure (issue #63). See `wl_dmabuf`.
+    if super::wl_dmabuf::withhold_vulkan() {
+        return None;
+    }
+
     let mut handle = std::ptr::null_mut();
     // The Linux soname first, then the Android one Roblox actually asks for —
     // either is fine to load from, since what matters is which real library

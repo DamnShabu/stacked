@@ -28,6 +28,7 @@ pub mod looper;
 pub mod surface_params;
 pub mod system;
 pub mod vulkan;
+pub mod wl_dmabuf;
 pub mod wayland;
 pub mod window;
 
