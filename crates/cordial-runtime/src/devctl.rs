@@ -418,6 +418,26 @@ fn handle(line: &str) -> String {
                 _ => "err record <start [path]|stop|status>".into(),
             }
         }
+        // A quiet sine through Cordial's own audio path (ADR-059), for checking
+        // what a recording hears in a client whose engine is silent. The native
+        // side caps the level, so a script cannot make this loud.
+        "tone" => {
+            extern "C" {
+                fn cordial_audio_dev_tone(hz: f64, amp: f64, seconds: f64) -> i32;
+            }
+            let num = |v: Option<&str>| v.and_then(|s| s.parse::<f64>().ok());
+            match (num(it.next()), num(it.next()), num(it.next())) {
+                (Some(hz), Some(secs), amp) => {
+                    // SAFETY: plain values in, no pointers.
+                    match unsafe { cordial_audio_dev_tone(hz, amp.unwrap_or(0.03), secs) } {
+                        0 => "ok".into(),
+                        -1 => "err tone: frequency 20-20000, seconds above 0, level above 0".into(),
+                        _ => "err tone: the audio backend would not open a float stream".into(),
+                    }
+                }
+                _ => "err tone <hz> <seconds> [level, at most 0.05]".into(),
+            }
+        }
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
                 Ok(desc) => format!("ok {desc}"),
@@ -593,6 +613,12 @@ pub fn apply_queued(handle: i64) {
                 crate::android::input::script_button(handle, x, y, down, button, now_ms())
             }
             Cmd::Key { down, evdev, modifiers } => {
+                // The recording hotkey is taken here as it is in the window's
+                // own key path, so `cordial_key` exercises the same toggle.
+                let chord = modifiers & (crate::android::input::META_CTRL_ON | crate::android::input::META_ALT_ON) != 0;
+                if crate::recording::hotkey_event(evdev, down, chord) {
+                    continue;
+                }
                 crate::android::input::pass_key_event(down, evdev, modifiers)
             }
             Cmd::Text(s) => {

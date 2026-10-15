@@ -485,8 +485,9 @@ pub struct ShellConfig {
     /// frame, neither of which somebody who did not ask for it should pay. The
     /// client reads it at launch only; there is no live toggle yet.
     pub record_session: bool,
-    /// Record the sound with it: everything the default output is playing, not
-    /// the game alone, which is why it is a switch of its own and off.
+    /// Record the game's own sound with it, copied from the buffers Cordial
+    /// plays. Off by default, a switch of its own: a recording that included
+    /// sound nobody asked for is a surprise in a file about to be shared.
     pub record_audio: bool,
     /// Quit the client when the user leaves a game and returns to the home
     /// screen.

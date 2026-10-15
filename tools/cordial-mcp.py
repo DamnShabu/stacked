@@ -257,6 +257,24 @@ TOOLS = [
         },
     },
     {
+        "name": "cordial_tone",
+        "description": (
+            "Play a quiet sine of known frequency through Cordial's own audio path (the stream "
+            "AAudio uses, the recorder's tap and the host backend included), for checking what a "
+            "recording hears when the engine itself is silent, as it is on the landing page. "
+            "The level is capped at 0.05 by the client."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "hz": {"type": "number", "description": "Frequency, 20 to 20000."},
+                "seconds": {"type": "number", "description": "How long, at most 30."},
+                "level": {"type": "number", "description": "Amplitude, default 0.03, at most 0.05."},
+            },
+            "required": ["hz", "seconds"],
+        },
+    },
+    {
         "name": "cordial_record",
         "description": (
             "Record the game's own frames to a video file (ADR-059). action=start begins; "
@@ -264,7 +282,9 @@ TOOLS = [
             "folder. action=stop finishes the file and reports frames written, frames dropped "
             "and the milliseconds each capture cost on the present thread. action=status says "
             "what is running. Needs ffmpeg on the client's PATH. Sound is chosen by "
-            "CORDIAL_RECORD_AUDIO=desktop on the client, not here."
+            "CORDIAL_RECORD_AUDIO on the client, not here: game (what Cordial plays), "
+            "desktop (everything the default output plays) or off. F9 toggles recording "
+            "too: cordial_key with code 67."
         ),
         "inputSchema": {
             "type": "object",
@@ -488,6 +508,13 @@ def tool_record(c, args):
         line += f" {args['path']}"
     # Stopping waits for the encoder to flush, which is longer than a frame.
     return [{"type": "text", "text": c.send(line, timeout=60 if action == "stop" else 15)}]
+
+
+def tool_tone(c, args):
+    line = f"tone {float(args['hz'])} {float(args['seconds'])}"
+    if "level" in args:
+        line += f" {float(args['level'])}"
+    return [{"type": "text", "text": c.send(line)}]
 
 
 def tool_info(c, args):
@@ -714,6 +741,7 @@ def tool_gdb(c, args):
 HANDLERS = {
     "cordial_screenshot": tool_screenshot,
     "cordial_record": tool_record,
+    "cordial_tone": tool_tone,
     "cordial_info": tool_info,
     "cordial_textbox": tool_textbox,
     "cordial_loopers": tool_loopers,
