@@ -35,6 +35,17 @@ Input is driven inside a nested compositor on its own `WAYLAND_DISPLAY`, which
 is the one form AGENTS.md permits -- never at the developer's session.
 
 Usage:  tools/text-input-e2e.py [--profile NAME] [--keep]
+        tools/text-input-e2e.py --visibility windowed,fullscreen,tiled-after,floating
+                                [--scale 1.5] [--gles] [--client-env ADW_DEBUG_COLOR_SCHEME=prefer-light]
+
+`--visibility` is the one case here that asks whether typed text can be *seen*:
+it photographs the compositor's output with grim (the only instrument that sees
+a GTK widget) and compares the editor's rectangle with and without the text.
+Its controls are `--client-env CORDIAL_VISIBILITY_ANCHOR=off` (fullscreen and
+tiled-after must fail, ADR-056) and, with `--gles`, `VK_ICD_FILENAMES=/nonexistent
+GSK_RENDERER=ngl` (every case must fail, ADR-047). Set `CORDIAL_E2E_XDG_ROOT` to
+give the client its own data, cache and config; redirecting XDG_* for the harness
+itself breaks `distrobox`.
 """
 
 import argparse, json, os, re, shutil, socket, subprocess, sys, time
@@ -179,7 +190,11 @@ def start_sway(width, height):
     names the display it would *connect* to, not the one it serves -- so it is
     asked from an exec block. Guessing cost two runs.
     """
-    stamp, cfg = "/tmp/cordial-e2e-display", "/tmp/cordial-e2e-sway.cfg"
+    # Under OUT and not a fixed /tmp name: two agents running this at once
+    # shared one stamp file and each read the other's display.
+    os.makedirs(OUT, exist_ok=True)
+    stamp, cfg = os.path.join(OUT, "sway-display"), os.path.join(OUT, "sway.cfg")
+    sway_log = os.path.join(OUT, "sway.log")
     for f in (stamp, cfg):
         if os.path.exists(f):
             os.unlink(f)
@@ -195,14 +210,30 @@ def start_sway(width, height):
         ["distrobox", "enter", BOX, "--", "bash", "-lc",
          f"exec env -u WAYLAND_DISPLAY -u DISPLAY WLR_BACKENDS=headless "
          f"WLR_LIBINPUT_NO_DEVICES=1 WLR_HEADLESS_OUTPUTS=1 "
-         f"sway -c {cfg} > /tmp/cordial-e2e-sway.log 2>&1"],
+         f"sway -c {cfg} > {sway_log} 2>&1"],
         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    deadline = time.time() + 25
+    deadline = time.time() + 60
     while time.time() < deadline:
         if os.path.exists(stamp) and os.path.getsize(stamp):
-            return sway_pid(cfg), open(stamp).read().strip()
+            global SWAY_PID
+            SWAY_PID = sway_pid(cfg)
+            return SWAY_PID, open(stamp).read().strip()
         time.sleep(0.2)
-    raise RuntimeError("sway never reported a display; see /tmp/cordial-e2e-sway.log")
+    raise RuntimeError(f"sway never reported a display; see {sway_log}")
+
+
+SWAY_PID = None
+
+
+def swaymsg(args, raw=True):
+    """Run swaymsg against *this run's* compositor.
+
+    `ls -t sway-ipc.*.sock | head -1` picked the newest socket, which is
+    another agent's compositor whenever two of these run at once; the socket
+    name carries the compositor's pid, so name it.
+    """
+    return in_box(f"SWAYSOCK=$XDG_RUNTIME_DIR/sway-ipc.$(id -u).{SWAY_PID}.sock "
+                  f"swaymsg {'-r ' if raw else ''}{args}")
 
 
 def sway_pid(cfg):
@@ -248,6 +279,17 @@ def main():
     ap.add_argument("--client-env", action="append", default=[], metavar="KEY=VALUE",
                     help="extra environment for the client; how a control arm is run, by "
                          "switching off the thing under test and showing the same assertions fail")
+    ap.add_argument("--visibility", metavar="MODES", default=None,
+                    help="run only the visibility cases, in each of these window modes "
+                         "(comma list of windowed, fullscreen, tiled-after, floating): type into a "
+                         "synthetic box and photograph the composited output, asserting the typed "
+                         "characters changed pixels where the editor is. cordial_textbox reports "
+                         "what the field holds; this reports whether anyone could see it")
+    ap.add_argument("--gles", action="store_true",
+                    help="the engine is on GLES (no Vulkan), where `presents` stays 0 by design; "
+                         "skips the presents-based startup-freeze check, which would mistake that for a freeze")
+    ap.add_argument("--scale", type=float, default=None,
+                    help="output scale for the nested compositor (1.5 is fractional)")
     ap.add_argument("--width", type=int, default=1280)
     ap.add_argument("--height", type=int, default=800)
     args = ap.parse_args()
@@ -280,6 +322,9 @@ def main():
     sway = client = kbd = ptr = None
     case = Case()
     try:
+        if args.scale:
+            os.environ["CORDIAL_E2E_SWAY_EXTRA"] = (
+                os.environ.get("CORDIAL_E2E_SWAY_EXTRA", "") + f"\noutput HEADLESS-1 scale {args.scale}")
         sway, display = start_sway(args.width, args.height)
         print(f"== nested sway on {display}, {args.width}x{args.height}")
 
@@ -288,8 +333,7 @@ def main():
         # whole reason the double-insert guard has never been exercised.
         kbd = Holder(f"{HOLDERS}/wl-keyboard-holder", display)
         ptr = Holder(f"{HOLDERS}/wl-pointer-holder", display, [str(args.width), str(args.height)])
-        caps = in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-                      f"swaymsg -t get_seats -r").stdout
+        caps = swaymsg("-t get_seats").stdout
         print(f"== seat: {caps.strip()[:200]}")
         if '"capabilities":3' not in caps.replace(" ", ""):
             sys.exit("FAIL: the seat does not advertise both a keyboard and a pointer; "
@@ -307,6 +351,14 @@ def main():
             # /tmp and is not something to paste into an issue.
             CORDIAL_TRACE_TEXT_SHOW_PASSWORDS="1",
         )
+        # **Redirecting XDG_* for the whole script breaks `distrobox`**, which
+        # finds its container store through XDG_DATA_HOME: sway never starts and
+        # nothing says why. CORDIAL_E2E_XDG_ROOT redirects the client alone
+        # (all three variables, as AGENTS.md requires) and leaves the harness's.
+        xdg_root = os.environ.get("CORDIAL_E2E_XDG_ROOT")
+        if xdg_root:
+            env.update(XDG_DATA_HOME=f"{xdg_root}/data", XDG_CACHE_HOME=f"{xdg_root}/cache",
+                       XDG_CONFIG_HOME=f"{xdg_root}/config")
         for kv in args.client_env:
             k, _, v = kv.partition("=")
             env[k] = v
@@ -346,7 +398,7 @@ def main():
         # isolation -- confirmed the hard way, `ConnectionRefusedError`
         # against the real home directory while the client's actual socket
         # sat under the redirected one.
-        data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        data_home = env.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
         dev = Devctl(os.path.join(data_home, "cordial", "profiles", args.profile, "devctl.sock"))
         print(f"== {dev.send('info')}")
 
@@ -359,11 +411,13 @@ def main():
             return int(re.search(r"presents=(\d+)", dev.send("info")).group(1))
         first = presents()
         time.sleep(6)
-        if presents() == first and first < 10:
+        if presents() == first and first < 10 and not args.gles:
             sys.exit(f"SKIPPED: this launch hit the startup freeze -- presents stuck at "
                      f"{first}. That is docs/NEXT.md §0 and not a text-entry result. "
                      f"Run it again; it is about a third of launches.")
-        if args.only_engine_text:
+        if args.visibility:
+            run_visibility(case, dev, kbd, client.pid, display, args)
+        elif args.only_engine_text:
             run_enter_and_engine_text(case, dev, kbd, log_path)
         else:
             run_cases(case, dev, kbd, ptr, log_path, args, display)
@@ -918,16 +972,14 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
                   f"x={before.get('x')} y={before.get('y')} "
                   f"w={before.get('w')} h={before.get('h')}")
         new_w, new_h = int(args.width) - 120, int(args.height) - 80
-        r = in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-                   f"swaymsg output HEADLESS-1 mode {new_w}x{new_h}")
+        r = swaymsg(f"output HEADLESS-1 mode {new_w}x{new_h}")
         # **Prove the resize happened before asserting anything about it.**
         # The first version of this case did not, and passed while reporting a
         # byte-identical rectangle either side -- which is exactly what a
         # swaymsg that silently did nothing would produce. An instrument that
         # cannot fail is not evidence, and this suite exists because that
         # mistake has already been made here more than once.
-        modes = in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-                       f"swaymsg -t get_outputs -r").stdout
+        modes = swaymsg("-t get_outputs").stdout
         case.note("swaymsg said", (r.stdout or r.stderr).strip()[:120])
         got_mode = ""
         try:
@@ -961,8 +1013,7 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
         s = state()
         case.check("typing still reaches the box after a resize", s["text"], "resized")
 
-        in_box(f"SWAYSOCK=$(ls -t $XDG_RUNTIME_DIR/sway-ipc.*.sock | head -1) "
-               f"swaymsg output HEADLESS-1 mode {args.width}x{args.height}")
+        swaymsg(f"output HEADLESS-1 mode {args.width}x{args.height}")
         time.sleep(2.0)
 
     run_enter_and_engine_text(case, dev, kbd, log_path)
@@ -994,6 +1045,245 @@ def run_cases(case, dev, kbd, ptr, log_path, args, display):
 
     print("\n-- 14. the client is still alive")
     case.check("the client survived the whole run", dev.send("ping"), "")
+
+
+# ----------------------------------------------------------------- visibility
+#
+# `cordial_textbox` reports what the GTK field *holds*. Whether anybody can see
+# it is a different question, and the one #86 asks ("the text I type in chat
+# doesn't show up, but it's still there"): the field can hold every character
+# while the surface that would show them is never presented, is covered, or
+# draws them in the colour of what is behind them. `cordial_screenshot` reads
+# the engine's swapchain and cannot see a GTK widget, so these cases photograph
+# the *compositor's* output with grim and compare the editor's rectangle with and
+# without the typed text.
+
+
+def write_png(path, w, h, rgb):
+    """A minimal PNG writer, so a failing run leaves a picture without needing PIL."""
+    import zlib, struct
+    raw = b"".join(b"\x00" + rgb[y * w * 3:(y + 1) * w * 3] for y in range(h))
+
+    def chunk(tag, data):
+        c = struct.pack(">I", len(data)) + tag + data
+        return c + struct.pack(">I", zlib.crc32(tag + data) & 0xffffffff)
+    with open(path, "wb") as f:
+        f.write(b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 2, 0, 0, 0))
+                + chunk(b"IDAT", zlib.compress(raw, 6)) + chunk(b"IEND", b""))
+
+
+def grab(display, name):
+    """Photograph the compositor's output; returns (w, h, rgb bytes) and writes `name`.png."""
+    ppm = os.path.join(OUT, name + ".ppm")
+    r = in_box(f"WAYLAND_DISPLAY={display} grim -t ppm {ppm}")
+    if r.returncode != 0:
+        raise RuntimeError(f"grim failed: {r.stderr.strip()}")
+    data = open(ppm, "rb").read()
+    os.unlink(ppm)
+    parts = data.split(b"\n", 3)
+    w, h = (int(v) for v in parts[1].split())
+    rgb = parts[3]
+    write_png(os.path.join(OUT, name + ".png"), w, h, rgb)
+    return w, h, rgb
+
+
+def crop_diff(a, b, scale, rect, tol=16):
+    """Pixels inside `rect` (logical x, y, w, h) that differ by more than `tol` in any channel.
+
+    `tol` is low on purpose. The synthetic box carries the engine's own light
+    grey (0xd5d5dd) and lands partly over the landing page's white "Create
+    Account" button, where the text is only ~33 levels from its background; at
+    40 the same drawn text counted as "nothing changed" and one case failed on
+    a screen that plainly showed it.
+    """
+    (w, h, pa), (_, _, pb) = a, b
+    x0, y0 = max(0, int(rect[0] * scale)), max(0, int(rect[1] * scale))
+    x1, y1 = min(w, int((rect[0] + rect[2]) * scale)), min(h, int((rect[1] + rect[3]) * scale))
+    n = 0
+    for y in range(y0, y1):
+        ra, rb = pa[(y * w + x0) * 3:(y * w + x1) * 3], pb[(y * w + x0) * 3:(y * w + x1) * 3]
+        if ra == rb:
+            continue
+        for i in range(0, len(ra), 3):
+            if (abs(ra[i] - rb[i]) > tol or abs(ra[i + 1] - rb[i + 1]) > tol
+                    or abs(ra[i + 2] - rb[i + 2]) > tol):
+                n += 1
+    return n
+
+
+def count_colour(img, scale, rect, rgb, tol=6):
+    """Pixels inside `rect` within `tol` of `rgb`: how much ink is in the box's own colour."""
+    w, h, px = img
+    x0, y0 = max(0, int(rect[0] * scale)), max(0, int(rect[1] * scale))
+    x1, y1 = min(w, int((rect[0] + rect[2]) * scale)), min(h, int((rect[1] + rect[3]) * scale))
+    n = 0
+    for y in range(y0, y1):
+        row = px[(y * w + x0) * 3:(y * w + x1) * 3]
+        for i in range(0, len(row), 3):
+            if (abs(row[i] - rgb[0]) <= tol and abs(row[i + 1] - rgb[1]) <= tol
+                    and abs(row[i + 2] - rgb[2]) <= tol):
+                n += 1
+    return n
+
+
+# `fakefocus` hands the editor the one grey every real capture has reported,
+# 0xd5d5dd, so ink that is not this colour is the theme's colour winning over
+# the engine's. That is the failure that hides text: a light theme's near-black
+# on a dark game, or a dark theme's white on a white button.
+FAKE_INK = (0xd5, 0xd5, 0xdd)
+VIS_INK_MIN = 8
+
+
+def window_origin(pid):
+    """Where the client's surface starts on the output, in logical pixels, plus the output size."""
+    tree = json.loads(swaymsg("-t get_tree").stdout)
+    out = json.loads(swaymsg("-t get_outputs").stdout)[0]["rect"]
+    found = []
+
+    def walk(n):
+        if n.get("pid") == pid and n.get("type") in ("con", "floating_con"):
+            found.append(n)
+        for c in n.get("nodes", []) + n.get("floating_nodes", []):
+            walk(c)
+    walk(tree)
+    if not found:
+        # An Xwayland client's pid is not always the one sway records; with a
+        # single window on the output the only leaf view is the client.
+        def leaves(n):
+            kids = n.get("nodes", []) + n.get("floating_nodes", [])
+            if not kids and n.get("type") in ("con", "floating_con") and (n.get("window") or n.get("app_id")):
+                found.append(n)
+            for c in kids:
+                leaves(c)
+        leaves(tree)
+    if not found:
+        return None
+    n = found[0]
+    return (n["rect"]["x"] + n["window_rect"]["x"] - out["x"],
+            n["rect"]["y"] + n["window_rect"]["y"] - out["y"], out["width"], out["height"],
+            n["window_rect"]["width"], n["window_rect"]["height"])
+
+
+VIS_TEXT = "MMMMMMMMMMMM"
+# A twelve-character run of capital Ms at the synthetic box's 16 px is several
+# hundred strokes of ink; the caret alone is a column of about twenty. The floor
+# is far under the first and far over the second, and the noise check below
+# proves two photographs of the same screen differ by less than it.
+VIS_MIN_PIXELS = 120
+VIS_NOISE_MAX = 50
+
+
+def visibility_case(case, label, dev, kbd, pid, display, multiline=False):
+    """Type into a synthetic box and assert the composited output changed where the editor is."""
+    dev.send("fakeblur")
+    time.sleep(0.6)
+    # Inside the canvas at whatever size it is. A box that does not fit is
+    # refused for the fallback bar (`info_fits_canvas`), correctly, and the
+    # engine's space is the canvas's, which at output scale 2 is 640 wide: the
+    # first scale-2 run put a box at x=300 w=400 and read the fallback bar's
+    # behaviour as a finding.
+    org = window_origin(pid)
+    ext = re.search(r"extent=(\d+)x(\d+)", dev.send("info"))
+    cw, ch = int(ext.group(1)), int(ext.group(2))
+    if cw == 0 or ch == 0:
+        # The GLES engine reports no swapchain extent (`extent=0x0`), and a box
+        # sized from it is zero-sized, which the client answers with the
+        # fallback bar -- the first no-Vulkan run measured that bar and called
+        # it the editor's placement. Size from the window instead: its content
+        # is the window less a 46 px header bar, unless it fills the output.
+        _, _, _, oh_, win_w_, win_h_ = org
+        cw, ch = win_w_, win_h_ - (0 if win_h_ >= oh_ - 1 else 46)
+    bw, bh = min(400, int(cw * 0.6)), (120 if multiline else 40)
+    dev.send(f"fakefocus {1 if multiline else 0} {int(cw * 0.15)} {int(ch * 0.35)} {bw} {bh}")
+    box = wait_for(dev, lambda b: b["focus"] != "none" and b["x"] != "none"
+                   and float(b["w"]) > 0, timeout=5.0)
+    time.sleep(1.5)                     # GTK takes keyboard focus a tick after placement
+    ok_focus = case.check(f"[{label}] the synthetic box took focus", box["focus"] != "none", True)
+    if not ok_focus:
+        return
+    # So that a run photographing the fallback bar cannot pass as one
+    # photographing the box; the rectangle below is only right for the former.
+    case.check(f"[{label}] the editor is on the box (engine geometry), not the fallback bar",
+               dev.textbox().get("placed"), "engine")
+    kbd.cmd("key ctrl+a"); kbd.cmd("key BackSpace")
+    time.sleep(0.8)
+    origin = window_origin(pid)
+    if origin is None:
+        case.check(f"[{label}] the client's window was found in sway's tree", False, True)
+        return
+    ox, oy, ow, oh, win_w, win_h = origin
+    box = dev.textbox()
+    # The editor's rectangle is in the engine's surface coordinates, and the
+    # surface is the window less its header bar. Taking the window's own origin
+    # put the rectangle 46 px too high, and four single-line cases "failed"
+    # photographing empty space above the box.
+    ext = re.search(r"extent=(\d+)x(\d+)", dev.send("info"))
+    ext_h = int(ext.group(2)) or (win_h - (0 if win_h >= oh - 1 else 46))
+    header = max(0, win_h - ext_h) if (win_h - ext_h) > 1 else 0
+    rect = (ox + float(box["x"]) - 4, oy + header + float(box["y"]) - 4,
+            float(box["w"]) + 8, float(box["h"]) + 8)
+    if int(ext.group(1)) == 0:
+        # No swapchain extent means the GLES engine, whose canvas geometry does
+        # not follow the window (it still read 1184x658 after a resize), so the
+        # editor's rectangle cannot be located from it. Compare the whole
+        # window: the page behind it is static, and the noise check still
+        # proves two photographs of it agree.
+        rect = (ox, oy, win_w, win_h)
+    slug = re.sub(r"[^a-z0-9]+", "-", label.lower()).strip("-")
+    empty1 = grab(display, f"{slug}-empty")
+    empty2 = grab(display, f"{slug}-empty-again")
+    scale = empty1[0] / ow
+    noise = crop_diff(empty1, empty2, scale, rect)
+    kbd.cmd(f"type {VIS_TEXT}")
+    wait_for(dev, lambda b: b["chars"] == len(VIS_TEXT))
+    time.sleep(1.0)                     # a frame for the compositor to show the new text
+    typed = grab(display, f"{slug}-typed")
+    delta = crop_diff(empty1, typed, scale, rect)
+    held = dev.textbox()
+    case.note("window origin / header / output", f"{ox},{oy} +{header} on {ow}x{oh}, image {empty1[0]}x{empty1[1]} (scale {scale:.2f})")
+    case.note("editor rect on the output", f"{rect[0]:.0f},{rect[1]:.0f} {rect[2]:.0f}x{rect[3]:.0f}")
+    case.note("photographs", os.path.join(OUT, slug + "-{empty,typed}.png"))
+    case.check(f"[{label}] the field holds the typed characters", held["chars"], len(VIS_TEXT))
+    # Scaled with the area: the same rectangle is scale^2 times as many pixels.
+    noise_max = int(VIS_NOISE_MAX * scale * scale)
+    case.check(f"[{label}] two photographs of the same screen agree (noise <= {noise_max})",
+               noise <= noise_max, True)
+    case.note("noise / delta pixels", f"{noise} / {delta}")
+    case.check(f"[{label}] the typed characters are VISIBLE (>= {VIS_MIN_PIXELS} changed pixels)",
+               delta >= VIS_MIN_PIXELS, True)
+    ink = count_colour(typed, scale, rect, FAKE_INK)
+    ink_before = count_colour(empty1, scale, rect, FAKE_INK)
+    case.note("pixels in the engine's text colour, before / after typing", f"{ink_before} / {ink}")
+    case.check(f"[{label}] the text is drawn in the box's own colour, not the theme's "
+               f"(>= {VIS_INK_MIN} more pixels of #d5d5dd)", ink - ink_before >= VIS_INK_MIN, True)
+
+
+def run_visibility(case, dev, kbd, pid, display, args):
+    modes = [m.strip() for m in args.visibility.split(",") if m.strip()]
+    print(f"\n-- V. typed text is visible in the composited output: {', '.join(modes)}"
+          f"{f' at scale {args.scale}' if args.scale else ''}")
+    for mode in modes:
+        if mode == "windowed":
+            pass
+        elif mode == "fullscreen":
+            swaymsg("fullscreen enable")
+            time.sleep(3.0)
+        elif mode == "tiled-after":
+            swaymsg("fullscreen enable"); time.sleep(2.0)
+            swaymsg("fullscreen disable"); time.sleep(3.0)
+        elif mode == "floating":
+            swaymsg("floating enable"); time.sleep(0.5)
+            swaymsg("resize set 900 600"); swaymsg("move position 100 80")
+            time.sleep(3.0)
+        else:
+            sys.exit(f"unknown visibility mode {mode!r}")
+        case.note("extent", re.search(r"extent=\S+", dev.send("info")).group(0))
+        visibility_case(case, mode + " single-line", dev, kbd, pid, display, multiline=False)
+        visibility_case(case, mode + " multi-line", dev, kbd, pid, display, multiline=True)
+        if mode == "floating":
+            swaymsg("floating disable"); time.sleep(2.0)
+        elif mode == "fullscreen":
+            swaymsg("fullscreen disable"); time.sleep(2.0)
 
 
 if __name__ == "__main__":
