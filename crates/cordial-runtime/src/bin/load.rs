@@ -4543,7 +4543,7 @@ fn main() -> ExitCode {
                                                 // image (docs/NEXT.md). The post is made from this thread on
                                                 // Android's behalf anyway; that it may be made from another is
                                                 // `INFERRED` until a launch shows it.
-                                                if let (true, Some(ms)) = (std::env::var_os("CORDIAL_POST_ASYNC").is_some(), late_post) {
+                                                if let (true, Some(ms)) = (post_async(), late_post) {
                                                     let post_f = lib
                                                         .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativePostClientSettingsLoadedInitialization3")
                                                         .map(|p| p as usize);
@@ -4596,7 +4596,7 @@ fn main() -> ExitCode {
                                                         }
                                                     });
                                                 }
-                                                if let Some(ms) = late_post.filter(|_| std::env::var_os("CORDIAL_POST_ASYNC").is_none()) {
+                                                if let Some(ms) = late_post.filter(|_| !post_async()) {
                                                     std::thread::sleep(
                                                         std::time::Duration::from_millis(ms),
                                                     );
@@ -5724,5 +5724,28 @@ mod disk_tests {
         // And it names where, because a machine has more than one filesystem
         // and the profile is not always on the one the user is watching.
         assert!(after.contains("profiles/x/files"), "{after}");
+    }
+}
+
+/// `CORDIAL_POST_ASYNC`: make the late post from a thread of its own (#92).
+/// Read as a switch, not as "set at all", so `CORDIAL_POST_ASYNC=0` means off.
+fn post_async() -> bool {
+    switch_on(std::env::var("CORDIAL_POST_ASYNC").ok().as_deref())
+}
+
+fn switch_on(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), None | Some("") | Some("0") | Some("off") | Some("false") | Some("no"))
+}
+
+#[cfg(test)]
+mod post_async_tests {
+    #[test]
+    fn zero_and_off_mean_off() {
+        for v in [None, Some(""), Some("0"), Some("off"), Some("false"), Some("no")] {
+            assert!(!super::switch_on(v), "{v:?} must be off");
+        }
+        for v in [Some("1"), Some("on"), Some("yes")] {
+            assert!(super::switch_on(v), "{v:?} must be on");
+        }
     }
 }
