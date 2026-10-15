@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.8" date="2026-10-15">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.8</url>
+      <description>
+        <p>
+          Clicks and keys reach the game again on desktops that advertise more
+          than one input seat, and a launcher can ask for a graphics-quality
+          preset.
+        </p>
+      </description>
+    </release>
     <release version="0.21.7" date="2026-10-03">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.7</url>
       <description>
