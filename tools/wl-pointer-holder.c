@@ -51,7 +51,8 @@ static void global(void *d, struct wl_registry *r, uint32_t name,
     (void)d; (void)ver;
     if (!strcmp(iface, zwlr_virtual_pointer_manager_v1_interface.name))
         mgr = wl_registry_bind(r, name, &zwlr_virtual_pointer_manager_v1_interface, 1);
-    else if (!strcmp(iface, wl_seat_interface.name))
+    // The first seat, not the last: see the same line in wl-keyboard-holder.c.
+    else if (!strcmp(iface, wl_seat_interface.name) && !seat)
         seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
 }
 static void global_remove(void *d, struct wl_registry *r, uint32_t n) { (void)d; (void)r; (void)n; }

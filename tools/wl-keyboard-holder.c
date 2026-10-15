@@ -63,7 +63,12 @@ static void global(void *d, struct wl_registry *r, uint32_t name,
     (void)d; (void)ver;
     if (!strcmp(iface, zwp_virtual_keyboard_manager_v1_interface.name))
         mgr = wl_registry_bind(r, name, &zwp_virtual_keyboard_manager_v1_interface, 1);
-    else if (!strcmp(iface, wl_seat_interface.name))
+    // The first seat, not the last. A compositor may advertise more than one
+    // -- a niri with an agent seat lists `agent` after `seat0` -- and keeping
+    // the last drove that second seat, which is where Stacked was listening
+    // by the same mistake: input reached the engine in a nested niri while
+    // the person's own seat reached nothing.
+    else if (!strcmp(iface, wl_seat_interface.name) && !seat)
         seat = wl_registry_bind(r, name, &wl_seat_interface, 1);
 }
 static void global_remove(void *d, struct wl_registry *r, uint32_t n) { (void)d; (void)r; (void)n; }

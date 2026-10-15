@@ -1398,7 +1398,21 @@ unsafe extern "C" fn registry_global(
     match iface.as_ref() {
         "wl_compositor" => globals.compositor = Some((name, version)),
         "wl_subcompositor" => globals.subcompositor = Some((name, version)),
-        "wl_seat" => globals.seat = Some((name, version)),
+        // **The first seat, not the last.** This kept whichever `wl_seat` came
+        // last, which is the only one on most desktops and the wrong one on a
+        // niri carrying an agent seat: it advertises `agent` after `seat0`, so
+        // Cordial's own pointer and keyboard sat on a seat no person drives.
+        // GTK went on working -- GDK binds every seat -- and the engine heard
+        // nothing at all, no click, no key and not even a keyboard `enter`, in
+        // a window the compositor reported as focused. Measured in a nested
+        // niri: no event reached the engine before the fix, all of them after,
+        // and with `NIRI_AGENT_SEAT=0` the old line worked too.
+        //
+        // The first is also GDK's default seat, whose pointer
+        // `capture_pointer` borrows for the lock and the confinement -- under
+        // `WAYLAND_DEBUG` both constraints named a pointer from the first seat
+        // GDK bound -- so the events and the constraint now come from one seat.
+        "wl_seat" if globals.seat.is_none() => globals.seat = Some((name, version)),
         "zwp_text_input_manager_v3" => globals.text_input_manager = Some((name, version)),
         "zwp_pointer_constraints_v1" => globals.pointer_constraints = Some((name, version)),
         "zwp_relative_pointer_manager_v1" => globals.relative_pointer_manager = Some((name, version)),
@@ -6863,6 +6877,22 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_first_seat_advertised_is_the_one_bound() {
+        // The order niri with an agent seat advertises them in, names and all.
+        let mut globals = Globals::default();
+        let data = &mut globals as *mut Globals as *mut c_void;
+        for (name, iface, version) in
+            [(1, c"wl_compositor", 6), (40, c"wl_seat", 9), (41, c"wl_seat", 9), (42, c"wl_subcompositor", 1)]
+        {
+            // SAFETY: `data` is a live `Globals`, as `open` passes it, and the
+            // interface name is a NUL-terminated string as the protocol's is.
+            unsafe { registry_global(data, std::ptr::null_mut(), name, iface.as_ptr(), version) };
+        }
+        assert_eq!(globals.seat, Some((40, 9)), "the person's seat, not `agent`");
+        assert_eq!(globals.subcompositor, Some((42, 1)));
+    }
 
     #[test]
     fn pointer_positions_and_side_buttons_keep_their_meaning() {
