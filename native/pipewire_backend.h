@@ -8,10 +8,12 @@
 // `pipewire_backend.cpp` for how that split is enforced.
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -488,6 +490,55 @@ private:
 /// silence rather than whatever the buffer held last cycle" rule is worth
 /// checking on its own, not only by ear.
 namespace testing {
+
+/// One connection to something that may not be up yet, held for the process and
+/// retried after a failure.
+///
+/// **A failure used to be permanent.** `get_session` was a function-local
+/// static, so a PipeWire that was still starting when the first sound was
+/// wanted (a login where the audio daemon comes up a few seconds after the
+/// client) left the whole run without audio even though the daemon answered a
+/// moment later. A success is kept for the life of the process, as before; a
+/// failure is only remembered for `retry_after`, and the next caller after that
+/// tries again. The wait keeps a wedged daemon, which costs three seconds per
+/// attempt, from being asked on every call.
+///
+/// The connector and the clock are passed in so the retry rule can be checked
+/// without a PipeWire session.
+template <class T>
+class RetryingSlot {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit RetryingSlot(Clock::duration retry_after) : retry_after_(retry_after) {}
+
+    /// `connect(first_attempt)` returns the connection or null. `now()` is read
+    /// after it returns, so the wait is counted from when a failure ended and
+    /// not from when it began.
+    template <class Connect, class Now>
+    T* get(Connect&& connect, Now&& now) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (value_) return value_;
+        if (attempts_ > 0 && now() - last_attempt_ < retry_after_) return nullptr;
+        const bool first = attempts_ == 0;
+        ++attempts_;
+        value_ = connect(first);
+        last_attempt_ = now();
+        return value_;
+    }
+
+    int attempts() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return attempts_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    Clock::duration retry_after_;
+    Clock::time_point last_attempt_{};
+    T* value_ = nullptr;
+    int attempts_ = 0;
+};
 
 struct PendingBuffer {
     const uint8_t* data;

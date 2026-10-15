@@ -17,6 +17,7 @@
 #include "pipewire_backend.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -289,6 +290,90 @@ void an_unknown_host_backend_falls_back_to_pipewire() {
     std::printf("ok: an_unknown_host_backend_falls_back_to_pipewire\n");
 }
 
+/// A PipeWire that is still starting when sound is first wanted must not cost
+/// the whole run its audio. The first attempt fails, the daemon comes up, and a
+/// later caller has to get the connection.
+void a_connection_that_failed_is_retried_once_the_wait_has_passed() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    int session = 0;
+    bool daemon_up = false;
+    int connects = 0;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    auto connect = [&](bool) -> int* {
+        ++connects;
+        return daemon_up ? &session : nullptr;
+    };
+
+    RetryingSlot<int> slot(std::chrono::seconds(5));
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+
+    // Inside the wait nobody is asked again, even though the daemon is now up:
+    // a wedged one costs three seconds a try.
+    daemon_up = true;
+    t += std::chrono::seconds(2);
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+
+    t += std::chrono::seconds(4);
+    assert(slot.get(connect, now) == &session);
+    assert(connects == 2);
+
+    // A success is kept: no further connects, however long it has been.
+    t += std::chrono::hours(1);
+    assert(slot.get(connect, now) == &session);
+    assert(connects == 2);
+    std::printf("ok: a_connection_that_failed_is_retried_once_the_wait_has_passed\n");
+}
+
+/// The connector is told which attempt it is, so the repeated failures of a
+/// daemon that never comes up are logged once rather than on every retry.
+void only_the_first_attempt_is_marked_first() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    std::vector<bool> seen;
+    auto connect = [&](bool first) -> int* {
+        seen.push_back(first);
+        return nullptr;
+    };
+    RetryingSlot<int> slot(std::chrono::seconds(5));
+    for (int i = 0; i < 3; ++i) {
+        slot.get(connect, now);
+        t += std::chrono::seconds(6);
+    }
+    assert((seen == std::vector<bool>{true, false, false}));
+    assert(slot.attempts() == 3);
+    std::printf("ok: only_the_first_attempt_is_marked_first\n");
+}
+
+/// The control: the old behaviour was a retry wait of forever, and it is what a
+/// slot configured that way still does. Without the retry above, the previous
+/// test fails here.
+void a_slot_that_never_retries_keeps_its_first_failure() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    int session = 0;
+    int connects = 0;
+    bool daemon_up = false;
+    auto connect = [&](bool) -> int* {
+        ++connects;
+        return daemon_up ? &session : nullptr;
+    };
+    RetryingSlot<int> slot(Clock::duration::max());
+    assert(slot.get(connect, now) == nullptr);
+    daemon_up = true;
+    t += std::chrono::hours(24);
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+    std::printf("ok: a_slot_that_never_retries_keeps_its_first_failure\n");
+}
+
 } // namespace
 
 int main() {
@@ -307,6 +392,9 @@ int main() {
     the_shells_device_list_survives_being_asked_for_nothing();
     the_factory_always_returns_a_stream();
     an_unknown_host_backend_falls_back_to_pipewire();
+    a_connection_that_failed_is_retried_once_the_wait_has_passed();
+    only_the_first_attempt_is_marked_first();
+    a_slot_that_never_retries_keeps_its_first_failure();
     std::printf("all pipewire_backend checks passed\n");
     return 0;
 }

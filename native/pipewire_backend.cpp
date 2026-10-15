@@ -118,8 +118,9 @@ bool load_library() {
     if (!handle) handle = dlopen("libpipewire-0.3.so", RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         std::fprintf(stderr,
-            "E/Cordial-Audio           libpipewire-0.3 not found (%s); Roblox's audio "
-            "has nowhere to go. Install PipeWire and its client library to enable it.\n",
+            "I/Cordial-Audio           libpipewire-0.3 not found (%s); PipeWire cannot be "
+            "used. Another backend is used if one answers; the `host backend:` line says "
+            "which. Install PipeWire's client library to enable it.\n",
             dlerror());
         return false;
     }
@@ -219,10 +220,17 @@ bool round_trip(Session* s) {
 /// that accepted the connection but is wedged, both get this far. The
 /// `pw_core_sync`/`done` round trip is what actually proves someone is home;
 /// see the "Degrade honestly" requirement this exists to satisfy.
-Session* connect_session() {
-    if (!load_library()) return nullptr;
+Session* connect_session(bool first_attempt) {
+    // Once, and the answer kept: a library that is not installed does not
+    // appear later in the same process, and each attempt would print the same
+    // complaint again.
+    static const bool library_ok = load_library();
+    if (!library_ok) return nullptr;
 
-    g_lib.init(nullptr, nullptr);
+    // Once: a failed attempt is retried (see `get_session`), and initialising
+    // the library again for each one is not what `pw_init` is for.
+    static const bool initialised = [] { g_lib.init(nullptr, nullptr); return true; }();
+    (void)initialised;
 
     pw_thread_loop* loop = g_lib.thread_loop_new("cordial-pipewire", nullptr);
     if (!loop) {
@@ -251,10 +259,20 @@ Session* connect_session() {
 
     pw_core* core = g_lib.context_connect(context, nullptr, 0);
     if (!core) {
-        std::fprintf(stderr,
-            "E/Cordial-Audio           no PipeWire session reachable (is a PipeWire "
-            "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?); "
-            "no audio output.\n");
+        // **Not an error, and not worded as one.** PipeWire is the first thing
+        // asked when nobody named a backend, so on a PulseAudio-only machine
+        // this is the expected answer, and it used to print "E/ ... no audio
+        // output" two lines above a working "host backend: pulse" (#104). Whether
+        // there is audio is `cordial_audio_backend_announce`'s verdict, made
+        // after every backend has been asked; this line only records that
+        // PipeWire did not answer. Printed for the first attempt only, since a
+        // later one is the same answer a few seconds on.
+        if (first_attempt) {
+            std::fprintf(stderr,
+                "I/Cordial-Audio           PipeWire: no session reachable (is a PipeWire "
+                "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?). It is "
+                "asked again the next time sound is wanted.\n");
+        }
         g_lib.thread_loop_unlock(loop);
         g_lib.context_destroy(context);
         g_lib.thread_loop_stop(loop);
@@ -298,10 +316,11 @@ Session* connect_session() {
     g_lib.thread_loop_unlock(loop);
 
     if (!reachable) {
-        if (!session->sync_failed) {
+        if (!session->sync_failed && first_attempt) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           PipeWire did not answer within 3s; treating "
-                "the session as unreachable. No audio output.\n");
+                "W/Cordial-Audio           PipeWire did not answer within 3s; treating "
+                "the session as unreachable for now. It is asked again the next time "
+                "sound is wanted.\n");
         }
         g_lib.thread_loop_lock(loop);
         spa_hook_remove(&session->core_listener);
@@ -334,9 +353,16 @@ Session* connect_session() {
     return session;
 }
 
+/// How long a failed connection is remembered before the next caller tries
+/// again. Long enough that a daemon which hangs for three seconds a try is not
+/// asked on every call; short enough that one which was merely slow to start at
+/// login is picked up while the player is still in the same session.
+constexpr std::chrono::seconds kSessionRetryAfter{5};
+
 Session* get_session() {
-    static Session* session = connect_session();
-    return session;
+    static testing::RetryingSlot<Session> slot{kSessionRetryAfter};
+    return slot.get([](bool first) { return connect_session(first); },
+                    [] { return std::chrono::steady_clock::now(); });
 }
 
 // -------------------------------------------------------------- PCM format
