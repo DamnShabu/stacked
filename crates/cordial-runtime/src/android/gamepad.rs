@@ -304,11 +304,17 @@ const JS_AXIS_MAX: f32 = 32767.0;
 /// not build for anything else.
 const O_NONBLOCK: i32 = 0o4000;
 
-/// How many `/dev/input/js*` nodes to look at.
+/// How many pads to hold at once.
 ///
-/// Four is Roblox's own limit on connected gamepads, and scanning a fixed small
-/// range is what lets this avoid udev: there is no hotplug notification, so
-/// [`poll`] re-stats the range on a timer instead.
+/// Four is Roblox's own limit on connected gamepads. There is no udev here and
+/// so no hotplug notification, and [`poll`] re-reads the directory on a timer
+/// instead.
+///
+/// **It bounds the pads held, not the `jsN` numbers looked at**, which it used to
+/// do (`js0` to `js3`). A launcher that gives each game its own view of
+/// `/dev/input` -- PartyDeck binds in one controller's node and masks the rest
+/// -- leaves a pad that is `js5` on the host as the only `js*` the client can
+/// see, and a fixed range never found it. ADR-058.
 const MAX_PADS: i32 = 4;
 
 /// How often to look for a pad that was plugged in after startup.
@@ -321,9 +327,14 @@ const MAX_PADS: i32 = 4;
 const RESCAN: std::time::Duration = std::time::Duration::from_secs(2);
 
 struct Pad {
-    /// The `jsN` index, used as the engine's device id. That the engine wants a
-    /// small dense id is INFERRED -- the dex says only `int`.
+    /// The engine's device id: the lowest free slot, so it stays small and dense
+    /// whatever the host numbered the node. That the engine wants a small dense
+    /// id is INFERRED -- the dex says only `int`.
     id: i32,
+    /// The `N` of `/dev/input/jsN`, which is what sysfs and the open are keyed
+    /// by. Equal to `id` when the host's nodes start at `js0`, which is why the
+    /// two were once one field.
+    node: i32,
     file: std::fs::File,
     /// False until the init burst has been counted and the capability
     /// declaration made. No button or axis event is sent before this is true,
@@ -544,8 +555,8 @@ fn decode(buf: &[u8; JS_EVENT_LEN]) -> (u8, u8, i16) {
 /// every declaration names the pad by the id connect established -- and because
 /// disconnect carries no type, the engine is evidently keeping the type against
 /// that id from this call onwards.
-fn announce(id: i32, n_buttons: u8, n_axes: u8, layout: &Layout) {
-    let name = device_name(id);
+fn announce(id: i32, node: i32, n_buttons: u8, n_axes: u8, layout: &Layout) {
+    let name = device_name(node);
     let family = name.as_deref().map(classify);
     let ty = family.map_or_else(gamepad_type, type_for);
     // Printed for every pad, because the sweep that establishes the ordinals
@@ -758,6 +769,38 @@ fn is_a_controller(id: i32) -> bool {
     }
 }
 
+/// The `N` in `jsN`, or `None` for any other name in `/dev/input`.
+///
+/// Digits only: `js` on its own, `jsx` and `js-1` are not joydev nodes, and
+/// this is the one place a directory entry becomes a number the rest of the file
+/// trusts.
+fn js_node(name: &str) -> Option<i32> {
+    let digits = name.strip_prefix("js")?;
+    if digits.is_empty() || !digits.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    digits.parse().ok()
+}
+
+/// The joydev nodes this process can see right now, in numeric order.
+///
+/// A directory read rather than `js0..js3` opened blind, so a launcher that hands
+/// a game one controller under whatever number the host gave it still finds it.
+fn visible_nodes() -> Vec<i32> {
+    let Ok(entries) = std::fs::read_dir("/dev/input") else {
+        return Vec::new();
+    };
+    let mut nodes: Vec<i32> =
+        entries.flatten().filter_map(|e| js_node(&e.file_name().to_string_lossy())).collect();
+    nodes.sort_unstable();
+    nodes
+}
+
+/// The lowest engine device id no held pad is using.
+fn free_slot(pads: &[Pad]) -> i32 {
+    (0..).find(|id| !pads.iter().any(|p| p.id == *id)).unwrap_or(0)
+}
+
 fn open_pad(id: i32) -> Option<std::fs::File> {
     // Asked before the open, not after: opening a joydev node makes the driver
     // queue an init burst, and the whole cost of getting this wrong is that
@@ -818,7 +861,7 @@ fn drain(pad: &mut Pad) -> bool {
         }
     }
     if !pad.announced && (init_buttons > 0 || init_axes > 0) {
-        announce(pad.id, init_buttons, init_axes, &pad.layout);
+        announce(pad.id, pad.node, init_buttons, init_axes, &pad.layout);
         pad.announced = true;
         for (k, index, value) in deferred {
             dispatch(pad.id, k, index, value, &pad.layout);
@@ -836,7 +879,7 @@ fn drain(pad: &mut Pad) -> bool {
             eprintln!(
                 "[cordial] gamepad: /dev/input/js{} sent events without an init burst; \
                  its shape is unknown so nothing is being forwarded",
-                pad.id
+                pad.node
             );
         }
     }
@@ -912,15 +955,19 @@ pub fn poll() {
         }
     };
     if due {
-        for id in 0..MAX_PADS {
-            if pads.iter().any(|p| p.id == id) {
+        for node in visible_nodes() {
+            if pads.len() >= MAX_PADS as usize {
+                break;
+            }
+            if pads.iter().any(|p| p.node == node) {
                 continue;
             }
-            if let Some(file) = open_pad(id) {
+            if let Some(file) = open_pad(node) {
+                let id = free_slot(&pads);
                 if input::trace_gamepad() {
-                    eprintln!("[cordial] gamepad: opened /dev/input/js{id}");
+                    eprintln!("[cordial] gamepad: opened /dev/input/js{node} as device {id}");
                 }
-                pads.push(Pad { id, file, announced: false, layout: read_layout(id) });
+                pads.push(Pad { id, node, file, announced: false, layout: read_layout(node) });
             }
         }
     }
@@ -932,10 +979,11 @@ pub fn poll() {
         }
     }
     for id in gone {
+        let node = pads.iter().find(|p| p.id == id).map(|p| p.node);
         pads.retain(|p| p.id != id);
         input::deliver_gamepad_disconnect(id);
         if input::trace_gamepad() {
-            eprintln!("[cordial] gamepad: /dev/input/js{id} went away");
+            eprintln!("[cordial] gamepad: /dev/input/js{} went away", node.unwrap_or(id));
         }
     }
 }
@@ -959,22 +1007,44 @@ fn poll_probe() {
          {{DefaultController,PlayStationController,XboxController}} and sweep \
          CORDIAL_GAMEPAD_TYPE to find which N is which."
     );
-    announce(0, 15, 8, &Layout::standard());
+    announce(0, 0, 15, 8, &Layout::standard());
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{enabled_for, withdraw, Pad};
+    use super::{enabled_for, free_slot, js_node, withdraw, Pad};
 
     fn pad(id: i32, announced: bool) -> Pad {
         // A real file descriptor that never produces an event; `withdraw` only
         // drops it, which is what letting go of a device is.
         Pad {
             id,
+            node: id,
             file: std::fs::File::open("/dev/null").unwrap(),
             announced,
             layout: super::Layout::standard(),
         }
+    }
+
+    /// The case that motivated reading the directory: the one node a launcher
+    /// left visible is not `js0`..`js3`, and has to be found and given a small
+    /// engine id regardless.
+    #[test]
+    fn a_pad_on_a_high_node_is_a_node_and_gets_a_small_device_id() {
+        assert_eq!(js_node("js5"), Some(5));
+        assert_eq!(js_node("js12"), Some(12));
+        assert_eq!(js_node("js0"), Some(0));
+        for not in ["js", "jsx", "js-1", "event5", "mouse0", "js1a", " js1", ""] {
+            assert_eq!(js_node(not), None, "{not:?}");
+        }
+
+        let mut pads = Vec::new();
+        assert_eq!(free_slot(&pads), 0);
+        pads.push(Pad { node: 5, ..pad(0, false) });
+        assert_eq!(free_slot(&pads), 1, "a second pad takes the next slot, not its node number");
+        pads.push(Pad { node: 9, ..pad(1, false) });
+        pads.remove(0);
+        assert_eq!(free_slot(&pads), 0, "a freed slot is reused, so ids stay small");
     }
 
     /// **Switching the controllers off has to tell the engine**, or it keeps
