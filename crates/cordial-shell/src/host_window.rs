@@ -606,6 +606,26 @@ fn multiline_placement(box_y: i32, box_h: i32) -> (i32, i32) {
     (box_y, box_h)
 }
 
+/// The stylesheet that gives the focused box's colour to both editors.
+///
+/// **A `GtkTextView` takes its text colour from its own node, not from the
+/// `text` child inside it**, and the rule used to name only the child. The
+/// single-line editor drew in the engine's colour and the multi-line one in the
+/// theme's: white under a dark theme, near-black under a light one. A light
+/// theme over a dark game is black text on black, in a box that holds every
+/// character typed into it -- the shape of #86 ("the text I type doesn't show
+/// up, but it's still there"). Measured on a nested sway with a photograph of
+/// the output (`tools/text-input-e2e.py --visibility`): typing 12 characters
+/// added 56 pixels of the engine's #d5d5dd to the single-line editor and none
+/// to the multi-line one, in both themes, and the multi-line text came out
+/// near-black under the light one.
+fn editor_colour_sheet(rgb: &str) -> String {
+    format!(
+        ".cordial-editor, .cordial-editor-multiline, .cordial-editor-multiline text \
+         {{ color: {rgb}; caret-color: {rgb}; }}"
+    )
+}
+
 /// Pango's `Weight` from an OpenType weight number.
 ///
 /// A match rather than `Weight::__Unknown`, which is `doc(hidden)` and would be
@@ -1234,9 +1254,7 @@ impl HostWindow {
             (overlay.text_color >> 8) & 0xff,
             overlay.text_color & 0xff
         );
-        self.editor_css.load_from_string(&format!(
-            ".cordial-editor, .cordial-editor-multiline text {{ color: {rgb}; caret-color: {rgb}; }}"
-        ));
+        self.editor_css.load_from_string(&editor_colour_sheet(&rgb));
 
         self.editor_active_multiline.set(overlay.multiline);
         // Each branch may adjust `y`/`h` for its own vertical placement rule
@@ -2491,6 +2509,20 @@ mod tests {
         let region = input_region(surface, content, Some(editor), false);
         let (cx, cy, cw, ch) = content;
         assert!(!region.contains_point(cx + cw / 2, cy + ch / 2));
+    }
+
+    #[test]
+    fn the_box_colour_reaches_the_multiline_widget_itself() {
+        // A `GtkTextView` draws its text in its own node's colour, so a rule
+        // that names only the `text` child leaves the theme's colour on it --
+        // near-black under a light theme, on a dark game.
+        let sheet = editor_colour_sheet("#d5d5dd");
+        let selectors = sheet.split('{').next().unwrap();
+        let named: Vec<&str> = selectors.split(',').map(str::trim).collect();
+        for want in [".cordial-editor", ".cordial-editor-multiline", ".cordial-editor-multiline text"] {
+            assert!(named.contains(&want), "{want} must be coloured, selectors were {named:?}");
+        }
+        assert!(sheet.contains("color: #d5d5dd;") && sheet.contains("caret-color: #d5d5dd;"));
     }
 
     #[test]
