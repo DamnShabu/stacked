@@ -71,6 +71,14 @@ struct Xlib {
     connection_number: unsafe extern "C" fn(Display) -> c_int,
     pending: unsafe extern "C" fn(Display) -> c_int,
     next_event: unsafe extern "C" fn(Display, *mut c_void) -> c_int,
+    /// `XPeekEvent`, only ever called after `pending` has said an event is
+    /// queued, so it cannot block. It is how a server-generated auto-repeat is
+    /// told apart from a person tapping a key twice; see [`is_autorepeat_pair`].
+    peek_event: unsafe extern "C" fn(Display, *mut c_void) -> c_int,
+    /// `XkbSetDetectableAutoRepeat`, which libX11 exports from the XKB part of
+    /// itself. Optional because a missing symbol must fall back to pairing
+    /// rather than stop the window opening.
+    detectable_autorepeat: Option<unsafe extern "C" fn(Display, c_int, *mut c_int) -> c_int>,
 
     grab_pointer: unsafe extern "C" fn(
         Display, Window, c_int, c_uint, c_int, c_int, Window, c_ulong, c_ulong,
@@ -162,6 +170,13 @@ impl Xlib {
             connection_number: sym!("XConnectionNumber"),
             pending: sym!("XPending"),
             next_event: sym!("XNextEvent"),
+            peek_event: sym!("XPeekEvent"),
+            detectable_autorepeat: {
+                // SAFETY: the handle is open and the name is XKB's documented
+                // export; null is mapped to `None`, never called.
+                let p = unsafe { dlsym(lib, c"XkbSetDetectableAutoRepeat".as_ptr()) };
+                if p.is_null() { None } else { Some(unsafe { std::mem::transmute(p) }) }
+            },
             grab_pointer: sym!("XGrabPointer"),
             ungrab_pointer: sym!("XUngrabPointer"),
             warp_pointer: sym!("XWarpPointer"),
@@ -202,6 +217,11 @@ pub struct HostWindow {
     /// launched is, and what this backend assumed everywhere before it tracked
     /// focus at all.
     focused: AtomicBool,
+    /// Whether the server agreed to report auto-repeat as presses alone. When
+    /// it did not, a repeat arrives as a release and a press with one
+    /// timestamp and the release has to be recognised by its neighbour; see
+    /// [`is_autorepeat_pair`].
+    detectable_autorepeat: bool,
 }
 
 /// Buttons and timing carried across calls to `pump_input_events`, the way a
@@ -232,6 +252,33 @@ fn track_held_key(held: &mut Vec<(i32, i32)>, down: bool, key: (i32, i32)) {
     } else {
         held.retain(|k| *k != key);
     }
+}
+
+/// Whether a KeyRelease is half of a server-generated auto-repeat rather than
+/// a person letting go.
+///
+/// Without detectable auto-repeat the X server reports each repeat as a release
+/// and a press that carry the same timestamp, and nothing else is queued
+/// between them. A real release and a real press of one key cannot share a
+/// millisecond, so the timestamp is what tells a repeat from a tap; the keycode
+/// is checked as well because two different keys can.
+///
+/// `next` is the event after the release, `(type, time, keycode)`, or `None`
+/// when the queue is empty -- in which case the release is real, because a
+/// repeat's press is written to the connection with it.
+fn is_autorepeat_pair(release: (c_ulong, c_uint), next: Option<(c_int, c_ulong, c_uint)>) -> bool {
+    matches!(next, Some((KEY_PRESS, time, key)) if time == release.0 && key == release.1)
+}
+
+/// Whether this press is a repeat of a key the engine already holds down.
+///
+/// A repeat is not forwarded to the engine as a second press. On Wayland the
+/// engine has only ever been given one press per physical hold and walks, jumps
+/// and holds prompts correctly on it; X11 now matches that. The text path still
+/// sees every repeat, which is how holding a letter in a text box types it
+/// again.
+fn is_key_repeat(held: &[(i32, i32)], down: bool, key: (i32, i32)) -> bool {
+    down && held.contains(&key)
 }
 
 /// X11 pointer capture state.
@@ -484,6 +531,36 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         return Err("no X display (is DISPLAY set?)".into());
     }
 
+    // **Ask the server to report auto-repeat as presses alone.** Without this
+    // a held key is delivered as a KeyRelease and a KeyPress back to back, once
+    // per repeat, and the engine was told about every one of them as a real
+    // release. A hold-to-interact prompt (Doors' key on a lock, Grace) restarts
+    // its progress bar on each release, which is the report that holding E
+    // "randomly refreshes" near the end of the bar: the repeat delay is
+    // roughly the time it takes to get that far, and after it every repeat
+    // restarts the hold. Wayland never had this because the compositor does
+    // not repeat for the client at all. Per connection, so it changes nothing
+    // for any other X client.
+    //
+    // `CORDIAL_X11_NO_DETECTABLE_AUTOREPEAT=1` declines it, which is the only
+    // way to exercise the pairing fallback on a server that would have agreed.
+    let declined = std::env::var_os("CORDIAL_X11_NO_DETECTABLE_AUTOREPEAT").is_some();
+    let detectable_autorepeat = match xlib.detectable_autorepeat {
+        Some(set) if !declined => {
+            let mut supported: c_int = 0;
+            // SAFETY: `display` is open and `supported` is a live out-pointer.
+            unsafe { set(display, 1, &mut supported) };
+            supported != 0
+        }
+        _ => false,
+    };
+    if !detectable_autorepeat {
+        println!(
+            "[android] X11: detectable auto-repeat is not in use; pairing a release with the \
+             press that follows it instead, so a held key is not read as many taps"
+        );
+    }
+
     // SAFETY: `display` is open; the geometry and border/background pixels are
     // plain values.
     CURRENT_DISPLAY.store(display as usize, std::sync::atomic::Ordering::Relaxed);
@@ -701,6 +778,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static HostWindow,
         pointer_lock: Mutex::new(PointerLockState::new()),
         fullscreen: AtomicBool::new(place.fullscreen),
         focused: AtomicBool::new(true),
+        detectable_autorepeat,
     };
     // No touchscreen, and that is a statement about this backend rather than
     // about the machine: X11 core input has no touch at all, XInput2's is a
@@ -1694,6 +1772,28 @@ impl HostWindow {
         pass_mouse_move(x, y);
     }
 
+    /// Whether the KeyRelease in `buf` is the first half of an auto-repeat the
+    /// server did not mark as one. Only ever true when detectable auto-repeat
+    /// was refused, and only after `pending` has said there is a following
+    /// event to look at, so `XPeekEvent` cannot block the pump.
+    fn release_is_autorepeat(&self, buf: &[u8; 256]) -> bool {
+        if self.detectable_autorepeat {
+            return false;
+        }
+        // SAFETY: `XPending` only reads the connection's own queue.
+        if unsafe { (self.xlib.pending)(self.display) } <= 0 {
+            return false;
+        }
+        let mut peek = [0u8; 256];
+        // SAFETY: an event is queued, so this returns at once; `peek` is
+        // larger than every concrete event struct in the `XEvent` union.
+        unsafe { (self.xlib.peek_event)(self.display, peek.as_mut_ptr() as *mut c_void) };
+        let kind = unsafe { *(peek.as_ptr() as *const c_int) };
+        let release = unsafe { &*(buf.as_ptr() as *const XInputEvent) };
+        let next = unsafe { &*(peek.as_ptr() as *const XInputEvent) };
+        is_autorepeat_pair((release.time, release.detail), Some((kind, next.time, next.detail)))
+    }
+
     fn dispatch_key(&self, handle: i64, buf: &mut [u8; 256], down: bool) {
         let mut keysym: c_ulong = 0;
         let mut text = [0u8; 8];
@@ -1763,15 +1863,22 @@ impl HostWindow {
         // AKEYCODE has a name for it, and an email address is unusable without
         // it. So this is now a branch rather than an exit.
         if let Some(keycode) = keysym_to_android(keysym) {
-            {
+            let repeat = {
                 let mut input = self.input.lock().unwrap_or_else(|e| e.into_inner());
-                track_held_key(&mut input.held_keys, down, (keycode, ev.detail as i32));
+                let key = (keycode, ev.detail as i32);
+                let repeat = is_key_repeat(&input.held_keys, down, key);
+                track_held_key(&mut input.held_keys, down, key);
+                repeat
+            };
+            // A repeat of a key the engine already holds is not a second press.
+            // See `is_key_repeat`; the text path below still runs for it.
+            if !repeat {
+                deliver_key(handle, down, keycode, ev.detail as i32, meta, 0, unicode, now, now);
+                // The evdev code, not the Android keycode. X11 keycodes are evdev
+                // offset by 8 -- XKB reserves the low 8 for historical reasons every
+                // consumer has to undo. See `pass_key_event`.
+                pass_key_event(down, ev.detail as i32 - 8, meta);
             }
-            deliver_key(handle, down, keycode, ev.detail as i32, meta, 0, unicode, now, now);
-            // The evdev code, not the Android keycode. X11 keycodes are evdev
-            // offset by 8 -- XKB reserves the low 8 for historical reasons every
-            // consumer has to undo. See `pass_key_event`.
-            pass_key_event(down, ev.detail as i32 - 8, meta);
         } else {
             super::trace(format_args!("unmapped X11 keysym {keysym:#x}"));
         }
@@ -1877,6 +1984,9 @@ impl HostWindow {
                     self.dispatch_motion(handle, ev);
                 }
                 KEY_PRESS | KEY_RELEASE => {
+                    if event_type == KEY_RELEASE && self.release_is_autorepeat(&buf) {
+                        continue;
+                    }
                     self.dispatch_key(handle, &mut buf, event_type == KEY_PRESS);
                 }
                 FOCUS_IN => {
@@ -2285,6 +2395,31 @@ mod tests {
         assert_eq!(held, vec![(47, 39)], "only the key that came up is forgotten");
         track_held_key(&mut held, false, (99, 99)); // release for a key never seen
         assert_eq!(held, vec![(47, 39)]);
+    }
+
+    #[test]
+    fn a_release_followed_by_its_own_press_is_an_autorepeat_not_a_release() {
+        // #106: without detectable auto-repeat the server writes a held key as
+        // a release and a press with one timestamp. Forwarding the release
+        // restarts a hold-to-interact bar every repeat.
+        assert!(is_autorepeat_pair((5_000, 26), Some((KEY_PRESS, 5_000, 26))));
+        // A person tapping E twice cannot share a millisecond with themselves.
+        assert!(!is_autorepeat_pair((5_000, 26), Some((KEY_PRESS, 5_090, 26))));
+        // Another key pressed in the same millisecond is not this key repeating.
+        assert!(!is_autorepeat_pair((5_000, 26), Some((KEY_PRESS, 5_000, 25))));
+        // Something other than a press next, or nothing queued at all: real.
+        assert!(!is_autorepeat_pair((5_000, 26), Some((KEY_RELEASE, 5_000, 26))));
+        assert!(!is_autorepeat_pair((5_000, 26), Some((MOTION_NOTIFY, 5_000, 26))));
+        assert!(!is_autorepeat_pair((5_000, 26), None));
+    }
+
+    #[test]
+    fn only_a_press_of_a_key_already_held_is_a_repeat() {
+        let held = vec![(51, 25)];
+        assert!(is_key_repeat(&held, true, (51, 25)), "the second press of a held key");
+        assert!(!is_key_repeat(&held, true, (47, 39)), "a different key is a fresh press");
+        assert!(!is_key_repeat(&held, false, (51, 25)), "a release is never a repeat");
+        assert!(!is_key_repeat(&[], true, (51, 25)), "the first press is never a repeat");
     }
 
     #[test]
