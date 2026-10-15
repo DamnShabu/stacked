@@ -861,7 +861,7 @@ struct AxisCall {
 /// `(value, 0, 0)` -- which this file did until #113 -- put the vertical axis in
 /// the horizontal slot and overwrote the horizontal one: a pad whose stick was
 /// pushed down moved the menu selection right. What was measured, on the
-/// landing screen, and how: ADR-063.
+/// landing screen, and how: ADR-064.
 ///
 /// So the pad's sticks are kept here and each event is folded into them first.
 #[derive(Debug, Clone, Copy, Default, PartialEq)]

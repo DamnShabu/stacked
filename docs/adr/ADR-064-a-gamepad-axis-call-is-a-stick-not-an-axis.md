@@ -1,4 +1,4 @@
-# ADR-063: A gamepad axis call is a stick, not an axis
+# ADR-064: A gamepad axis call is a stick, not an axis
 
 **Status:** accepted
 **Date:** 2026-10-16
