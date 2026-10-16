@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.22.0" date="2026-10-16">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.22.0</url>
+      <description>
+        <p>
+          Movement keys work straight after joining a game, a held key on X11
+          no longer restarts hold-to-interact prompts, a touchscreen no longer
+          crashes the client, and a game that hangs while closing is stopped.
+        </p>
+      </description>
+    </release>
     <release version="0.21.12" date="2026-10-16">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.12</url>
       <description>
