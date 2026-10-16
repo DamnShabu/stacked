@@ -534,6 +534,71 @@ decision for the maintainer and none of them has been measured:
    it under Cordial's user agent. Nobody has looked, because looking means
    reaching a sign-in page with an account.
 
+## 10. Whether the page runs as an app — measured, and it was the sign-in stall
+
+Issue #83 (sign-in with a two-step code ends in "Something went wrong" after
+about a minute). Both reporters' logs, one with `CORDIAL_TRACE_BRIDGE=1`, show
+the same sequence and nothing else from the page:
+
+    APP_READY ChallengeHybridWebView
+    [webview] openWindow message arrived ... host www.roblox.com
+    [webview] presented an openWindow request
+    [webview] hybrid launch: intercepted Roblox.Hybrid.Game.launchGame
+    ... no bridge message of any kind ...
+    [webview] closeWindow message arrived from the engine   (60.3 s and 61.0 s after the open)
+    APP_READY Login
+
+No `bridge message`, no `rejected`, no `malformed`: the page never called
+either registered handler, so the engine had nothing to act on and closed the
+window itself after a minute. The question was why a page that was plainly
+interactive (a code was typed into it) said nothing.
+
+**The page decides whether it is in an app from the User-Agent.** One page
+(`/captcha/app/login`, anonymous, a made-up user name), one injected
+`__globalRobloxAndroidBridge__` that logs every read and every call, run
+repeatedly (the desktop and mocktail rows four times each, the others once or
+twice) with only the User-Agent changed (instrument:
+`~/.cache/cordial-scratch/signin83/tools/probe.py`, not kept in the tree):
+
+| User-Agent | `Roblox.Hybrid.Bridge.isNative` | `Bridge.registerCallback` | `Hybrid.Navigation.navigateToFeature` arity | `navigateToFeature({feature:"CaptchaShown"})` |
+|---|---|---|---|---|
+| Cordial's default (`ROBLOX Windows App ... Desktop Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
+| bare `RobloxApp/<v>(GlobalDist; Cordial)` | `false` | absent | not asked | not asked |
+| mocktail's (`ROBLOX Android App <v> Tablet Hybrid()  GooglePlayStore ...`) | `true` | present | 0 | `executeRoblox` called |
+| Cordial's own `android-tablet` string (device block, `GooglePlayStore`) | `true` | present | 0 | `executeRoblox` called |
+| `Android App <v> Tablet Hybrid()` with a device block and the `Cordial` channel | `true` | present | 0 | `executeRoblox` called |
+| `Android App <v> Tablet Hybrid()  Cordial RobloxApp/<v> (GlobalDist; Cordial)`, no device block (the one now used) | `true` | present | 0 | `executeRoblox` called |
+| `...Android App <v> Tablet  Cordial ...` (no `Hybrid()`) | `false` | absent | 2 | nothing reaches the bridge |
+
+The call that does arrive under the Android shape is exactly the envelope
+`webview_captcha::parse_captcha_event` was written against from mocktail, so
+that part of 2704945 is now observed rather than inferred:
+
+    {"moduleID":"Navigation","functionName":"navigateToFeature",
+     "params":{"params":{"feature":"CaptchaShown"}},"callbackID":"<uuid>"}
+
+So under the default `pc-windows-11` identity **nothing a page does inside the
+web window reaches the host**, whatever the shim offers. Join works there only
+because `Roblox.Hybrid.Game.launchGame` is intercepted in the page (#40), a hook
+that exists because the bridge was silent. mocktail's web view helper and Sober
+both give their web views the Android shape whatever they tell the engine
+(`BuildRobloxAndroidUserAgent` in mocktail's `webview_helper_policy.cc`).
+
+**Not established**, and labelled so in the code:
+
+* That the challenge page's completion message reaches the engine and is acted
+  on once the bridge is native. Nobody has seen a real two-step verification
+  here; it needs an account. The new `[webview] bridge command Module.function`
+  line is what a report will show if it still stalls.
+* Which module and function the challenge page calls. The hybrid object lists
+  `Game`, `Social`, `Chat`, `Input`, `RealTime`, `Navigation`, `Push`,
+  `Overlay`, `Localization` and `AdConsent`; none is named for a challenge.
+* That the window needs none of the engine's cookies. Its jar holds the
+  session cookie only, and holds nothing before sign-in.
+* That the Join hook still works under the Android shape, which is why only
+  the windows that need the bridge get it. See
+  [ADR-063](../adr/ADR-063-sign-in-challenge-windows-get-the-native-bridge.md).
+
 ## The transport, found in mocktail's bridge rather than by tracing
 
 `crates/cordial-runtime/src/webview.rs` said the receiving half could not be

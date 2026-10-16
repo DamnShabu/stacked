@@ -502,15 +502,13 @@ fn apply_overrides(doc: String) -> String {
     // invented names in Roblox's settings document; the engine ignores what it
     // does not know, but a flag it silently ignores is exactly the thing this
     // project keeps mistaking for a flag that works.
-    let overrides: serde_json::Map<String, serde_json::Value> = resolved
-        .iter()
-        .filter(|(k, _)| is_roblox_flag(k))
-        .map(|(k, r)| (k.clone(), serde_json::Value::String(r.value.clone())))
-        .collect();
-
-    match merge(&doc, overrides) {
+    match merge(&doc, roblox_overrides(&resolved)) {
         Ok((merged, _)) => {
             crate::flags::report(&resolved);
+            // Once per launch, from the document the engine would have received
+            // without the overrides: a number on a channel that wants a name
+            // silences it without an error (issue #13).
+            crate::flog_shape::report(&doc, &roblox_overrides(&resolved));
             merged
         }
         Err(why) => {
@@ -749,6 +747,17 @@ mod history {
             assert!(entries[0].ends_with("-engine-googleandroidapp.json"), "{}", entries[0]);
         }
     }
+}
+
+/// The resolved flags that are Roblox's, as the values the engine is handed.
+fn roblox_overrides(
+    resolved: &std::collections::BTreeMap<String, crate::flags::Resolved>,
+) -> serde_json::Map<String, serde_json::Value> {
+    resolved
+        .iter()
+        .filter(|(k, _)| is_roblox_flag(k))
+        .map(|(k, r)| (k.clone(), serde_json::Value::String(r.value.clone())))
+        .collect()
 }
 
 #[cfg(test)]

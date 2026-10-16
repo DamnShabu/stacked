@@ -24,16 +24,18 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked profiles` | List profiles. `profiles new NAME` creates one, `profiles use NAME` makes it the current one, and `profiles remove NAME` deletes one, including its saved sign-in in the keyring. `remove` asks you to type the name, or takes `--yes`. |
 | `stacked config` | List every setting with its current value (see below). |
 | `stacked flags` | List, set and remove the current profile's FastFlags (see [FastFlags](#fastflags)). |
-| `stacked audio-outputs` | List the names `audio_output` accepts. |
+| `stacked audio-outputs` | List the names `audio_output` accepts, each followed by its description. |
+| `stacked audio-inputs` | List the microphones `audio_input` accepts. |
 | `stacked plugins …` | Manage plugins (see below). |
 | `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |
 | `stacked desktop install` | Add Stacked to the app menu and make it what the website's Play button opens. `desktop remove` undoes it. Packages and the Flatpak do this themselves. |
 | `stacked completions SHELL` | Print tab completion for `bash`, `zsh` or `fish`. |
-| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--lines N` for more, `--path` for where the file is. `--zip [FILE]` saves a redacted archive of the diagnostics and newest engine logs to attach to an issue. |
+| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--crash` shows the newest crash report instead, `--lines N` shows more, and `--path` prints where the file is. `--zip [FILE]` saves a redacted archive of the diagnostics, the newest crash report and engine logs to attach to an issue. |
 | `stacked diagnostics` | Print the version, distribution and install method for a bug report. |
 
-Exit status is 0 on success, 1 on failure, 2 for a usage mistake, and 3 when
-the profile is already open in another client. `stacked doctor` exits 1 when
+Exit status is 0 on success, 1 on failure, 2 for a usage mistake, 3 when
+the profile is already open in another client, and 5 when Roblox started but
+could not open a window. `stacked doctor` exits 1 when
 it finds a problem that would stop Roblox starting.
 
 A mistyped command or setting gets a suggestion: `stacked staus` answers "Did
@@ -81,7 +83,9 @@ values it accepts.
 | `throttle` | `visible` | `visible`, `unfocused` or `off`. When the engine is allowed to slow down in the background. |
 | `pointer_acceleration` | `unlockedcursor` | `unlockedcursor` or `always`. Whether desktop pointer acceleration also affects the camera. |
 | `gamepad` | `true` | Controllers. |
+| `record_session` / `record_audio` | `false` | Record each session to a video file with `ffmpeg`, and its sound. Either one also makes F9 start and stop recording. See [recording.md](recording.md). |
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
+| `audio_input` | empty | A microphone name from `stacked audio-inputs`. Empty follows the system. Read at launch. |
 | `close_on_leave` | `false` | Close Roblox when you leave an experience. |
 | `mangohud` / `vkbasalt` | `false` | Overlays, if they're installed. See [shaders.md](shaders.md) for vkBasalt. |
 | `carry_launch_ticket` | `false` | Hand a website Play button's one-use login ticket to the engine as well. |
@@ -233,7 +237,13 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_GAMEMODE=0` | Don't ask for GameMode. |
 | `CORDIAL_POLL_COALESCE_US=N` | How long the engine's main loop sleeps when it has nothing to do, in microseconds. The default is 250. `0` turns it off, which costs a whole CPU core. |
 | `CORDIAL_TEARDOWN_TIMEOUT_S=N` | How long the engine gets to shut down before the client exits without it. The default is 10. |
+| `CORDIAL_POST_GATE=0` | Don't hold the engine's settings call until its first render step ([ADR-065](adr/ADR-065-the-late-post-waits-for-the-first-render-step.md)). For testing whether a startup freeze is that race. |
+| `CORDIAL_NO_FREEZE_RESTART=1` | Read by `stacked play`: don't stop and restart a client whose log shows it stuck starting. |
 | `CORDIAL_APK=PATH` | Run this APK for this launch only. |
+| `CORDIAL_TRACE_KEYS=1` | Log one line for every key passed to the game or held back from it. **It logs every key, including ones typed into a password box**, so read it before pasting it anywhere. |
+| `CORDIAL_NO_GAME_SEED=1` | Don't send the pointer hovers that go to the game while it loads. They are the fix for movement keys not working after a join; this is for testing that. |
+| `CORDIAL_RESIZE_MAX_LAG_MS=N` | The longest the game waits to be told the window's new size during a resize, in milliseconds. The default is 100. |
+| `CORDIAL_X11_NO_DETECTABLE_AUTOREPEAT=1` | X11 only: don't ask the X server to report a held key as one press; pair the repeats up in Stacked instead. For testing that fallback. |
 | `XDG_DATA_HOME=DIR` | Move every profile and all client data somewhere else. |
 
 Profiles and data are still stored under `~/.local/share/cordial`, and

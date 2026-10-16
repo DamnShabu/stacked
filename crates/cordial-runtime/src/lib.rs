@@ -26,6 +26,7 @@ pub fn window_title(backend: &str) -> String {
 pub mod android;
 pub mod bloxstrap_rpc;
 pub mod game_log;
+pub mod post_gate;
 pub mod battery;
 pub mod browser_tracker;
 pub mod client_settings;
@@ -37,6 +38,7 @@ pub mod elf;
 // message-bus entry points, and nothing outside the crate should be reaching
 // for them. See ADR-036.
 mod ffi_util;
+mod flog_shape;
 pub mod flags;
 pub mod graphics;
 pub mod graphics_quality;
@@ -46,6 +48,7 @@ pub mod linking;
 pub mod permissions;
 pub mod plugin_host;
 pub mod profile;
+pub mod recording;
 pub mod refresh;
 pub mod roblox_api;
 pub mod secrets;

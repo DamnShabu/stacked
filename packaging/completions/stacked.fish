@@ -11,6 +11,7 @@ complete -c stacked -n __fish_use_subcommand -a profiles
 complete -c stacked -n __fish_use_subcommand -a config
 complete -c stacked -n __fish_use_subcommand -a flags
 complete -c stacked -n __fish_use_subcommand -a audio-outputs
+complete -c stacked -n __fish_use_subcommand -a audio-inputs
 complete -c stacked -n __fish_use_subcommand -a plugins
 complete -c stacked -n __fish_use_subcommand -a doctor
 complete -c stacked -n __fish_use_subcommand -a logs
@@ -37,6 +38,7 @@ complete -c stacked -n '__fish_seen_subcommand_from plugins; and test (count (co
 complete -c stacked -n '__fish_seen_subcommand_from plugins' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l crash
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l path
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l lines
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l zip

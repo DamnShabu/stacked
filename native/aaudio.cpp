@@ -252,7 +252,8 @@ Backend selected_backend() {
                   "rollback; unset CORDIAL_AUDIO selects AAudio."
                 : b == Backend::AAudio
                       ? "libaaudio.so is registered and supportsAAudio() reports true; streams "
-                        "open against PipeWire. Playback and callback input are callback-driven; "
+                        "open against the host audio backend named on the `host backend:` "
+                        "line. Playback and callback input are callback-driven; "
                         "blocking input reads remain supported. The microphone exists only "
                         "between requestStart and callback STOP, pause, stop or close."
                       : "CONTROL RUN: libaaudio.so is registered and supportsAAudio() reports "
@@ -552,7 +553,12 @@ bool input_capture_is_open(Stream* s) {
 
 bool open_input_capture(Stream* s) {
     std::lock_guard<std::mutex> lifecycle(s->capture_lifecycle);
-    return s->capture.open(kCaptureRate, kCaptureChannels, std::string());
+    // Empty unless the user chose a microphone (`CORDIAL_AUDIO_SOURCE`), and
+    // empty is PipeWire's own default as before. The lookup only walks the
+    // registry; it opens nothing.
+    return s->capture.open(kCaptureRate, kCaptureChannels,
+                           cordial::audio::resolve_input_target(
+                               cordial::audio::configured_input_device()));
 }
 
 void close_input_capture(Stream* s) {
@@ -811,9 +817,9 @@ static aaudio_result_t AAudioStreamBuilder_openStream(AAudioStreamBuilder* build
         // rather than falling back — so the one place that could still
         // produce it should say what it cost.
         std::fprintf(stderr,
-            "E/Cordial-AAudio          no PipeWire session reachable, and FMOD has already "
+            "E/Cordial-AAudio          no audio backend reachable, and FMOD has already "
             "committed to AAudio; there will be no audio this run and no fallback. This "
-            "means supportsAAudio() said yes and the session went away between then and "
+            "means supportsAAudio() said yes and the backend went away between then and "
             "now.\n");
         return AAUDIO_ERROR_UNAVAILABLE;
     }
@@ -1347,6 +1353,30 @@ void cordial_audio_backend_announce(void) {
     // the second is the probe's answer.
     const char* asked = cordial::audio::host_backend_name();
     const char* got = cordial::audio::effective_backend_name();
+    // **One verdict, after every backend has been asked.** Each probe used to
+    // print its own failure as an error, so a PulseAudio-only machine logged
+    // "no PipeWire session reachable ... no audio output" directly above a
+    // working "host backend: pulse" (#104), and a machine where nothing
+    // answered logged "host backend: pipewire", which named the backend that had
+    // just failed. Nothing answering is now said as that, with what to check.
+    if (!cordial::audio::host_backend_available()) {
+        if (std::strcmp(asked, "auto") == 0) {
+            std::fprintf(stderr,
+                "E/Cordial-Audio           host backend: none. No sound server answered "
+                "(asked PipeWire, PulseAudio, ALSA and OSS), so there will be no sound. "
+                "Check that PipeWire or PulseAudio is running for this user and that "
+                "XDG_RUNTIME_DIR points at its socket; `stacked doctor` shows what it "
+                "can reach. PipeWire is asked again the next time sound is wanted.\n");
+        } else {
+            std::fprintf(stderr,
+                "E/Cordial-Audio           host backend: none. CORDIAL_AUDIO_HOST=%s was "
+                "asked for and did not answer, so there will be no sound. Unset it to let "
+                "Stacked try every backend, or check that it is running for this user and "
+                "that XDG_RUNTIME_DIR points at its socket.\n",
+                asked);
+        }
+        return;
+    }
     if (std::strcmp(asked, got) == 0) {
         std::fprintf(stderr, "I/Cordial-Audio           host backend: %s\n", got);
     } else {

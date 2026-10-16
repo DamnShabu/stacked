@@ -551,6 +551,8 @@ fn read_tail(path: &Path) -> std::io::Result<(String, bool)> {
 #[derive(Default)]
 pub struct Inputs {
     pub diagnostics: String,
+    /// The newest crash report's file name and text, if the profile has one.
+    pub crash: Option<(String, String)>,
     pub engine: Vec<EngineLog>,
     pub coredump: String,
     pub identity: Identity,
@@ -570,6 +572,9 @@ fn safe_name(name: &str) -> String {
 pub fn entries(inputs: &Inputs) -> Vec<Entry> {
     let mut redactor = Redactor::new(inputs.identity.clone());
     redactor.learn(&inputs.diagnostics);
+    if let Some((_, text)) = &inputs.crash {
+        redactor.learn(text);
+    }
     for log in &inputs.engine {
         redactor.learn(&log.text);
     }
@@ -579,6 +584,12 @@ pub fn entries(inputs: &Inputs) -> Vec<Entry> {
 
     let mut listed = vec![("diagnostics.txt", "what `stacked diagnostics` prints")];
     add("diagnostics.txt", redactor.redact(&inputs.diagnostics));
+
+    match &inputs.crash {
+        Some((name, text)) => add(&format!("crash/{}", safe_name(name)), redactor.redact(text)),
+        None => add("crash/none.txt", "This profile has no crash report from `stacked play`.\n".into()),
+    }
+    listed.push(("crash/", "the newest crash report, with the end of the client's own output"));
 
     let mut engine_listed = Vec::new();
     for log in &inputs.engine {
@@ -612,8 +623,8 @@ pub fn entries(inputs: &Inputs) -> Vec<Entry> {
          The machine's hostname is kept in diagnostics.txt, as it is in `stacked diagnostics`. \
          That is pattern matching, so read the files before you post them if the account \
          matters to you. Core files are never included.\n\
-         What the terminal printed while Roblox ran is not kept anywhere, so it is not in \
-         here; paste it into the issue if you have it.\n",
+         Only a crash keeps the client's output (crash/); for anything else, paste what \
+         the terminal printed into the issue if you have it.\n",
     );
     out.insert(0, Entry { name: "README.txt".into(), data: readme.into_bytes() });
     out
@@ -666,23 +677,40 @@ fn coredump_listing() -> Result<String, String> {
     Ok(String::from_utf8_lossy(&out.stdout).into_owned())
 }
 
-/// Where a profile's engine writes its logs. The same path `stacked logs`
-/// reads.
+/// Where a profile's engine writes its logs: the freeze watch's own answer,
+/// which `stacked logs` reads too.
 pub fn engine_logs_dir(profile_dir: &Path) -> PathBuf {
-    profile_dir.join("data/files/appData/logs")
+    crate::freeze_recovery::logs_dir(profile_dir)
+}
+
+/// The newest `stacked play` crash report in the profile, by name and text.
+/// It holds the end of the client's own output, which is what upstream's
+/// session capture was for.
+fn newest_crash_report(profile_dir: &Path) -> Option<(String, String)> {
+    let newest = std::fs::read_dir(profile_dir.join("crashes"))
+        .ok()?
+        .flatten()
+        .filter(|e| e.file_name().to_string_lossy().ends_with(".log"))
+        .filter_map(|e| Some((e.metadata().ok()?.modified().ok()?, e.path())))
+        .max_by_key(|(when, _)| *when)?
+        .1;
+    let text = String::from_utf8_lossy(&std::fs::read(&newest).ok()?).into_owned();
+    Some((newest.file_name()?.to_string_lossy().into_owned(), text))
 }
 
 /// Read everything the archive holds from the profile.
 pub fn gather(profile: &str, diagnostics: String) -> Inputs {
     let mut engine = Vec::new();
+    let mut crash = None;
     if let Ok(dir) = crate::profile::dir(profile) {
+        crash = newest_crash_report(&dir);
         for path in newest_engine_logs(&engine_logs_dir(&dir)) {
             let Ok((text, cut)) = read_tail(&path) else { continue };
             let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("engine.log").to_string();
             engine.push(EngineLog { label: "phone", name, text, cut });
         }
     }
-    Inputs { diagnostics, engine, coredump: coredump_text(coredump_listing()), identity: Identity::here() }
+    Inputs { diagnostics, crash, engine, coredump: coredump_text(coredump_listing()), identity: Identity::here() }
 }
 
 /// The finished `.zip` for `profile`.

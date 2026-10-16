@@ -14,6 +14,18 @@ Coming from Sober, `stacked flags import --from sober` copies the `fflags` from
 its `config.json`. [Importing](#importing-a-list-from-another-launcher) has the
 details.
 
+`stacked flags set` checks an `FLog` value as a whole number, but some log
+channels take a severity (`Warning`, `Info,7`) instead, and go silent, with no
+error, when given a number. `python3 tools/flog_channel_shapes.py --settings
+~/.cache/cordial/clientsettings.json` lists the shape Roblox's own settings use
+for the channels they set; a channel they do not set is reported as `unknown`.
+[`analysis/flog-channel-shapes.tsv`](analysis/flog-channel-shapes.tsv) is a
+measured survey of which channels went quiet under a number, and the client
+warns at launch (`flags: FLog... is a bare number`) when you give one of those,
+or one Roblox's settings give a severity, a number. A severity value has to be
+written into `flags.json` by hand for now; `stacked flags path` prints where it
+is.
+
 Roblox said in 2025 that its desktop clients would only honour an allowlist of
 FastFlags. Whether that applies to the Android engine Stacked runs, and to the
 way Stacked hands flags to it, hasn't been measured here. `FLogGraphics=0` and

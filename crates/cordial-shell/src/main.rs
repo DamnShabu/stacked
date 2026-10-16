@@ -47,6 +47,7 @@ mod launch;
 mod root_warning;
 mod shell_config;
 
+use cordial_shell::freeze_recovery;
 use cordial_shell::profile;
 use std::process::ExitCode;
 
@@ -113,6 +114,7 @@ FastFlags (each takes --profile NAME; changes apply at the next start)
   flags clear             Remove every flag.
   flags path              Where the file is.
   audio-outputs           List the audio outputs `audio_output` can name.
+  audio-inputs            List the microphones `audio_input` can name.
 
 Plugins
   plugins                 List installed plugins and whether each is on.
@@ -133,10 +135,11 @@ Setting up
   completions SHELL       Print tab completion for bash, zsh or fish.
 
 Other
-  logs [--path] [--lines N] [--profile NAME]
-                          Show the end of Roblox's own newest log.
+  logs [--crash] [--path] [--lines N] [--profile NAME]
+                          Show the end of Roblox's own newest log, or with
+                          --crash the newest crash report.
   logs --zip [FILE]       Save a redacted .zip of the diagnostics, the newest
-                          engine logs and any core dump note, for an issue.
+                          crash report and engine logs, for an issue.
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
   help                    This. Also -h, --help.
@@ -184,9 +187,19 @@ fn main() -> ExitCode {
                 "profiles" | "profile" => profiles(rest),
                 "config" => cli_config::run(rest),
                 "flags" | "flag" | "fflags" => cli_flags::run(rest),
+                // The `node.name` first, because it is what `audio_output` and
+                // `audio_input` match exactly; the description alone, which is
+                // all these used to print, is not a value either key accepts.
                 "audio-outputs" => {
                     for sink in audio_devices::sinks() {
-                        println!("{}", audio_devices::row_label(&sink));
+                        println!("{}\t{}", sink.node_name, audio_devices::row_label(&sink));
+                    }
+                    0
+                }
+                // Lists and opens nothing: see `audio_devices::sources`.
+                "audio-inputs" => {
+                    for source in audio_devices::sources() {
+                        println!("{}\t{}", source.node_name, audio_devices::row_label(&source));
                     }
                     0
                 }
@@ -435,7 +448,7 @@ fn play(args: &[String]) -> u8 {
     // ADR-012's claim, taken before the process exists so that a refusal
     // costs nothing, and naming the profile because "already open" on its own
     // does not tell anyone which one to close.
-    let claim = match profile::acquire(&profile_name) {
+    let mut claim = match profile::acquire(&profile_name) {
         Ok(claim) => claim,
         Err(e @ profile::Error::Busy(..)) => {
             report(&format!(
@@ -470,61 +483,124 @@ fn play(args: &[String]) -> u8 {
         ),
         None => println!("stacked: starting Roblox on profile {profile_name:?}"),
     }
-    let mut instance = match launch::spawn(
-        &build,
-        claim,
-        launch::LaunchRequest { run_seconds, join_url: join_url.as_deref(), secret_store },
-    ) {
-        Ok(instance) => instance,
-        Err(message) => {
-            report(&message);
-            return 1;
+    // A start that freezes (#92) is stopped by the watch below and started
+    // again from here, at most `freeze_recovery::MAX_RESTARTS` times, with the
+    // link and the account routing this launch began with: the browser's
+    // ticket was spent by the first resolve, and its join URL is what is left.
+    // Taken before the claim moves into the client, so that a crash can still
+    // be written where `stacked logs --crash` looks for it. The same directory
+    // on every restart.
+    let profile_dir = claim.profile_dir().to_path_buf();
+    let mut restarts = 0;
+    loop {
+        let freeze_watch = freeze_recovery::enabled(std::env::var("CORDIAL_NO_FREEZE_RESTART").ok().as_deref())
+            .then(|| freeze_recovery::Supervisor::new(freeze_recovery::logs_dir(claim.profile_dir())));
+        // Asked again as late as possible before a restart's spawn, because a
+        // Ctrl-C pressed after the restart was decided and before this reached no
+        // client at all. One pressed between here and the fork still starts it.
+        if restarts > 0 && freeze_recovery::interrupted() {
+            println!("stacked: {}", freeze_recovery::INTERRUPTED_WHILE_STUCK);
+            return 130;
         }
-    };
+        let mut instance = match launch::spawn(
+            &build,
+            claim,
+            launch::LaunchRequest { run_seconds, join_url: join_url.as_deref(), secret_store },
+        ) {
+            Ok(instance) => instance,
+            Err(message) => {
+                report(&message);
+                return 1;
+            }
+        };
 
-    println!("stacked: cordial-run is pid {}", instance.pid());
-    // Ctrl-C reaches the whole foreground process group, so the client hears
-    // it and shuts down in order on its own. This process must not die first:
-    // it holds the read end of the client's output, and a client that loses
-    // its stdout mid-shutdown fails there instead of exiting cleanly. Set only
-    // now, after the spawn, because an ignored signal survives `exec` and a
-    // client started with SIGINT ignored would never hear Ctrl-C at all.
-    //
-    // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
-    // changes this process's disposition.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-    }
-    let status = match instance.wait() {
-        Ok(status) => status,
-        Err(e) => {
-            report(&format!("lost track of the client: {e}"));
+        println!("stacked: cordial-run is pid {}", instance.pid());
+        let watchdog = freeze_watch.map(|s| freeze_recovery::Watchdog::start(instance.pid(), s));
+        // From here a Ctrl-C is the client's to act on and this process only
+        // notes it; `catch_interrupt` says why it is a handler and not
+        // `SIG_IGN`. Installed after the first spawn rather than before, so a
+        // Ctrl-C while the launch is still being prepared stops the launch as it
+        // always did. A no-op on a restart, where it is already in place.
+        freeze_recovery::catch_interrupt();
+        let status = instance.wait();
+        // Before anything else is read: the watch must stop signalling a pid that
+        // has now been reaped and may be reused. So before the output drains too,
+        // which can take up to `launch::DRAIN_LIMIT`.
+        let stopped_frozen = watchdog.is_some_and(freeze_recovery::Watchdog::finish);
+        instance.drain_output();
+        let status = match status {
+            Ok(status) => status,
+            Err(e) => {
+                report(&format!("lost track of the client: {e}"));
+                return 1;
+            }
+        };
+        // A client this process stopped because it froze at startup is neither a
+        // crash nor a clean exit. It is reaped, so the profile's lock went with it
+        // and the relaunch is an ordinary launch that can take the lock again.
+        if stopped_frozen {
+            // A Ctrl-C the frozen client did not act on is still the user asking
+            // to quit, and the watch stopping the client has done that for them.
+            if freeze_recovery::interrupted() {
+                println!("stacked: {}", freeze_recovery::INTERRUPTED_WHILE_STUCK);
+                return 130;
+            }
+            match freeze_recovery::after_freeze(restarts) {
+                freeze_recovery::Next::Restart { attempt, of } => {
+                    println!("stacked: {}", freeze_recovery::status_line(attempt, of));
+                    restarts += 1;
+                    claim = match profile::acquire(&profile_name) {
+                        Ok(claim) => claim,
+                        Err(e) => {
+                            report(&format!("Roblox got stuck starting and could not be restarted: {e}"));
+                            return 1;
+                        }
+                    };
+                    continue;
+                }
+                freeze_recovery::Next::GiveUp => {
+                    report(&format!("{}. {}", freeze_recovery::GIVE_UP_HEADING, freeze_recovery::give_up_body()));
+                    return 1;
+                }
+            }
+        }
+        // Only here, after the frozen case has restarted or given up, is the
+        // output read: a client this process stopped is not a crash and must
+        // not leave a crash report behind.
+        // `cordial-run` exits 5 when it could not open a window at all, which
+        // used to be a clean 0 and so a run that showed nothing reported as a
+        // success. Passed on as 5, so a program launching `stacked` can tell
+        // that apart; not a crash, so no crash report.
+        if status.code() == Some(5) {
+            eprintln!();
+            report(
+                "Roblox could not open a window; the reason is on the \"no window:\" line above. \
+                 `stacked doctor` checks the display.",
+            );
+            return 5;
+        }
+        let output = instance.recent_output();
+        if crash::is_crash(&status, &output) {
+            let saved = match crash::write_report(&profile_dir, &status, &diagnostics::report(), &output) {
+                Ok(path) => format!(
+                    "The end of its output is saved in {}; attach that file to a bug report.",
+                    path.display()
+                ),
+                Err(e) => format!(
+                    "Its output is above; saving it to {} failed: {e}.",
+                    profile_dir.join("crashes").display()
+                ),
+            };
+            eprintln!();
+            report(&format!(
+                "{} {saved} `stacked logs` shows Roblox's own log from the same session.",
+                crash::describe(&status),
+            ));
+            eprintln!("It was started with:\n{}", instance.command_line);
             return 1;
         }
-    };
-    // `cordial-run` exits 5 when it could not open a window at all, which used
-    // to be a clean 0 and so a run that showed nothing reported as a success.
-    // Passed on as 5, so a program launching `stacked` can tell that apart.
-    if status.code() == Some(5) {
-        eprintln!();
-        report(
-            "Roblox could not open a window; the reason is on the \"no window:\" line above. \
-             `stacked doctor` checks the display.",
-        );
-        return 5;
+        return 0;
     }
-    if crash::is_crash(&status, &instance.recent_output()) {
-        eprintln!();
-        report(&format!(
-            "{} Its output is above, or in the journal if it was started from the desktop. \
-             `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
-             bug report needs alongside it.",
-            crash::describe(&status),
-        ));
-        eprintln!("It was started with:\n{}", instance.command_line);
-        return 1;
-    }
-    0
 }
 
 /// A launch that could not happen, said where the person who asked for it
@@ -678,8 +754,9 @@ fn profiles(args: &[String]) -> u8 {
     }
 }
 
-/// `stacked logs [--profile NAME] [--path] [--lines N]`: the engine's own
-/// newest log, which the bug template calls the most useful attachment and
+/// `stacked logs [--profile NAME] [--crash] [--path] [--lines N]`: the engine's
+/// own newest log, or with `--crash` the newest report `crash::write_report`
+/// left. The engine's log is the one the bug template calls the most useful attachment and
 /// which lives four directories inside the profile where nobody finds it.
 ///
 /// `<profile>/data/files/appData/logs` is where the engine writes when the
@@ -695,6 +772,7 @@ fn logs(args: &[String]) -> u8 {
     };
     let mut path_only = false;
     let mut zip: Option<std::path::PathBuf> = None;
+    let mut crash_report = false;
     let mut lines = 50usize;
     let mut it = rest.iter().peekable();
     while let Some(arg) = it.next() {
@@ -704,6 +782,7 @@ fn logs(args: &[String]) -> u8 {
                 let named = it.next_if(|next| !next.starts_with("--"));
                 zip = Some(named.map_or_else(|| "stacked-logs.zip".into(), std::path::PathBuf::from));
             }
+            "--crash" => crash_report = true,
             "--lines" | "-n" => match it.next().and_then(|n| n.parse().ok()) {
                 Some(n) => lines = n,
                 None => {
@@ -712,7 +791,7 @@ fn logs(args: &[String]) -> u8 {
                 }
             },
             other => {
-                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path, --lines and --zip");
+                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --crash, --path, --lines and --zip");
                 return 2;
             }
         }
@@ -728,13 +807,18 @@ fn logs(args: &[String]) -> u8 {
         return save_log_archive(&name, &out);
     }
     let dir = match profile::dir(&name) {
-        Ok(d) => cordial_shell::log_export::engine_logs_dir(&d),
+        Ok(d) if crash_report => d.join("crashes"),
+        Ok(d) => d.join("data/files/appData/logs"),
         Err(e) => {
             eprintln!("stacked: {e}");
             return 1;
         }
     };
     let Some(newest) = newest_log(&dir) else {
+        if crash_report {
+            eprintln!("stacked: no crash report in {}. One is written when Roblox crashes.", dir.display());
+            return 1;
+        }
         eprintln!("stacked: no Roblox log yet in {}. The engine writes one once it has started.", dir.display());
         return 1;
     };

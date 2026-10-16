@@ -179,6 +179,10 @@ fn the_coredump_note_says_how_to_look_and_never_offers_a_core() {
 fn sample() -> Inputs {
     Inputs {
         diagnostics: "Stacked   0.21.10 (7d77d2e)\nProfile   ~/.local/share/cordial/profiles/AliceMain\n".into(),
+        crash: Some((
+            "crash-20261016T000000Z.log".into(),
+            "Stacked crash report\n.ROBLOSECURITY=super-secret-value; path=/\nuserid:1826805362 joined\n".into(),
+        )),
         engine: vec![EngineLog {
             label: "phone",
             name: "2.737.0.1_20261008T000000Z_Player_abcde_last.log".into(),
@@ -203,6 +207,7 @@ fn the_archive_lists_what_it_should_and_nothing_secret_survives_in_any_of_it() {
         [
             "README.txt",
             "diagnostics.txt",
+            "crash/crash-20261016T000000Z.log",
             "engine/phone-2.737.0.1_20261008T000000Z_Player_abcde_last.log",
             "coredump.txt"
         ]
@@ -222,7 +227,9 @@ fn the_archive_lists_what_it_should_and_nothing_secret_survives_in_any_of_it() {
             assert!(!text.contains(secret), "{secret:?} survived in {}:\n{text}", entry.name);
         }
     }
-    let engine = String::from_utf8(entries[2].data.clone()).unwrap();
+    let crash = String::from_utf8(entries[2].data.clone()).unwrap();
+    assert!(crash.contains("<user-id-1>"), "the same account is the same placeholder in another file: {crash}");
+    let engine = String::from_utf8(entries[3].data.clone()).unwrap();
     assert!(engine.contains("<username-1>") && engine.contains("<user-id-1>"), "{engine}");
     let diagnostics = String::from_utf8(entries[1].data.clone()).unwrap();
     assert!(diagnostics.contains("profiles/<profile>"), "{diagnostics}");
@@ -244,5 +251,6 @@ fn an_empty_session_still_makes_an_archive_that_says_why_it_is_thin() {
     let entries = entries(&Inputs { diagnostics: "Stacked   0.21.10\n".into(), ..Inputs::default() });
     let text = |n: &str| String::from_utf8(entries.iter().find(|e| e.name == n).unwrap().data.clone()).unwrap();
     assert!(text("README.txt").contains("no Roblox engine log was found"));
-    assert!(text("README.txt").contains("paste it into the issue"));
+    assert!(text("README.txt").contains("paste what"));
+    assert!(text("crash/none.txt").contains("no crash report"));
 }

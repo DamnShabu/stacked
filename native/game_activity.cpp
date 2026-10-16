@@ -1591,6 +1591,36 @@ int cordial_input_sync_textbox(void* fn, const char* text, int cursor, char* err
     }
 }
 
+/// `NativeGLInterface.nativeReturnPressedFromOnScreenKeyboard(long)`.
+///
+/// What Android's IME action listener calls when the user presses Enter, Done
+/// or Send on a single-line box: the final text has already been synced, and
+/// this tells the engine which box the action was for. Whether the box then
+/// loses focus (`hideKeyboard`) and whether its text clears is the engine's
+/// answer, delivered through its own callbacks. The dex prototype is `(J)V`
+/// (`tools/dex_method.py`, classes2.dex).
+int cordial_input_return_pressed(void* fn, long long which, char* err, size_t err_len) {
+    using Call = void (*)(JNIEnv*, jobject, jlong);
+    auto* env = cordial::process_env();
+    if (!fn || !env) {
+        snprintf(err, err_len,
+                 "no JavaVM, or nativeReturnPressedFromOnScreenKeyboard is not exported");
+        return -1;
+    }
+    try {
+        auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
+        reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
+                                   (jlong)which);
+        return 0;
+    } catch (const std::exception& e) {
+        snprintf(err, err_len, "%s", e.what());
+        return -1;
+    } catch (...) {
+        snprintf(err, err_len, "non-standard C++ exception");
+        return -1;
+    }
+}
+
 int cordial_input_mouse_move(void* fn, float x, float y, float dx, float dy, char* err,
                              size_t err_len) {
     using Call = void (*)(JNIEnv*, jobject, jfloat, jfloat, jfloat, jfloat);

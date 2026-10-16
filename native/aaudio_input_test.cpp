@@ -85,6 +85,14 @@ const std::string& configured_output_device() {
     static const std::string empty;
     return empty;
 }
+// No microphone choice in this fake: `aaudio.cpp` asks for one at the moment it
+// opens a capture stream, and the answer that keeps this test about the ABI is
+// "follow the default".
+const std::string& configured_input_device() {
+    static const std::string empty;
+    return empty;
+}
+std::string resolve_input_target(const std::string&) { return {}; }
 const char* host_backend_name() { return "fake"; }
 const char* effective_backend_name() { return "fake"; }
 std::unique_ptr<OutputStream> make_output_stream() { return std::make_unique<FakeOutputStream>(); }

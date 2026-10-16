@@ -894,7 +894,7 @@ pub fn deliver_key(
     if no_agdk_key() {
         return;
     }
-    match cordial_linker_sys::game_activity::key(
+    let r = cordial_linker_sys::game_activity::key(
         handle,
         down,
         key_code,
@@ -904,7 +904,16 @@ pub fn deliver_key(
         unicode_char,
         event_time_ms,
         down_time_ms,
-    ) {
+    );
+    if trace_keys() {
+        let result = match &r {
+            Ok(Some(_)) => "ok".to_string(),
+            Ok(None) => "unregistered".to_string(),
+            Err(e) => format!("err:{e}"),
+        };
+        emit_key_trace("agdk", down, None, Some(key_code), meta_state, &result);
+    }
+    match r {
         Ok(Some(consumed)) => {
             super::trace(format_args!("onKey{}Native(code={key_code}) -> {consumed}",
                 if down { "Down" } else { "Up" }))
@@ -947,6 +956,26 @@ static PASS_TEXT: std::sync::atomic::AtomicPtr<c_void> =
 /// a different call at a different moment, not an alternative spelling of one.
 static SYNC_TEXTBOX: std::sync::atomic::AtomicPtr<c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// `nativeReturnPressedFromOnScreenKeyboard`. Stored on its own, like
+/// [`GET_TEXTBOX_INFO`], because a build that does not export it must still
+/// type: [`editor_consumes_enter`] then leaves a single-line box's Enter as the
+/// raw key it has always been, rather than withholding it for a call that
+/// cannot be made.
+static RETURN_PRESSED: std::sync::atomic::AtomicPtr<c_void> =
+    std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
+/// How many times [`return_pressed`] has been asked to speak for a box,
+/// synthetic ones included. devctl's `textbox` reports it, because "Enter did
+/// not also reach the engine as a key" and "Enter reached it once as an editor
+/// action" are the two halves of the claim and neither is visible in the text.
+static RETURN_PRESSED_CALLS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub fn set_return_pressed_native(native: *mut c_void) {
+    RETURN_PRESSED.store(native, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn return_pressed_calls() -> u64 {
+    RETURN_PRESSED_CALLS.load(std::sync::atomic::Ordering::Relaxed)
+}
 /// `updateKeyboardSize`, the acknowledgement that an editor is up.
 static UPDATE_KEYBOARD_SIZE: std::sync::atomic::AtomicPtr<c_void> =
     std::sync::atomic::AtomicPtr::new(std::ptr::null_mut());
@@ -1478,6 +1507,9 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
 
     if would_suppress && !release_of_a_forwarded_press {
         track_key_held(down, evdev_code);
+        if trace_keys() {
+            emit_key_trace("native", down, Some(evdev_code), None, modifiers, "suppressed");
+        }
         if trace_text() {
             eprintln!(
                 "[cordial] pass_key_event suppressed: code={evdev_code} down={down} \
@@ -1499,11 +1531,21 @@ pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     let key_code = evdev_code;
     let f = PASS_KEY_EVENT.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
+        if trace_keys() {
+            emit_key_trace("native", down, Some(evdev_code), None, modifiers, "unregistered");
+        }
         report_unregistered("nativePassKeyEvent");
         return;
     }
     // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
     let r = unsafe { cordial_linker_sys::game_activity::pass_key_event(f, down, key_code, modifiers, false) };
+    if trace_keys() {
+        let result = match &r {
+            Ok(()) => "ok".to_string(),
+            Err(e) => format!("err:{e}"),
+        };
+        emit_key_trace("native", down, Some(evdev_code), None, modifiers, &result);
+    }
     super::trace(format_args!(
         "nativePassKeyEvent(down={down}, keyCode={key_code}, modifiers={modifiers:#x}) -> {r:?}"
     ));
@@ -1702,7 +1744,375 @@ pub fn idle_keepalive() {
     }
 }
 
+/// When, around a game starting, to tell the engine that a pointer exists: from
+/// the moment it announces the experience, four times a second until
+/// [`NEW_GAME_SEED_SECONDS`] after the last thing it announced.
+///
+/// ## Why this exists (#29)
+///
+/// After a join made with the Play button in Roblox's own app, WASD, Space and
+/// the arrows do nothing until the character respawns, while Escape, the
+/// camera and every mouse click still work. Measured 2026-10-05 on one
+/// signed-in `CordialTest` client, nested headless sway, the same Play click
+/// each time, movement scored by whether the character walked in a screenshot
+/// pair across a 2.5 s hold of W (an idle pair is the control, a respawn at the
+/// start of the session was the positive control, and every pair was read by
+/// eye because UI animation fools the pixel score). All events below went
+/// through `nativePassMouseMove` or `nativePassKeyEvent`:
+///
+/// Steal An Egg, events hand-driven:
+///
+/// | what reached the engine around the join | joins | walked |
+/// |---|---|---|
+/// | nothing | 9 | 0 |
+/// | pointer motion from the click until the load finished | 4 | 4 |
+/// | one move at the load, to where the pointer was | 2 | 2 |
+/// | one move at the load, to somewhere else | 2 | 2 |
+/// | pointer motion for five seconds from the load | 2 | 2 |
+/// | shift taps until the load finished | 2 | 2 |
+/// | pointer motion starting ten seconds after the load | 3 | 0 |
+///
+/// AI Town, the same client, the hovers this file sends switched off and the
+/// events hand-driven, or the built schedule switched on:
+///
+/// | what reached the engine around the join | joins | walked |
+/// |---|---|---|
+/// | nothing | 4 | 0 |
+/// | one move at the load | 2 | 0 |
+/// | built schedule v1: once a second, from the load for six seconds | 7 | 4 |
+/// | pointer motion from the click until the load | 3 | 3 |
+/// | pointer motion for five seconds from the load | 1 | 1 |
+/// | a hover every 250 ms from the click until six seconds after the load | 5 | 5 |
+///
+/// So input has to reach the new DataModel while it is deciding, one event is not
+/// always enough, and the same events a few seconds late change nothing. In AI
+/// Town the world is on screen about a second after the load callback, so the
+/// decision sits close to the load and can fall before it. **`INFERRED`**: that
+/// the movement controls are chosen once, at spawn, from the input the new
+/// DataModel has seen by then, and that a DataModel that has seen none gets the
+/// scheme a phone would. The mechanism has not been observed, only its
+/// signature. It would also explain why a join from a link tends to escape: a
+/// real pointer usually moves while the place loads.
+///
+/// Cordial's labels were not the cause. Every pointer event carries
+/// `SOURCE_MOUSE`/`TOOL_TYPE_MOUSE`, the keyboard goes through
+/// `nativePassKeyEvent`, which carries no device at all, and the engine is
+/// never asked for an `InputDevice` or a keyboard `Configuration`.
+///
+/// ## What it sends, and when not to
+///
+/// A zero-delta hover at the last place the pointer was, through the same
+/// native a mouse move uses. Only when a pointer has been seen at all: on a
+/// machine with a touchscreen and no mouse, telling the engine one exists would
+/// be a stub that lies, and the player there really is on touch.
+///
+/// Four a second for the join, which is ten to twelve seconds of events, because
+/// the cost of an extra hover is nil and the only schedule that held in every
+/// hand-driven join was dense and began early. The built schedule below is the
+/// hand-driven one moved into the pump, and it was run against joins on
+/// 2026-10-16: 4 of 4 walked with it on and 0 of 5 with it off, alternating in
+/// one signed-in client on nested Wayland, in one place.
+/// `docs/analysis/movement-keys.md` has the table and what it does not cover:
+/// a second place, X11, and a join from a link.
+#[derive(Debug, Default)]
+pub struct NewGameSeed {
+    seen_bumps: u32,
+    since: Option<std::time::Instant>,
+    sent: u32,
+}
+
+/// How long after the last announcement the seed keeps being offered, in
+/// seconds.
+pub const NEW_GAME_SEED_SECONDS: u64 = 8;
+/// The gap between hovers, in milliseconds.
+pub const NEW_GAME_SEED_INTERVAL_MS: u64 = 250;
+
+/// What [`NewGameSeed::due`] says to do on this tick.
+#[derive(Debug, PartialEq, Eq)]
+pub enum SeedDue {
+    No,
+    /// The first hover of a new game; worth one log line.
+    First,
+    Again,
+}
+
+impl NewGameSeed {
+    pub const fn new() -> Self {
+        Self { seen_bumps: 0, since: None, sent: 0 }
+    }
+
+    /// `bumps` is the engine's experience-start count plus its game-loaded
+    /// count. Any change starts a fresh window, and a join moves it twice or
+    /// more -- the start, then the load, a second or three later -- so the
+    /// window runs from the start to the load plus [`NEW_GAME_SEED_SECONDS`],
+    /// and a bump inside a window restarts the schedule rather than doubling it.
+    pub fn due(&mut self, bumps: u32, now: std::time::Instant) -> SeedDue {
+        if bumps != self.seen_bumps {
+            self.seen_bumps = bumps;
+            self.since = Some(now);
+            self.sent = 0;
+        }
+        let Some(since) = self.since else {
+            return SeedDue::No;
+        };
+        let elapsed = now.saturating_duration_since(since).as_millis() as u64;
+        // The window is over once the last hover's interval has passed.
+        // Without this a tick arriving long afterwards would still find hovers
+        // owed.
+        if elapsed >= NEW_GAME_SEED_SECONDS * 1000 + NEW_GAME_SEED_INTERVAL_MS {
+            return SeedDue::No;
+        }
+        // One hover per interval elapsed: the first at 0, the next once an
+        // interval has passed, and so on. `sent` is how many have gone out, and
+        // a late tick owes the one it is on, not the backlog.
+        let owed = elapsed / NEW_GAME_SEED_INTERVAL_MS + 1;
+        if u64::from(self.sent) >= owed {
+            return SeedDue::No;
+        }
+        let first = self.sent == 0;
+        self.sent = owed as u32;
+        if first { SeedDue::First } else { SeedDue::Again }
+    }
+}
+
+/// Whether the hovers are sent at all. `CORDIAL_NO_GAME_SEED=1` turns them off
+/// at launch and the control socket's `gameseed on|off` flips them while the
+/// client runs, because the only way to show the hover is what moves the
+/// character is to join with it off and with it on in the same session.
+static GAME_SEED_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(true);
+
+pub fn set_game_seed(on: bool) {
+    GAME_SEED_ON.store(on, Ordering::Release);
+}
+
+fn game_seed_enabled() -> bool {
+    static ENV_OFF: OnceLock<bool> = OnceLock::new();
+    !*ENV_OFF.get_or_init(|| std::env::var_os("CORDIAL_NO_GAME_SEED").is_some())
+        && GAME_SEED_ON.load(Ordering::Acquire)
+}
+
+/// Deliver the hover [`NewGameSeed`] has decided is due. Returns whether a
+/// pointer was known to deliver it at.
+pub fn seed_pointer_for_new_game(first: bool) -> bool {
+    if !game_seed_enabled() {
+        return false;
+    }
+    let Some((x, y)) = pointer_seen_at() else {
+        return false;
+    };
+    if first {
+        println!(
+            "[android] a game is starting: handing the engine pointer hovers at ({x:.0}, {y:.0}) so its \
+             input state is not left at the phone default (#29)"
+        );
+    }
+    pass_mouse_move_delta(x, y, 0.0, 0.0);
+    true
+}
+
+/// Enter on a single-line box, as an editor action.
+///
+/// On Android the box is an `EditText` and Enter never reaches the engine as a
+/// key: the IME's action listener syncs the final text and calls
+/// `nativeReturnPressedFromOnScreenKeyboard(handle)`, and the engine decides
+/// from there whether the box lets go of focus (it calls `hideKeyboard`) and
+/// whether its text clears or stays (`onLuaTextBoxChangedCallback`). This is
+/// that call and nothing more -- Cordial neither blurs the box nor clears the
+/// editor itself, because a chat box that sends and empties, a search box that
+/// submits and stays and a box that simply finishes are the engine's three
+/// answers to one keypress, and guessing between them here is how Enter came to
+/// leave a newline in a sent message.
+///
+/// The caller has already synced the text, which is what the Java side does
+/// first. `returnKeyType` and `manualFocusRelease` are read only to be traced.
+/// mocktail (Apache-2.0, `src/runtime/roblox_text_editor.cc`, `FinishLocked`)
+/// goes further after this call, and says it matches `RbxKeyboard`'s editor
+/// action listener: unless `manualFocusRelease` is set it also drives
+/// `nativePassText(handle, text, finished = true)` and closes its editor
+/// itself. INFERRED, and deliberately not done here: nothing in this project
+/// shows the Java side ending the session itself rather than the engine's
+/// `hideKeyboard` doing it, and driving `nativePassText` on a key was the thing
+/// retracted on 2026-08-24 as buying nothing. If a signed-in single-line box
+/// stays focused after Enter, that missing call, gated on
+/// `manual_focus_release`, is the first thing to try.
+///
+/// A synthetic box (devctl's `fakefocus`) is counted and traced but not sent:
+/// its handle was never issued by the engine.
+pub fn return_pressed(which: i64) {
+    let n = RETURN_PRESSED_CALLS.fetch_add(1, Ordering::Relaxed) + 1;
+    let synthetic = which == cordial_linker_sys::game_activity::SYNTHETIC_TEXTBOX_HANDLE;
+    if trace_text() {
+        let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+        eprintln!(
+            "[cordial] return pressed #{n} handle={which}{} multiline={} returnKeyType={} \
+             manualFocusRelease={}",
+            if synthetic { " (synthetic)" } else { "" },
+            spec.map_or(-1, |i| i.multiline),
+            spec.map_or(-1, |i| i.return_key_type),
+            spec.map_or(-1, |i| i.manual_focus_release),
+        );
+    }
+    if synthetic {
+        if trace_text() {
+            eprintln!("[cordial] nativeReturnPressedFromOnScreenKeyboard not sent: synthetic box");
+        }
+        return;
+    }
+    let f = RETURN_PRESSED.load(Ordering::Relaxed);
+    if f.is_null() {
+        report_unregistered("nativeReturnPressedFromOnScreenKeyboard");
+        return;
+    }
+    // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded; `which` is the handle `showKeyboard` issued for the focused box.
+    let r = unsafe { cordial_linker_sys::game_activity::return_pressed(f, which) };
+    if trace_text() {
+        eprintln!("[cordial] nativeReturnPressedFromOnScreenKeyboard({which}) -> {r:?}");
+    }
+    // **Then the final text, as the soft keyboard's action listener sends it.**
+    //
+    // `nativeReturnPressedFromOnScreenKeyboard` alone only says Enter was hit.
+    // A game's own TextBox (a chat box, a phone's message field) is submitted
+    // when it loses focus with Enter as the reason, and that is the engine's
+    // answer to the final `nativePassText(.., finished = true)`, which the
+    // Android listener sends right after the return call unless the box asked
+    // to release its own focus. Without it Enter synced the text and told the
+    // engine and then nothing happened: reported against a game's phone chat as
+    // "pressing Enter no longer sends" after 3e21de0 replaced the raw Return
+    // key. The sign-in fields declare `manualFocusRelease=1` and never needed
+    // it, which is why the signed-out check of that commit passed.
+    //
+    // mocktail (Apache-2.0, `src/runtime/roblox_text_editor.cc`, `FinishLocked`)
+    // does exactly this sequence and is the reference for the order. `INFERRED`
+    // for a real chat box: no signed-in run has held it.
+    if r.is_ok() && finish_text_after_return(spec_release_flag(), return_passtext_enabled()) {
+        let pass = PASS_TEXT.load(Ordering::Relaxed);
+        if pass.is_null() {
+            report_unregistered("nativePassText");
+        } else {
+            let (text, caret) = text_buffer_snapshot();
+            // SAFETY: `pass` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded; `which` is the handle `showKeyboard` issued for the focused box.
+            let p = unsafe { cordial_linker_sys::game_activity::pass_text(pass, which, &text, true, caret) };
+            if trace_text() {
+                eprintln!("[cordial] nativePassText({which}, <{} bytes>, finished=true) -> {p:?}", text.len());
+            }
+        }
+    }
+}
+
+/// `manualFocusRelease` of the focused box, if there is one.
+fn spec_release_flag() -> Option<i32> {
+    cordial_linker_sys::game_activity::focused_textbox_info().map(|i| i.manual_focus_release)
+}
+
+/// `CORDIAL_RETURN_PASSTEXT=0` turns the final-text call off, as the control.
+fn return_passtext_enabled() -> bool {
+    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *ON.get_or_init(|| std::env::var("CORDIAL_RETURN_PASSTEXT").map_or(true, |v| v != "0"))
+}
+
+/// Whether Enter on a single-line box also sends the final text. The Android
+/// listener does unless the box releases its own focus; a box whose spec could
+/// not be read is treated as not releasing, which is the common case. Pure, so
+/// the cases are tested.
+fn finish_text_after_return(manual_focus_release: Option<i32>, enabled: bool) -> bool {
+    enabled && manual_focus_release.unwrap_or(0) == 0
+}
+
+/// Whether this evdev code is an Enter key: the main one and the keypad's.
+fn evdev_is_enter(code: i32) -> bool {
+    matches!(code, 28 | 96)
+}
+
+/// Whether an Enter belongs to the editor over the focused box rather than to
+/// the engine. Pure, so the cases are tested rather than argued.
+///
+/// On Android the `EditText` consumes the key and nothing downstream hears it.
+/// A multi-line box gets its newline from the editor (GTK inserts it and the
+/// text is synced); a single-line box gets [`return_pressed`], which needs the
+/// native to exist -- without it the raw key is the only way Enter can reach
+/// the engine, so it is left alone.
+fn enter_belongs_to_editor(evdev: i32, box_focused: bool, multiline: bool, can_return: bool) -> bool {
+    evdev_is_enter(evdev) && box_focused && (multiline || can_return)
+}
+
+/// Whether an Enter that reached the X11 editor window has to be handed to the
+/// engine as a raw key instead. The same rule as Wayland's, from the other
+/// side: there the editor *takes* Enter only when it can do something with it,
+/// and here the editor has the keyboard and must *give* Enter back when it
+/// cannot. Without this a single-line box on X11 always went to
+/// [`return_pressed`], which on a build lacking
+/// `nativeReturnPressedFromOnScreenKeyboard` reports the gap and does nothing,
+/// so Enter never reached the engine by any path while the box had focus.
+fn enter_goes_raw(evdev: i32, box_focused: bool, multiline: bool, can_return: bool) -> bool {
+    evdev_is_enter(evdev) && box_focused && !enter_belongs_to_editor(evdev, box_focused, multiline, can_return)
+}
+
+/// [`enter_goes_raw`] for the focused box, for `window::forward_editor_key`.
+pub fn x11_enter_goes_raw(evdev: i32) -> bool {
+    let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+    enter_goes_raw(
+        evdev,
+        cordial_linker_sys::game_activity::focused_textbox().is_some(),
+        spec.is_some_and(|i| i.multiline != 0),
+        !RETURN_PRESSED.load(Ordering::Relaxed).is_null(),
+    )
+}
+
+/// Enter keys whose press was withheld from the engine, so the release is too.
+/// The mirror of [`FORWARDED_PRESSES`], for the same stuck-key reason: a press
+/// withheld while a box had focus must not leave a release the engine never
+/// had a press for, and a press forwarded before focus must still be released.
+static WITHHELD_ENTERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
+
+/// Decide, for one Enter transition arriving at the Wayland keyboard, whether
+/// the editor consumes it; `true` means it must not reach the engine by any
+/// path. Only the Wayland path asks: on X11 the editor is its own GTK window
+/// (ADR-062), which takes Enter itself and calls `return_pressed`, or hands it
+/// back through [`x11_enter_goes_raw`] when that native is missing.
+pub fn editor_consumes_enter(down: bool, evdev: i32) -> bool {
+    if !evdev_is_enter(evdev) || keys_to_game_while_typing() {
+        return false;
+    }
+    let consumed = if down {
+        let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+        let take = enter_belongs_to_editor(
+            evdev,
+            cordial_linker_sys::game_activity::focused_textbox().is_some(),
+            spec.is_some_and(|i| i.multiline != 0),
+            !RETURN_PRESSED.load(Ordering::Relaxed).is_null(),
+        );
+        if take {
+            let mut w = WITHHELD_ENTERS.lock().unwrap_or_else(|e| e.into_inner());
+            if !w.contains(&evdev) {
+                w.push(evdev);
+            }
+        }
+        take
+    } else {
+        let mut w = WITHHELD_ENTERS.lock().unwrap_or_else(|e| e.into_inner());
+        match w.iter().position(|&c| c == evdev) {
+            Some(i) => {
+                w.remove(i);
+                true
+            }
+            None => false,
+        }
+    };
+    if consumed {
+        if trace_keys() {
+            emit_key_trace("wayland", down, Some(evdev), None, 0, "withheld: the editor owns Enter");
+        }
+        if trace_text() {
+            eprintln!("[cordial] Enter code={evdev} down={down} withheld from the engine: the editor owns it");
+        }
+    }
+    consumed
+}
+
 pub fn pass_text(which: i64, text: &str, cursor: i32) {
+    // Remembered before it goes, so the engine's reflection of it cannot be
+    // mistaken for its own edit -- see `apply_engine_text`.
+    echo_guard(|g| g.note_sent(text, std::time::Instant::now()));
     // The per-keystroke sync first: this is the call that actually fills the
     // field. `nativePassText` is driven alongside it for the same reason both
     // mouse paths are — the interface declares both and the cost of driving
@@ -1809,6 +2219,21 @@ fn unpack_mouse_position(position: u64) -> (f32, f32) {
 
 fn mouse_last_position() -> Option<(f32, f32)> {
     let position = MOUSE_LAST.load(Ordering::Acquire);
+    (position != NO_MOUSE_POSITION).then(|| unpack_mouse_position(position))
+}
+
+/// Where the pointer last reported itself to the engine, **kept when the
+/// pointer leaves the canvas**, unlike [`MOUSE_LAST`].
+///
+/// `MOUSE_LAST` is cleared by [`reset_mouse_delta`] so that a pointer coming
+/// back at the far edge does not report the window's width as one movement.
+/// That is right for deltas and wrong for the question [`NewGameSeed`] asks,
+/// which is "has there ever been a pointer here, and roughly where": a player
+/// who clicked Play and then moved off the window still has a mouse.
+static POINTER_SEEN_AT: AtomicU64 = AtomicU64::new(NO_MOUSE_POSITION);
+
+fn pointer_seen_at() -> Option<(f32, f32)> {
+    let position = POINTER_SEEN_AT.load(Ordering::Acquire);
     (position != NO_MOUSE_POSITION).then(|| unpack_mouse_position(position))
 }
 
@@ -1971,6 +2396,7 @@ pub fn pass_mouse_move(x: f32, y: f32) {
 /// `MOUSE_LAST` is deliberately left alone: it tracks where the *cursor* is,
 /// and while the pointer is locked the cursor is not going anywhere.
 pub fn pass_mouse_move_delta(x: f32, y: f32, dx: f32, dy: f32) {
+    POINTER_SEEN_AT.store(pack_mouse_position(x, y), Ordering::Release);
     let f = PASS_MOUSE_MOVE.load(std::sync::atomic::Ordering::Relaxed);
     if f.is_null() {
         report_unregistered("nativePassMouseMove");
@@ -2236,6 +2662,79 @@ pub fn keyboard_report_enabled() -> bool {
 pub fn trace_text() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_TRACE_TEXT").is_some())
+}
+
+/// `CORDIAL_TRACE_KEYS=1` -- one line for every key Cordial hands to the engine,
+/// and one for every key it withholds.
+///
+/// Its own switch rather than more of `CORDIAL_TRACE_TEXT`, because that one is
+/// a text-entry trace and prints the editor's focus beside a key rather than
+/// what became of it, and the native call's result only ever went to
+/// `super::trace`, which is `CORDIAL_TRACE=1` and aborts the engine. Written for
+/// the movement bug in GitHub #29, where the question is whether W reaches
+/// `nativePassKeyEvent` in the state where the character will not move, and
+/// nothing printed an answer without also printing everything else.
+///
+/// **It records every key, including ones typed into a password box.** The
+/// evdev code of a letter is the letter. `docs/usage.md` says so beside the
+/// variable, which is where a user turning it on will read it; there is no
+/// separate troubleshooting page, though this comment once pointed at one.
+pub fn trace_keys() -> bool {
+    static ON: OnceLock<bool> = OnceLock::new();
+    *ON.get_or_init(|| std::env::var_os("CORDIAL_TRACE_KEYS").is_some())
+}
+
+/// One `CORDIAL_TRACE_KEYS` line. Pure, so the format is tested rather than
+/// remembered: a reporter's paste is only evidence if the fields mean the same
+/// thing in every line.
+///
+/// `path` is `native` for `nativePassKeyEvent`, `agdk` for `onKeyDownNative`,
+/// `gate` for a key the Wayland keyboard-focus gate dropped before either, and
+/// `wayland` for an Enter the Wayland editor kept from the engine
+/// ([`editor_consumes_enter`]). On X11 the editor is its own window, so a key
+/// typed into it prints a line only if the editor forwards it to the engine,
+/// and then on the `native` path.
+/// `evdev` is absent on the AGDK path, whose callers disagree about the scan
+/// code they pass (Wayland hands evdev, X11 hands evdev plus eight), so the
+/// Android keycode is what identifies the key there. `t` is milliseconds since
+/// the first key line of the run, which is zero.
+fn key_trace_line(
+    path: &str,
+    down: bool,
+    evdev: Option<i32>,
+    android: Option<i32>,
+    mods: i32,
+    result: &str,
+    held: &[i32],
+    t_ms: u128,
+) -> String {
+    let n = |v: Option<i32>| v.map_or_else(|| "-".to_string(), |v| v.to_string());
+    let held: Vec<String> = held.iter().map(|c| c.to_string()).collect();
+    format!(
+        "[cordial] key path={path} down={} evdev={} android={} mods={mods:#x} \
+         result={result} held=[{}] t={t_ms}",
+        down as u8,
+        n(evdev),
+        n(android),
+        held.join(","),
+    )
+}
+
+/// Print one key line if `CORDIAL_TRACE_KEYS` is set. Callers check
+/// [`trace_keys`] first so that building `result` costs nothing when it is off.
+fn emit_key_trace(path: &str, down: bool, evdev: Option<i32>, android: Option<i32>, mods: i32, result: &str) {
+    static T0: OnceLock<std::time::Instant> = OnceLock::new();
+    let t = T0.get_or_init(std::time::Instant::now).elapsed().as_millis();
+    let held = KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    eprintln!("{}", key_trace_line(path, down, evdev, android, mods, result, &held, t));
+}
+
+/// A key the Wayland focus gate dropped, for `CORDIAL_TRACE_KEYS`. Public
+/// because the gate lives in `wayland.rs`, where nothing else is told.
+pub fn trace_gated_key(down: bool, evdev: i32) {
+    if trace_keys() {
+        emit_key_trace("gate", down, Some(evdev), None, 0, "gated");
+    }
 }
 
 /// `CORDIAL_TRACE_TEXT_SHOW_PASSWORDS=1` — print what was typed, not just how
@@ -2647,9 +3146,9 @@ fn replace_if_focused(
     Ok(field.len_chars())
 }
 
-/// The devctl `paste`/`settext` buffer path: X11, which has no editor widget
-/// at all, and Wayland's own fallback if this is ever reached before a window
-/// exists. **Not what runs while a `gtk::Text` owns the field** -- see
+/// The devctl `paste`/`settext` buffer path: X11 with `CORDIAL_X11_EDITOR=off`
+/// (ADR-062), and Wayland's own fallback if this is ever reached before a
+/// window exists. **Not what runs while a `gtk::Text` owns the field** -- see
 /// `clipboard::paste_text`/`clipboard::set_text`, which write the widget
 /// directly on Wayland so it, this mirror and the engine cannot disagree
 /// afterward; this function exists for the backend that has no widget to be
@@ -2725,7 +3224,8 @@ pub fn text_buffer_peek() -> (String, i32) {
 /// It is kept rather than deleted because three things still read it --
 /// `text_buffer_snapshot` for the overlay, `splice_preedit` for IME display,
 /// and `reseed_if_needed` for the engine's own value at a focus boundary -- and
-/// because the X11 backend has no editor widget and still edits it the old way.
+/// because X11 with `CORDIAL_X11_EDITOR=off` (ADR-062) still edits it the old
+/// way.
 ///
 /// The generation is stamped as current so [`reseed_if_needed`] does not
 /// immediately overwrite what the user just typed with what the engine last
@@ -2742,6 +3242,167 @@ pub fn adopt_editor_text(text: &str, caret: i32) {
     *TEXT_GENERATION.lock().unwrap_or_else(|e| e.into_inner()) =
         Some(cordial_linker_sys::game_activity::textbox_generation());
     TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+}
+
+// ------------------------------------------------------ engine-to-editor text
+
+/// How long a text Cordial sent is still expected to come back as an echo.
+///
+/// The engine reflects what it was told through `onLuaTextBoxChangedCallback`,
+/// and does so asynchronously, so by the time "o" comes back the user may have
+/// typed "ok". Applying that echo would put the box back a keystroke. The
+/// window is short on purpose: an entry that is never consumed (the engine does
+/// not have to echo) would otherwise swallow a later, genuine engine push of
+/// the same text -- a chat box emptied by sending is exactly an empty string
+/// the user may have sent a moment earlier by backspacing to nothing.
+const ECHO_WINDOW: std::time::Duration = std::time::Duration::from_millis(1000);
+/// More than a person types between two pump ticks, fewer than a paste storm.
+const ECHO_CAPACITY: usize = 8;
+
+/// Texts Cordial recently sent to the engine, for recognising the engine
+/// reflecting them back.
+///
+/// The idea is mocktail's (`RobloxTextEditor::ConsumePendingNativeEchoLocked`,
+/// Apache-2.0): a bounded list, one entry used up per echo. Not its code, and
+/// the expiry is Cordial's own addition for the reason on [`ECHO_WINDOW`].
+///
+/// Pure in time -- `now` is a parameter -- so the cases that matter (a stale
+/// echo, an expired entry, a genuine push equal to an old send) are testable
+/// without sleeping.
+#[derive(Default)]
+struct EchoGuard {
+    sent: std::collections::VecDeque<(std::time::Instant, String)>,
+}
+
+impl EchoGuard {
+    fn note_sent(&mut self, text: &str, now: std::time::Instant) {
+        self.prune(now);
+        // The editor re-sends identical state on caret moves; one entry is
+        // enough and keeps the capacity for texts that differ.
+        if self.sent.back().is_some_and(|(_, t)| t == text) {
+            return;
+        }
+        if self.sent.len() >= ECHO_CAPACITY {
+            self.sent.pop_front();
+        }
+        self.sent.push_back((now, text.to_owned()));
+    }
+
+    /// Whether `text` is the engine reflecting something Cordial sent. A match
+    /// uses up that entry *and every older one*: replies come back in order, so
+    /// if the newer echo has arrived the older was coalesced away and will not
+    /// come, and leaving it would make it eat a genuine push later.
+    fn consume_echo(&mut self, text: &str, now: std::time::Instant) -> bool {
+        self.prune(now);
+        match self.sent.iter().position(|(_, t)| t == text) {
+            Some(i) => {
+                self.sent.drain(..=i);
+                true
+            }
+            None => false,
+        }
+    }
+
+    fn prune(&mut self, now: std::time::Instant) {
+        while self
+            .sent
+            .front()
+            .is_some_and(|(at, _)| now.saturating_duration_since(*at) > ECHO_WINDOW)
+        {
+            self.sent.pop_front();
+        }
+    }
+}
+
+static SENT_ECHOES: Mutex<Option<EchoGuard>> = Mutex::new(None);
+
+fn echo_guard<R>(f: impl FnOnce(&mut EchoGuard) -> R) -> R {
+    let mut g = SENT_ECHOES.lock().unwrap_or_else(|e| e.into_inner());
+    f(g.get_or_insert_with(EchoGuard::default))
+}
+
+/// Where the caret goes when the engine rewrites a box under it.
+///
+/// The user's position is kept only when it can still mean the same thing: the
+/// new text is the old text with more on the end, and the caret was not at the
+/// end. A caret that was at the end follows the text, as it would in a field
+/// something is appending to; anything else is a different string, and "after
+/// the last character" is the one position that is never out of range. Counts
+/// are characters, not bytes.
+fn caret_after_engine_text(old: &str, old_caret: usize, new: &str) -> usize {
+    let new_len = new.chars().count();
+    let old_len = old.chars().count();
+    if !old.is_empty() && new.starts_with(old) && old_caret < old_len {
+        old_caret.min(new_len)
+    } else {
+        new_len
+    }
+}
+
+/// Apply the text `onLuaTextBoxChangedCallback` delivered to the mirror buffer,
+/// from the pump. Returns whether the buffer changed, in which case its
+/// revision has moved and the next overlay sync seeds the widget from it --
+/// under `host_window.rs`'s seeding guard, so the widget's own change signal
+/// does not echo the engine's text back at it as a keystroke.
+///
+/// **The engine's text wins over what is in the box, and that is the point.**
+/// The case this exists for is a chat box: Enter makes the engine send the
+/// message and empty its own TextBox, and until this ran the editor went on
+/// showing the sent text. Two things stop it winning when it should not: a text
+/// equal to one Cordial just sent is the engine reflecting it (see
+/// [`EchoGuard`]), and a push tagged with a previous box's focus generation was
+/// meant for a box that is gone.
+///
+/// Deliberately does not call `text_input` to refresh AGDK's own copy: that is
+/// an inbound event the engine acts on, and sending one in response to the
+/// engine's own push is the kind of loop `keyboard_report_enabled` documents.
+/// The next keystroke carries the full text and brings AGDK's copy level.
+pub fn apply_engine_text() -> bool {
+    static SEEN: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+    let generation = cordial_linker_sys::game_activity::engine_text_generation();
+    if SEEN.swap(generation, Ordering::AcqRel) == generation {
+        return false;
+    }
+    if cordial_linker_sys::game_activity::focused_textbox().is_none() {
+        return false;
+    }
+    let (text, arrived_under) = cordial_linker_sys::game_activity::engine_text();
+    if arrived_under != cordial_linker_sys::game_activity::textbox_generation() {
+        if trace_text() {
+            eprintln!("[cordial] engine text dropped: it was for a previous box");
+        }
+        return false;
+    }
+    let mut buf = TEXT_BUFFER.lock().unwrap_or_else(|e| e.into_inner());
+    // Seeded first, so "differs from what the box holds" compares against this
+    // focus's text and not the previous box's.
+    reseed_if_needed(&mut buf);
+    // Echo first, even when the text also equals what the box holds -- the
+    // common case, one keystroke and its reflection -- so the entry is used up
+    // rather than left to swallow a genuine push of the same text later.
+    if echo_guard(|g| g.consume_echo(&text, std::time::Instant::now())) {
+        if trace_text() {
+            eprintln!("[cordial] engine text is an echo of what was sent, ignored");
+        }
+        return false;
+    }
+    if buf.text == text {
+        return false;
+    }
+    let caret = caret_after_engine_text(&buf.text, buf.caret, &text);
+    if trace_text() {
+        // Lengths only; see `trace_text_contents`.
+        eprintln!(
+            "[cordial] engine text applied: {} -> {} chars, caret {} -> {caret}",
+            buf.text.chars().count(),
+            text.chars().count(),
+            buf.caret
+        );
+    }
+    buf.text = text;
+    buf.caret = caret;
+    TEXT_REVISION.fetch_add(1, Ordering::Relaxed);
+    true
 }
 
 // ------------------------------------------------------------ scripted input
@@ -2889,17 +3550,21 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
             deliver_key(handle, true, keycode, evdev + 8, 0, 0, c as i32, t, t);
             pass_key_event(true, evdev, 0);
         }
-        let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else {
-            if trace_text() {
-                eprintln!("[cordial] script type: no focused textbox");
+        // **The release is owed whether or not a box had focus.** This used
+        // to `continue` past it when none did, so the first character of a
+        // `devctl text` sent while the box was still taking focus went down and
+        // never came up: `KEYS_HELD` kept it (key 48 was seen), and
+        // `idle_keepalive` then sent a hover sixty times a second for as long
+        // as the client ran, which contaminated every measurement made after.
+        if let Some(which) = cordial_linker_sys::game_activity::focused_textbox() {
+            let mut buf = [0u8; 4];
+            if let Some((contents, caret)) = edit_text_buffer(Edit::Insert(c.encode_utf8(&mut buf))) {
+                let _ = cordial_linker_sys::game_activity::text_input(handle, &contents, caret, caret);
+                pass_text(which, &contents, caret);
+                delivered += 1;
             }
-            continue;
-        };
-        let mut buf = [0u8; 4];
-        if let Some((contents, caret)) = edit_text_buffer(Edit::Insert(c.encode_utf8(&mut buf))) {
-            let _ = cordial_linker_sys::game_activity::text_input(handle, &contents, caret, caret);
-            pass_text(which, &contents, caret);
-            delivered += 1;
+        } else if trace_text() {
+            eprintln!("[cordial] script type: no focused textbox");
         }
         if let (Some(keycode), Some(evdev)) = (keysym_to_android(keysym), evdev) {
             deliver_key(handle, false, keycode, evdev + 8, 0, 0, c as i32, t + 30, t);
@@ -2912,6 +3577,161 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// `devctl text` with no box focused must still release every key it
+    /// pressed. It used to skip the release, leaving the key in `KEYS_HELD`.
+    #[test]
+    fn scripted_typing_with_no_box_releases_its_keys() {
+        // 'q' is evdev 16; no other test in this file presses it.
+        script_type(0, "qq", 0);
+        let held = KEYS_HELD.lock().unwrap_or_else(|e| e.into_inner());
+        assert!(!held.contains(&16), "key 16 left held after script_type: {held:?}");
+    }
+
+    /// Enter belongs to the editor on a multi-line box always, on a single-line
+    /// box only when the engine can be told about it, and never with no box.
+    #[test]
+    fn enter_goes_to_the_editor_only_where_something_can_act_on_it() {
+        // (evdev, box focused, multiline, native present)
+        assert!(enter_belongs_to_editor(28, true, true, false));
+        assert!(enter_belongs_to_editor(96, true, true, true));
+        assert!(enter_belongs_to_editor(28, true, false, true));
+        // A game's own box sends its final text after the return call; a box that
+        // releases its own focus (the sign-in fields) does not.
+        assert!(finish_text_after_return(Some(0), true));
+        assert!(finish_text_after_return(None, true));
+        assert!(!finish_text_after_return(Some(1), true), "the box releases its own focus");
+        assert!(!finish_text_after_return(Some(0), false), "the control switch");
+        assert!(!enter_belongs_to_editor(28, true, false, false), "no native: the raw key is all there is");
+        assert!(!enter_belongs_to_editor(28, false, true, true), "no box, no editor");
+        assert!(!enter_belongs_to_editor(30, true, true, true), "only Enter");
+    }
+
+    /// The X11 editor hands Enter back exactly where Wayland's would not have
+    /// taken it: a single-line box on a build with no return native.
+    #[test]
+    fn x11_enter_falls_back_to_the_raw_key_where_wayland_does() {
+        // (evdev, box focused, multiline, native present)
+        assert!(enter_goes_raw(28, true, false, false), "single-line, no native");
+        assert!(enter_goes_raw(96, true, false, false), "the keypad's Enter too");
+        assert!(!enter_goes_raw(28, true, false, true), "the native is the editor action");
+        assert!(!enter_goes_raw(28, true, true, false), "a newline is the editor's own");
+        assert!(!enter_goes_raw(28, false, false, false), "no box: not the editor's to give");
+        assert!(!enter_goes_raw(30, true, false, false), "only Enter");
+    }
+
+    extern "C" {
+        fn cordial_new_game_drops_focus(event: std::ffi::c_int, start_pending: std::ffi::c_int, ms: i64) -> std::ffi::c_int;
+    }
+
+    /// `native/android_classes.cpp`'s decision about a box still focused when
+    /// a new game begins. 0 is an experience start, 1 a load.
+    #[test]
+    fn a_new_game_drops_a_box_focused_before_it_began() {
+        // SAFETY: a pure function of its three integers.
+        let drops = |event, pending, ms| unsafe { cordial_new_game_drops_focus(event, pending, ms) } != 0;
+        assert!(drops(0, 0, -1), "a start always begins a new game");
+        assert!(drops(0, 1, 100), "even a start after a start that never loaded");
+        assert!(!drops(1, 1, -1), "a load completing a start: the box was focused while loading");
+        assert!(!drops(1, 0, 40), "the second callback for the same load");
+        assert!(drops(1, 0, -1), "a load with no start and no load before it");
+        assert!(drops(1, 0, 60_000), "a load long after the last one: a teleport announcing only the load");
+    }
+
+    fn at(ms: u64, base: std::time::Instant) -> std::time::Instant {
+        base + std::time::Duration::from_millis(ms)
+    }
+
+    /// The reflection of a keystroke is recognised once, and only once.
+    #[test]
+    fn an_echo_of_what_was_sent_is_recognised_exactly_once() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("ok", t0);
+        assert!(g.consume_echo("ok", at(20, t0)));
+        assert!(!g.consume_echo("ok", at(30, t0)), "an echo is used up by the first match");
+    }
+
+    /// "o" comes back after "ok" was typed: still an echo, and it must not be
+    /// applied, or the box goes back a keystroke.
+    #[test]
+    fn a_stale_echo_of_an_earlier_keystroke_is_still_an_echo() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("o", t0);
+        g.note_sent("ok", at(60, t0));
+        assert!(g.consume_echo("o", at(90, t0)));
+        assert!(g.consume_echo("ok", at(100, t0)));
+    }
+
+    /// Matching the newer echo retires the older one, which was coalesced away
+    /// and would otherwise sit there to eat a genuine push.
+    #[test]
+    fn a_newer_echo_retires_older_unreturned_ones() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("o", t0);
+        g.note_sent("ok", at(60, t0));
+        assert!(g.consume_echo("ok", at(90, t0)));
+        assert!(!g.consume_echo("o", at(95, t0)));
+    }
+
+    /// The chat-box case: the user backspaced to nothing a moment ago, so ""
+    /// is in the guard, and the engine clearing the box after Enter is the same
+    /// string. Genuine only once the entry has expired -- the window is the
+    /// whole mitigation, so it is pinned.
+    #[test]
+    fn a_push_equal_to_an_old_send_is_genuine_once_the_entry_expires() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        g.note_sent("", t0);
+        assert!(!g.consume_echo("x", at(10, t0)), "text never sent is never an echo");
+        assert!(!g.consume_echo("", at(1500, t0)), "expired entries do not match");
+    }
+
+    #[test]
+    fn the_guard_is_bounded_and_drops_the_oldest() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        for i in 0..(ECHO_CAPACITY + 3) {
+            g.note_sent(&i.to_string(), at(i as u64, t0));
+        }
+        assert!(!g.consume_echo("0", at(50, t0)));
+        assert!(g.consume_echo(&(ECHO_CAPACITY + 2).to_string(), at(50, t0)));
+    }
+
+    #[test]
+    fn a_caret_move_that_resends_identical_text_takes_one_entry() {
+        let t0 = std::time::Instant::now();
+        let mut g = EchoGuard::default();
+        for i in 0..20 {
+            g.note_sent("same", at(i, t0));
+        }
+        g.note_sent("other", at(30, t0));
+        assert!(g.consume_echo("same", at(40, t0)));
+    }
+
+    #[test]
+    fn the_caret_follows_text_it_was_at_the_end_of() {
+        assert_eq!(caret_after_engine_text("ok", 2, "okay"), 4);
+    }
+
+    #[test]
+    fn a_mid_text_caret_survives_a_pure_extension() {
+        assert_eq!(caret_after_engine_text("ab", 1, "abc"), 1);
+    }
+
+    #[test]
+    fn a_rewrite_puts_the_caret_at_the_end_in_characters() {
+        // The chat box emptied by sending.
+        assert_eq!(caret_after_engine_text("ok", 2, ""), 0);
+        // A different string: the old position means nothing in it.
+        assert_eq!(caret_after_engine_text("abc", 1, "xy"), 2);
+        // Characters, not bytes.
+        assert_eq!(caret_after_engine_text("a", 0, "h\u{e9}llo"), 5);
+        // Shrinking never leaves the caret past the end.
+        assert_eq!(caret_after_engine_text("abcdef", 5, "ab"), 2);
+    }
 
     /// The whole policy table, because the interesting cases are the ones
     /// nobody thinks about: a backend that does not know, and a window that is
@@ -3544,4 +4364,111 @@ mod tests {
         assert!(resolved > 1000, "only {resolved} keysyms resolved; the comparison did not run");
     }
 
+    #[test]
+    fn a_key_trace_line_names_every_field() {
+        assert_eq!(
+            key_trace_line("native", true, Some(17), None, 0, "ok", &[17, 42], 1250),
+            "[cordial] key path=native down=1 evdev=17 android=- mods=0x0 \
+             result=ok held=[17,42] t=1250"
+        );
+        assert_eq!(
+            key_trace_line("agdk", false, None, Some(51), 0x1, "err:no handle", &[], 0),
+            "[cordial] key path=agdk down=0 evdev=- android=51 mods=0x1 \
+             result=err:no handle held=[] t=0"
+        );
+    }
+
+    fn seed_at(base: std::time::Instant, ms: u64) -> std::time::Instant {
+        base + std::time::Duration::from_millis(ms)
+    }
+
+    /// Nothing is owed before the engine has announced anything, however long
+    /// the client has been up: the seed is for a new DataModel, not for the
+    /// Home page.
+    #[test]
+    fn no_seed_before_any_game_has_started() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        for ms in [0, 500, 5_000, 60_000] {
+            assert_eq!(seed.due(0, seed_at(base, ms)), SeedDue::No);
+        }
+    }
+
+    /// The first tick after the count moves owes one hover, and only one until
+    /// an interval has passed; the pump runs thousands of times a second.
+    #[test]
+    fn an_announcement_owes_one_hover_at_once() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        for ms in [1, 10, 100, NEW_GAME_SEED_INTERVAL_MS - 1] {
+            assert_eq!(seed.due(1, seed_at(base, ms)), SeedDue::No, "{ms} ms is inside the first interval");
+        }
+        assert_eq!(seed.due(1, seed_at(base, NEW_GAME_SEED_INTERVAL_MS)), SeedDue::Again);
+    }
+
+    /// One every interval, for the whole window, then nothing for the rest of
+    /// the session.
+    #[test]
+    fn hovers_continue_at_the_interval_then_stop() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        let mut sent = 0;
+        let mut first = 0;
+        for ms in (0..60_000).step_by(16) {
+            match seed.due(3, seed_at(base, ms)) {
+                SeedDue::No => {}
+                SeedDue::First => {
+                    first += 1;
+                    sent += 1;
+                }
+                SeedDue::Again => sent += 1,
+            }
+        }
+        assert_eq!(first, 1);
+        assert_eq!(
+            sent,
+            NEW_GAME_SEED_SECONDS * 1000 / NEW_GAME_SEED_INTERVAL_MS + 1,
+            "one at the start and one per interval after it"
+        );
+    }
+
+    /// A join moves the count twice or more. A second bump restarts the
+    /// schedule from itself rather than adding a second set on top, and a
+    /// genuinely later game starts a fresh one.
+    #[test]
+    fn a_second_bump_restarts_the_window_and_a_later_game_gets_its_own() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        assert_eq!(seed.due(2, seed_at(base, 40)), SeedDue::First, "a new count is a new window");
+        assert_eq!(seed.due(2, seed_at(base, 80)), SeedDue::No);
+        // The restarted window runs its own length from the second bump.
+        let end = 40 + NEW_GAME_SEED_SECONDS * 1000;
+        assert_eq!(seed.due(2, seed_at(base, end)), SeedDue::Again, "still inside the window");
+        assert_eq!(seed.due(2, seed_at(base, end + NEW_GAME_SEED_INTERVAL_MS + 1)), SeedDue::No);
+        // Long after the window closed, a different game.
+        assert_eq!(seed.due(2, seed_at(base, 120_000)), SeedDue::No);
+        assert_eq!(seed.due(3, seed_at(base, 120_001)), SeedDue::First);
+    }
+
+    /// A tick that arrives late does not owe the hovers it missed, only the
+    /// one it is on: they would all land in the same instant and prove nothing.
+    #[test]
+    fn a_late_tick_owes_one_hover_not_a_backlog() {
+        let base = std::time::Instant::now();
+        let mut seed = NewGameSeed::new();
+        assert_eq!(seed.due(1, seed_at(base, 0)), SeedDue::First);
+        assert_eq!(seed.due(1, seed_at(base, 4_100)), SeedDue::Again);
+        assert_eq!(seed.due(1, seed_at(base, 4_101)), SeedDue::No);
+    }
+
+    /// With no pointer ever seen -- a touchscreen-only seat -- there is nothing
+    /// honest to hover, and the call must say so rather than invent a mouse.
+    #[test]
+    fn no_hover_without_a_pointer() {
+        let saved = POINTER_SEEN_AT.swap(NO_MOUSE_POSITION, Ordering::AcqRel);
+        assert!(!seed_pointer_for_new_game(false));
+        POINTER_SEEN_AT.store(saved, Ordering::Release);
+    }
 }
