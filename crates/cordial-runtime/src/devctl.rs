@@ -80,6 +80,10 @@ pub enum Cmd {
     /// same call be sent to a client caught already wedged, by present count,
     /// with no guess about when.
     Redraw,
+    /// `updatesurface [app|game|both]`: deliver the surface and platform
+    /// parameters to the engine again, on the pump thread. See
+    /// `android::surface_params` for the experiment this is for.
+    UpdateSurface { app: bool, game: bool },
 }
 
 static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
@@ -399,6 +403,35 @@ fn handle(line: &str) -> String {
             push(Cmd::Redraw);
             "ok".into()
         }
+        // `gameseed on|off` -- the pointer hover handed to the engine when a
+        // game loads (`input::NewGameSeed`, #29), switched without a relaunch
+        // so one session can join with it off and then on.
+        "gameseed" => match it.next() {
+            Some("on") => {
+                crate::android::input::set_game_seed(true);
+                "ok gameseed on".into()
+            }
+            Some("off") => {
+                crate::android::input::set_game_seed(false);
+                "ok gameseed off".into()
+            }
+            _ => "err gameseed <on|off>".into(),
+        },
+        "updatesurface" => match it.next().unwrap_or("game") {
+            "app" => {
+                push(Cmd::UpdateSurface { app: true, game: false });
+                "ok".into()
+            }
+            "game" => {
+                push(Cmd::UpdateSurface { app: false, game: true });
+                "ok".into()
+            }
+            "both" => {
+                push(Cmd::UpdateSurface { app: true, game: true });
+                "ok".into()
+            }
+            _ => "err updatesurface [app|game|both]".into(),
+        },
         // The capture the compositor would not give us. See `vulkan::capture`.
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
@@ -609,6 +642,11 @@ pub fn apply_queued(handle: i64) {
                 report_replace("settext", &text, crate::android::clipboard::set_text(handle, &text))
             }
             Cmd::Redraw => crate::android::input::deliver_surface_redraw(handle),
+            Cmd::UpdateSurface { app, game } => {
+                for line in crate::android::surface_params::redeliver(app, game) {
+                    println!("  devctl: updatesurface {line}");
+                }
+            }
         }
     }
 }

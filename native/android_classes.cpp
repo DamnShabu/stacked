@@ -349,6 +349,22 @@ extern "C" unsigned cordial_games_loaded(void) {
     return g_games_loaded.load(std::memory_order_acquire);
 }
 
+/// How many times the engine has said an experience is starting, which is
+/// earlier than a load: it follows a press of Play by a moment and comes before
+/// the new DataModel's surface and its first frame. Counted for
+/// `input::NewGameSeed`, which wants to start offering input as soon as the new
+/// DataModel exists rather than once it has already decided what the movement
+/// controls are (#29).
+static std::atomic<unsigned> g_experience_starts{0};
+
+extern "C" void cordial_note_experience_start(void) {
+    g_experience_starts.fetch_add(1, std::memory_order_release);
+}
+
+extern "C" unsigned cordial_experience_starts(void) {
+    return g_experience_starts.load(std::memory_order_acquire);
+}
+
 extern "C" long long cordial_last_place(void) {
     return g_last_place.load(std::memory_order_acquire);
 }

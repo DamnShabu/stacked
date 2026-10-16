@@ -25,6 +25,7 @@ pub mod glcount;
 pub mod hidden;
 pub mod input;
 pub mod looper;
+pub mod surface_params;
 pub mod system;
 pub mod vulkan;
 pub mod wayland;

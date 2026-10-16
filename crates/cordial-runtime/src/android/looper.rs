@@ -799,6 +799,9 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     let mut stall_reported = false;
     let mut recovery_tried = false;
     let join_watch = JOIN_REQUESTED.load(Ordering::Relaxed);
+    // Hovers owed to the engine after each game loads; see `NewGameSeed` for
+    // the measurement that puts this here (#29).
+    let mut game_seed = super::input::NewGameSeed::new();
     let join_started = std::time::Instant::now();
     let mut join_reported = false;
     let mut focus_reported: Option<bool> = Some(true);
@@ -1300,6 +1303,21 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // pump, and a socket handler is not the place to find out whether
             // they mind. A no-op unless `CORDIAL_DEV_CONTROL` was set.
             crate::devctl::apply_queued(handle);
+            // On this thread, with the other input natives: a new game's
+            // DataModel has seen no input, and the movement controls it binds
+            // at spawn depend on that. `NewGameSeed::due` is a plain counter
+            // compare on every tick, and says yes four times a second for a few
+            // seconds around each join.
+            match game_seed.due(
+                cordial_linker_sys::game_activity::experience_starts()
+                    .wrapping_add(cordial_linker_sys::game_activity::games_loaded()),
+                std::time::Instant::now(),
+            ) {
+                super::input::SeedDue::No => {}
+                due => {
+                    super::input::seed_pointer_for_new_game(due == super::input::SeedDue::First);
+                }
+            }
             // Tell the engine when the user has switched away, and when they
             // have come back.
             //
@@ -1498,6 +1516,12 @@ fn teardown(handle: i64) {
     // kernel's to release. The watchdog is a separate thread because the
     // stuck one cannot time itself out, and it stands down as soon as the
     // sequence returns, so an ordinary exit is untouched.
+    //
+    // **It exits with `TEARDOWN_TIMEOUT_EXIT`, not zero.** The first version
+    // called `_exit(0)`, so a client that had to be cut off reported the same
+    // success as one that shut down, and a launcher, a script or a bug report
+    // could not tell them apart. Nothing else here returns 124, so the exit
+    // status alone now says the sequence did not finish.
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let finished = finished.clone();
@@ -1505,24 +1529,21 @@ fn teardown(handle: i64) {
         std::thread::Builder::new()
             .name("teardown-watchdog".into())
             .spawn(move || {
-                let deadline = std::time::Instant::now() + limit;
-                while std::time::Instant::now() < deadline {
-                    if finished.load(std::sync::atomic::Ordering::Acquire) {
-                        return;
+                watch_teardown(&finished, limit, || {
+                    eprintln!(
+                        "[android] the engine's shutdown sequence has not returned after {}s; \
+                         exiting without it, with status {TEARDOWN_TIMEOUT_EXIT} (issue #52). \
+                         Cookies were saved before it started.",
+                        limit.as_secs()
+                    );
+                    extern "C" {
+                        fn _exit(status: c_int) -> !;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                eprintln!(
-                    "[android] the engine's shutdown sequence has not returned after {}s; \
-                     exiting without it (issue #52). Cookies were saved before it started.",
-                    limit.as_secs()
-                );
-                extern "C" {
-                    fn _exit(status: c_int) -> !;
-                }
-                // SAFETY: `_exit` runs no handlers and touches no memory; the
-                // stuck thread holds nothing the kernel will not reclaim.
-                unsafe { _exit(0) }
+                    // SAFETY: `_exit` runs no handlers and touches no memory;
+                    // the stuck thread holds nothing the kernel will not
+                    // reclaim.
+                    unsafe { _exit(TEARDOWN_TIMEOUT_EXIT) }
+                });
             })
             .ok();
     }
@@ -1559,6 +1580,28 @@ fn teardown_limit() -> std::time::Duration {
         .filter(|&s| s > 0)
         .unwrap_or(10);
     std::time::Duration::from_secs(secs)
+}
+
+/// The status the teardown watchdog exits with. 124 is `timeout(1)`'s own
+/// "the command timed out", which is what this is, and no other exit path in
+/// `cordial-run` uses it.
+const TEARDOWN_TIMEOUT_EXIT: c_int = 124;
+
+/// Call `on_expiry` if `finished` has not been set within `limit`, and return
+/// without calling it if it is set first. Split out of [`teardown`] so the
+/// stand-down and the expiry can both be tested without a stuck engine.
+fn watch_teardown(finished: &std::sync::atomic::AtomicBool, limit: std::time::Duration, on_expiry: impl FnOnce()) {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if finished.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if finished.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    on_expiry();
 }
 
 /// Add a descriptor to the calling thread's looper so `pollOnce` returns as soon
@@ -2082,6 +2125,36 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "teardown took too long; its grace period must be bounded"
         );
+    }
+
+    /// The watchdog must fire when the sequence never returns, and must not
+    /// when it does. The second is the one that matters to everybody whose
+    /// exit is ordinary: a watchdog that fires anyway turns every clean
+    /// shutdown into status 124.
+    #[test]
+    fn the_teardown_watchdog_fires_only_when_the_sequence_does_not_return() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stuck = AtomicBool::new(false);
+        let mut fired = false;
+        watch_teardown(&stuck, std::time::Duration::from_millis(50), || fired = true);
+        assert!(fired, "a sequence that never finishes must be cut off");
+
+        let done = AtomicBool::new(true);
+        let mut fired = false;
+        watch_teardown(&done, std::time::Duration::from_millis(500), || fired = true);
+        assert!(!fired, "a sequence that returned must not be cut off");
+
+        // Finishing part-way through the wait stands the watchdog down.
+        let finishing = std::sync::Arc::new(AtomicBool::new(false));
+        let setter = finishing.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            setter.store(true, Ordering::Release);
+        });
+        let mut fired = false;
+        watch_teardown(&finishing, std::time::Duration::from_secs(5), || fired = true);
+        t.join().unwrap();
+        assert!(!fired);
     }
 
     #[test]
