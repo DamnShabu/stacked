@@ -309,3 +309,81 @@ prints no further `FLog::` line of any kind once it fails to recover, on a
 process whose every other thread (including `cordial-secrets`, checked and
 found idly parked on its own job queue, not blocked mid-request) stays
 observably healthy.
+
+## 2026-10-04: the freeze is decided before the wait, at the first Lua app's teardown
+
+Eight signed-in launches of `CordialTest` (162 s or more apart, all signed in,
+no `DID_LOG_OUT`) on 192fdfc gave one freeze, under core pinning plus a busy
+loop (1 of 3 amplified, 0 of 5 plain). Harness, logs and captures:
+`~/.cache/cordial-handoff/freeze-92/`.
+
+**The HttpClient-completion model does not survive.** With
+`DFLogHttpTraceLight=7`, the frozen run had the same set of open requests at
+`startLuaApp_` as healthy runs (16 against 17, same endpoints), every socket
+established with bytes both ways, and the HttpClient completion thread still
+waking (its condvar wait count grew between two captures 82 s apart). The
+2026-09-29 watchpoint saw an HttpClient thread wake the finalize thread in
+healthy runs; it never identified a request.
+
+**The discriminator is earlier.** Across every signed-in engine log on this
+machine with a `Forcing finalize` line (41, recounted independently):
+`[Graphics] RenderView destroyed[1]`, logged on the finalize thread inside
+`~SurfaceController[_:1]` 10-76 ms before the wait, appears in 22 of 22
+healthy runs and 0 of 19 frozen ones. In a frozen run the first app's
+RenderView and DataModel are never released.
+
+**A timing correlate, post hoc.** The old DataModel's first render step ("No
+data model. Bind workspace now") lands 2-9 ms after `getFlags: success` in 16
+of 19 frozen logs and 1 of 19 healthy ones. The eight new runs, taken after the
+rule was formed, fit it (the frozen one at +5 ms; all seven healthy outside).
+
+**INFERRED:** a race in the engine between the first Lua app's first render
+step and the teardown that `startLuaApp_` begins once settings and flags load;
+when it loses, the finalize thread waits for a task nothing posts. Cordial does
+not cause it, but it fixes when `initialize` is called relative to the first
+render, so it likely sets how often the race is lost.
+
+**Next:** (1) the lever: delay Cordial's `initialize` until the first render
+step has run, measured against interleaved controls, at least 20 signed-in
+launches per arm (several days at the launch cap); (2) meanwhile, recovery:
+detect the frozen shape from the engine log (`Forcing finalize` with no
+`RenderView destroyed[1]` before it and no `~UgcExperienceController` within
+5 s) and relaunch the client.
+
+### Recovery in the shell (2026-10-04)
+
+`crates/cordial-shell/src/freeze_recovery.rs` implements the second item: the
+shell reads the new client's engine log once a second, and calls it stuck when
+the first `Forcing finalize` has no `[Graphics] RenderView destroyed[1]` before
+it and no `~UgcExperienceController` within 5 s. It then stops the client
+(`SIGTERM`, `SIGKILL` after 5 s) and relaunches the same profile, at most twice
+per press of Play, and on the third freeze shows a message pointing at #92.
+
+The rule over every engine log on this machine (the capture directories, `/tmp`
+and the app's own profiles; 173 logs after de-duplicating): **38 signed-in logs
+healthy and 24 frozen**, 3 signed-out logs that never finish a finalize, 34 with
+no finalize at all. Restricted to `~/.cache` and `/tmp`, which is where the
+22/19 above was counted, it gives 21 healthy and 19 frozen; the missing healthy
+log was not found. It agrees, on all 139 logs that have a finalize, with the
+check that does not use the rule (a finished finalize logs the destructor sooner
+or later). In 112 healthy
+logs the finalize-to-destructor gap is at most 0.71 s, so 5 s is a wide margin.
+`cargo test -p cordial-shell --lib freeze_corpus -- --ignored --nocapture` with
+`CORDIAL_FREEZE_CORPUS` set to colon-separated directories reprints this.
+
+**Not measured:** that a real freeze is recovered. Whether `SIGTERM` stops a
+client that is wedged in the finalize is not known (the `SIGKILL` fallback is
+for that), and the restart's effect on how often the race is lost is not
+known. `CORDIAL_NO_FREEZE_RESTART=1` turns it off for the measurement in item
+(1).
+
+## 2026-10-16: this describes the first of two regimes
+
+Everything above is a launch with no usable flag cache: the engine says
+`onFlagsFailed`, waits for Cordial's post-settings call, and the freeze is the
+first render step landing between that call and the end of the teardown it
+starts. With a valid cache the engine starts its Lua app on its own and ignores
+the call; that regime did not freeze in this session, but holding Cordial's
+thread in it left the client at four presents, the render thread in
+`vkAcquireNextImageKHR`. Evidence, counts and what was not measured:
+`docs/NEXT.md`, "#92: two startup regimes".

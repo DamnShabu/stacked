@@ -235,6 +235,8 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_GAMEMODE=0` | Don't ask for GameMode. |
 | `CORDIAL_POLL_COALESCE_US=N` | How long the engine's main loop sleeps when it has nothing to do, in microseconds. The default is 250. `0` turns it off, which costs a whole CPU core. |
 | `CORDIAL_TEARDOWN_TIMEOUT_S=N` | How long the engine gets to shut down before the client exits without it. The default is 10. |
+| `CORDIAL_POST_GATE=0` | Don't hold the engine's settings call until its first render step ([ADR-065](adr/ADR-065-the-late-post-waits-for-the-first-render-step.md)). For testing whether a startup freeze is that race. |
+| `CORDIAL_NO_FREEZE_RESTART=1` | Read by `stacked play`: don't stop and restart a client whose log shows it stuck starting. |
 | `CORDIAL_APK=PATH` | Run this APK for this launch only. |
 | `XDG_DATA_HOME=DIR` | Move every profile and all client data somewhere else. |
 

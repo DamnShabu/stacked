@@ -40,6 +40,7 @@
 
 pub mod branding;
 pub mod editor;
+pub mod freeze_recovery;
 pub mod host_window;
 pub mod x11_editor;
 pub mod network;

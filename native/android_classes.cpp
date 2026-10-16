@@ -420,6 +420,38 @@ extern "C" unsigned cordial_experience_starts(void) {
     return g_experience_starts.load(std::memory_order_acquire);
 }
 
+/// Whether the engine has announced `Home` as ready. The first Lua app reaches
+/// Home a few hundred milliseconds after the surface is handed over, and the
+/// startup freeze (#92) is decided by whether Cordial's
+/// `postClientSettingsLoadedInitialization3` lands before or after the render
+/// job's first step, which follows that announcement by about 30 ms. Counted so
+/// the post can be held until after it.
+static std::atomic<unsigned> g_home_ready{0};
+
+extern "C" void cordial_note_home_ready(void) {
+    g_home_ready.fetch_add(1, std::memory_order_release);
+}
+
+extern "C" unsigned cordial_home_ready(void) {
+    return g_home_ready.load(std::memory_order_acquire);
+}
+
+/// How many times the engine has said its flag load failed. Cordial's own
+/// bootstrap delivers settings and flags and the engine answers
+/// `onFlagsFailed` when it has no usable flag cache; with a valid cache it
+/// answers `onFlagsLoaded` instead and starts its Lua app on its own at the
+/// first `onStart`, without waiting for the post-settings call. Which of the
+/// two a launch gets is what `CORDIAL_POST_AFTER_HOME_MS` must know (#92).
+static std::atomic<unsigned> g_flags_failed{0};
+
+extern "C" void cordial_note_flags_failed(void) {
+    g_flags_failed.fetch_add(1, std::memory_order_release);
+}
+
+extern "C" unsigned cordial_flags_failed(void) {
+    return g_flags_failed.load(std::memory_order_acquire);
+}
+
 extern "C" long long cordial_last_place(void) {
     return g_last_place.load(std::memory_order_acquire);
 }

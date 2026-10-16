@@ -181,26 +181,32 @@ impl Instance {
     /// log flowing to the terminal and lets a crash be reported with the tail
     /// of what led to it.
     ///
+    /// Only reaps. Call [`Instance::drain_output`] before reading the output,
+    /// and anything that must stop the moment the pid is gone -- the freeze
+    /// watch, which signals it -- before that.
+    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
+        self.child.wait()
+    }
+
+    /// Let the output readers finish, up to [`DRAIN_LIMIT`].
+    ///
     /// **The process exiting does not mean its output has been read.** Reaping
     /// the child and the `pump` threads reaching EOF are unrelated events, and
     /// a client dying with `SIGSEGV` straight after printing was measured
     /// leaving the tail empty: every line had reached the terminal, none had
-    /// reached the crash report. So this waits for the readers too, up to
-    /// [`DRAIN_LIMIT`].
-    pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
-        let status = self.child.wait()?;
+    /// reached the crash report.
+    pub fn drain_output(&self) {
         let deadline = std::time::Instant::now() + DRAIN_LIMIT;
         while self.readers.iter().any(|r| !r.is_finished()) && std::time::Instant::now() < deadline {
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        Ok(status)
     }
 
     /// The last lines the client printed, oldest first, redacted.
     ///
     /// Read at the moment the crash page is built rather than streamed into it:
-    /// nothing wants a live log window. Complete only after [`Instance::wait`],
-    /// which is what lets the readers drain.
+    /// nothing wants a live log window. Complete only after
+    /// [`Instance::drain_output`].
     pub fn recent_output(&self) -> String {
         let tail = self.tail.lock().unwrap_or_else(|e| e.into_inner());
         tail.iter().cloned().collect::<Vec<_>>().join("\n")

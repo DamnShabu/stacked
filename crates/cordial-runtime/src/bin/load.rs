@@ -1677,6 +1677,9 @@ fn main() -> ExitCode {
     if std::env::var_os("vk_require_etc2").is_none() {
         std::env::set_var("vk_require_etc2", "true");
     }
+    // Before anything can create the engine's log: the post gate reads only a
+    // log that was not modified before this (ADR-065).
+    cordial_runtime::post_gate::note_start();
 
     // **Before `parse()`, and that is not stylistic.** `--profile` latches the
     // active profile directory as a side effect of being parsed, and the whole
@@ -4577,15 +4580,156 @@ fn main() -> ExitCode {
                                                 // the smallest number tried that did
                                                 // not crash, and the race underneath
                                                 // is unfinished work.
+                                                //
+                                                // **2026-10-16: the sleep is the part that
+                                                // hurts, not the lateness.** A post made 20 ms
+                                                // after the handoff from a thread of its own
+                                                // (`CORDIAL_POST_ASYNC=1`) did not crash, and
+                                                // the same 1200 ms made from a thread of its
+                                                // own was healthy where it stalled the client
+                                                // when this thread slept (docs/NEXT.md).
                                                 let late_post = std::env::var("CORDIAL_LATE_POST_MS")
                                                     .ok()
                                                     .map_or(Some(250), |v| {
                                                         if v == "off" { None } else { v.parse::<u64>().ok() }
                                                     });
-                                                if let Some(ms) = late_post {
+                                                // `CORDIAL_POST_GATE` (ADR-065, #92) holds the post, on a
+                                                // launch the engine is waiting for it on, until the engine's log
+                                                // shows its first render step. It needs the thread below, so it
+                                                // implies it.
+                                                let post_gate = match std::env::var("CORDIAL_POST_GATE") {
+                                                    Ok(v) => switch_on(Some(&v)),
+                                                    Err(_) => cordial_runtime::post_gate::DEFAULT_ON,
+                                                };
+                                                // `CORDIAL_POST_ASYNC=1`: make the late post, and the retry that
+                                                // follows it, from a thread of their own so this one goes on to
+                                                // pump the looper at once (#92).
+                                                //
+                                                // Sleeping here keeps the pump -- and
+                                                // so the window's GTK main loop -- from running, and in launches
+                                                // where the engine had already started its Lua app on its own (a
+                                                // valid flag cache) every sleep of 330 ms or more was followed by
+                                                // a client stuck for good in `vkAcquireNextImageKHR` after four
+                                                // presents, waiting for the compositor to release a swapchain
+                                                // image (docs/NEXT.md). The post is made from this thread on
+                                                // Android's behalf anyway; that it may be made from another is
+                                                // `INFERRED` until a launch shows it.
+                                                let own_thread = post_async() || post_gate;
+                                                if let (true, Some(ms)) = (own_thread, late_post) {
+                                                    let post_f = lib
+                                                        .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativePostClientSettingsLoadedInitialization3")
+                                                        .map(|p| p as usize);
+                                                    let retry_f = lib
+                                                        .symbol("Java_com_roblox_client_startup_MainGameActivity_nativeRetryInit")
+                                                        .map(|p| p as usize);
+                                                    let extra = std::env::var("CORDIAL_POST_AFTER_HOME_MS")
+                                                        .ok()
+                                                        .and_then(|v| v.parse::<u64>().ok());
+                                                    let retry_on = std::env::var("CORDIAL_LATE_RETRY").map_or(true, |v| v != "off");
+                                                    println!(
+                                                        "  late post: on its own thread, after {ms} ms{}{}",
+                                                        extra.map_or(String::new(), |e| format!(" and Home + {e} ms")),
+                                                        if post_gate { ", then the engine's first render step" } else { "" }
+                                                    );
+                                                    // The same root `link_ca` and `game_log` use for the engine's tree.
+                                                    let logs_dir = std::env::var("CORDIAL_FILES_DIR")
+                                                        .map(std::path::PathBuf::from)
+                                                        .unwrap_or_else(|_| cordial_runtime::profile::active().join("data"))
+                                                        .join("files/appData/logs");
+                                                    let _ = std::thread::Builder::new().name("cordial-late-post".into()).spawn(move || {
+                                                        std::thread::sleep(std::time::Duration::from_millis(ms));
+                                                        if let Some(extra) = extra {
+                                                            if linker::game_activity::flags_failed() == 0 {
+                                                                println!("  post not held: the engine loaded its flags itself");
+                                                            } else {
+                                                                let t0 = std::time::Instant::now();
+                                                                while linker::game_activity::home_ready() == 0
+                                                                    && t0.elapsed() < std::time::Duration::from_secs(3)
+                                                                {
+                                                                    std::thread::sleep(std::time::Duration::from_micros(500));
+                                                                }
+                                                                let seen = linker::game_activity::home_ready() != 0;
+                                                                println!(
+                                                                    "  post held for Home: {} after {} ms, then {extra} ms",
+                                                                    if seen { "announced" } else { "NOT announced" },
+                                                                    t0.elapsed().as_millis()
+                                                                );
+                                                                std::thread::sleep(std::time::Duration::from_millis(extra));
+                                                            }
+                                                        }
+                                                        // The engine waits for this call only when its flag load
+                                                        // failed; with a valid cache it ignores the call, so there is
+                                                        // nothing to order it against.
+                                                        if post_gate {
+                                                            if linker::game_activity::flags_failed() == 0 {
+                                                                println!("  post gate: not needed, the engine loaded its flags itself");
+                                                            } else {
+                                                                cordial_runtime::post_gate::hold(&logs_dir);
+                                                            }
+                                                        }
+                                                        match post_f {
+                                                            None => println!("  late post: not exported"),
+                                                            // SAFETY: a native resolved by symbol lookup against the loaded libroblox.so, never unloaded.
+                                                            Some(f) => match unsafe { linker::game_activity::post_client_settings_loaded(f as *mut std::ffi::c_void) } {
+                                                                Ok(()) => println!("  late post: postClientSettingsLoadedInitialization3 ok (after {ms} ms, own thread)"),
+                                                                Err(e) => println!("  late post failed: {e}"),
+                                                            },
+                                                        }
+                                                        if retry_on {
+                                                            match retry_f {
+                                                                None => println!("  late retry: not exported"),
+                                                                // SAFETY: as above.
+                                                                Some(f) => match unsafe { linker::game_activity::appbridge_call_bare(f as *mut std::ffi::c_void) } {
+                                                                    Ok(()) => println!("  late retry: nativeRetryInit ok"),
+                                                                    Err(e) => println!("  late retry failed: {e}"),
+                                                                },
+                                                            }
+                                                        }
+                                                    });
+                                                }
+                                                if let Some(ms) = late_post.filter(|_| !own_thread) {
                                                     std::thread::sleep(
                                                         std::time::Duration::from_millis(ms),
                                                     );
+                                                    // `CORDIAL_POST_AFTER_HOME_MS=<n>`: hold the post until the
+                                                    // engine has announced Home and <n> ms more (#92).
+                                                    //
+                                                    // EXPERIMENT, off by default. In the engine logs the
+                                                    // startup freeze goes with the post landing before the
+                                                    // render job's first step (which follows Home by about
+                                                    // 30 ms) and the healthy runs with it landing after;
+                                                    // `CORDIAL_LATE_POST_MS` cannot guarantee that because
+                                                    // Home arrives at a different time every launch. A plain
+                                                    // 1200 ms delay was tried once and changed the failure
+                                                    // rather than removing it (docs/NEXT.md), which is why this
+                                                    // waits on the engine instead of on the clock. Capped at
+                                                    // three seconds so a client that never reaches Home is not
+                                                    // held for ever.
+                                                    if let Some(extra) = std::env::var("CORDIAL_POST_AFTER_HOME_MS")
+                                                        .ok()
+                                                        .and_then(|v| v.parse::<u64>().ok())
+                                                    {
+                                                        // Only when the engine is going to wait for this call: with a valid flag cache
+                                                        // (`onFlagsLoaded`) it started its Lua app at `onStart` and ignores the post, and
+                                                        // holding Cordial's thread then stalls it instead (measured, docs/NEXT.md).
+                                                        if linker::game_activity::flags_failed() == 0 {
+                                                            println!("  post not held: the engine loaded its flags itself");
+                                                        } else {
+                                                        let t0 = std::time::Instant::now();
+                                                        while linker::game_activity::home_ready() == 0
+                                                            && t0.elapsed() < std::time::Duration::from_secs(3)
+                                                        {
+                                                            std::thread::sleep(std::time::Duration::from_millis(2));
+                                                        }
+                                                        let seen = linker::game_activity::home_ready() != 0;
+                                                        println!(
+                                                            "  post held for Home: {} after {} ms, then {extra} ms",
+                                                            if seen { "announced" } else { "NOT announced" },
+                                                            t0.elapsed().as_millis()
+                                                        );
+                                                        std::thread::sleep(std::time::Duration::from_millis(extra));
+                                                        }
+                                                    }
                                                     // Deliver the settings again
                                                     // here, immediately before the
                                                     // post call, so the app-provided
@@ -5688,5 +5832,28 @@ mod disk_tests {
         // And it names where, because a machine has more than one filesystem
         // and the profile is not always on the one the user is watching.
         assert!(after.contains("profiles/x/files"), "{after}");
+    }
+}
+
+/// `CORDIAL_POST_ASYNC`: make the late post from a thread of its own (#92).
+/// Read as a switch, not as "set at all", so `CORDIAL_POST_ASYNC=0` means off.
+fn post_async() -> bool {
+    switch_on(std::env::var("CORDIAL_POST_ASYNC").ok().as_deref())
+}
+
+fn switch_on(value: Option<&str>) -> bool {
+    !matches!(value.map(str::trim), None | Some("") | Some("0") | Some("off") | Some("false") | Some("no"))
+}
+
+#[cfg(test)]
+mod post_async_tests {
+    #[test]
+    fn zero_and_off_mean_off() {
+        for v in [None, Some(""), Some("0"), Some("off"), Some("false"), Some("no")] {
+            assert!(!super::switch_on(v), "{v:?} must be off");
+        }
+        for v in [Some("1"), Some("on"), Some("yes")] {
+            assert!(super::switch_on(v), "{v:?} must be on");
+        }
     }
 }
