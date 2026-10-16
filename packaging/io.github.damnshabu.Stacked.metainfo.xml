@@ -92,7 +92,9 @@
       <description>
         <p>
           Stacked no longer waits on a download of Roblox's settings before the
-          game starts, when you have not played in the last six hours.
+          game starts, when you have not played in the last six hours, and a
+          game saved as fullscreen goes fullscreen after its first frame
+          rather than before the window appears.
         </p>
       </description>
     </release>
