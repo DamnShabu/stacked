@@ -524,7 +524,7 @@ pub fn newest_engine_logs(dir: &Path) -> Vec<PathBuf> {
     if any_last {
         all.retain(|(_, _, last)| *last);
     }
-    all.sort_by(|a, b| b.0.cmp(&a.0));
+    all.sort_by_key(|e| std::cmp::Reverse(e.0));
     all.into_iter().take(ENGINE_LOGS).map(|(_, p, _)| p).collect()
 }
 
