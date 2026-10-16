@@ -9,6 +9,19 @@
   No emulator, no container, no virtual machine.
 </p>
 
+<p align="center">
+  <a href="https://github.com/DamnShabu/stacked/releases/latest"><img src="https://img.shields.io/github/v/release/DamnShabu/stacked" alt="Latest release"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/DamnShabu/stacked" alt="Licence: GPL-3.0"></a>
+</p>
+
+<p align="center">
+  <img src="docs/media/cordial-doors.gif"
+       alt="Roblox DOORS running natively on Linux: first-person corridor, candle in hand"
+       width="560"><br>
+  <em>DOORS, unmodified, on Fedora and GNOME. Recorded on Cordial, the engine
+  Stacked is built on, before the fork was renamed.</em>
+</p>
+
 Stacked loads Roblox's official Android client straight into a Linux process
 and gives it a normal desktop window. It is a fork of
 [Cordial](https://github.com/luohoa97/cordial), whose engine does the heavy
@@ -28,31 +41,33 @@ lifting. The fork adds:
 
 ## Install
 
-There are no prebuilt packages yet, so you build it. You need Rust 1.75+,
-Clang, CMake, and GTK 4.12+ with libadwaita 1.5+ — Ubuntu 24.04, Debian 13,
-Fedora 40 or newer, or Arch.
+Download a package from the
+[latest release](https://github.com/DamnShabu/stacked/releases/latest), for
+x86_64 or aarch64:
+
+| | |
+|---|---|
+| Debian, Ubuntu | `.deb` — `sudo apt install ./stacked_*.deb` |
+| Fedora | `.rpm` — `sudo dnf install ./stacked-*.rpm` |
+| Arch (x86_64) | `.pkg.tar.zst` — `sudo pacman -U stacked-*.pkg.tar.zst` |
+| Flatpak | `.flatpak` — `flatpak install --user Stacked-*.flatpak` |
+| Anything else | `.AppImage` — `chmod +x` it and run it |
+
+Then:
 
 ```bash
-# Ubuntu/Debian: sudo apt install clang cmake pkg-config libgtk-4-dev libadwaita-1-dev libpipewire-0.3-dev
-# Fedora:        sudo dnf install clang cmake gtk4-devel libadwaita-devel pipewire-devel
-# Arch:          sudo pacman -S clang cmake gtk4 libadwaita pipewire
-
-git clone --recursive https://github.com/DamnShabu/stacked
-cd stacked
-cargo build --release
-install -Dm755 target/release/stacked target/release/cordial-run -t ~/.local/bin/
-
-stacked desktop install   # app menu entry, and the browser's Play button opens Stacked
+stacked desktop install   # the browser's Play button opens Stacked
 stacked doctor            # checks the machine and says how to fix anything it finds
 ```
 
-Without the PipeWire headers it builds, but has no sound. Keep `stacked` and
-`cordial-run` in the same directory. [`docs/install.md`](docs/install.md) has
-the details, including building the Flatpak yourself.
+From the Flatpak, run these as `flatpak run io.github.damnshabu.Stacked`.
+From the AppImage, `desktop install` does not yet add a menu entry. Every
+file is signed with Sigstore; its `.cosign.bundle` sits next to it. There is
+no package repository yet, so updating means downloading the next release.
+[`docs/install.md`](docs/install.md) covers building from source.
 
-**Update:** `git pull --recurse-submodules`, then rerun the `cargo build` and
-`install` lines. **Remove:** `stacked desktop remove` and delete the two
-binaries. Profiles stay in `~/.local/share/cordial` until you delete them.
+**Remove:** `stacked desktop remove`, then uninstall the package. Profiles
+stay in `~/.local/share/cordial` until you delete them.
 
 ## Use
 
