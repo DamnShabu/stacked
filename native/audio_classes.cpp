@@ -1908,12 +1908,16 @@ public:
     /// chain this work was planned around does not exist on this build once
     /// the first link has been claimed.
     ///
-    /// That is why `pipewire_available()` is part of the condition. It is the
-    /// same call `slCreateEngine` gates on, it is cached after the first
-    /// round trip, and without it a machine with no PipeWire daemon would
-    /// have this method promise an output that `AAudioStreamBuilder_openStream`
-    /// must then refuse — costing the Java fallback that would have reported
-    /// the same failure in the one place people already know to look.
+    /// That is why `host_backend_available()` is part of the condition: for
+    /// the default backend it is `pipewire_available()`, the same call
+    /// `slCreateEngine` gates on. A session that connects is kept for the
+    /// process; a failed one is retried at most every five seconds
+    /// (`kSessionRetryAfter`), so a daemon that comes up late is found and a
+    /// wedged one is not asked on every call. Without it a machine with no
+    /// PipeWire daemon would have this method promise an output that
+    /// `AAudioStreamBuilder_openStream` must then refuse — costing the Java
+    /// fallback that would have reported the same failure in the one place
+    /// people already know to look.
     static jboolean supportsAAudio(jnivm::ENV*, jnivm::Class*) {
         if (!cordial_audio_backend_is_aaudio()) return JNI_FALSE;
         if (!audio::host_backend_available()) {
