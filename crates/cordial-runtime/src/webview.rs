@@ -357,6 +357,12 @@ pub struct OpenWindowRequest {
     pub hide_header: bool,
     pub back_button_visible: bool,
     pub show_domain_as_title: bool,
+    /// Whether the page has to run as a page inside an app, with a native
+    /// bridge to answer, rather than as a page in a desktop client. Never set
+    /// by the parser, which only knows what the engine wrote; set by whoever
+    /// knows what the window is for. See [`native_bridge_user_agent`] for what
+    /// it changes and why (#83).
+    pub native_bridge: bool,
 }
 
 /// Parse one `openWindow` payload against this build's own key names.
@@ -383,6 +389,7 @@ pub fn parse_open_window(json: &str, keys: &OpenWindowKeys) -> Result<OpenWindow
         hide_header: flag(&keys.hide_header),
         back_button_visible: flag(&keys.back_button_visible),
         show_domain_as_title: flag(&keys.show_domain_as_title),
+        native_bridge: false,
     })
 }
 
@@ -607,12 +614,308 @@ pub fn dev_trigger_open_window(url: String) {
 /// `PRESENTER` — see `set_presenter_keeps_the_first_installation`'s own
 /// comment for why that static is exercised by exactly one test.
 fn synthetic_open_window_request(url: String) -> OpenWindowRequest {
+    // The same decision a real `openWindow` gets, from the same screen, so the
+    // path that reads the screen is exercised here too. `CORDIAL_WEBVIEW_TEST_NATIVE=1`
+    // forces it on, so one page can be opened both ways in one session and the
+    // two compared (#83).
+    let screen = cordial_linker_sys::game_activity::last_app_ready();
+    let native_bridge = std::env::var_os("CORDIAL_WEBVIEW_TEST_NATIVE").is_some()
+        || screen_needs_native_bridge(screen.as_deref());
+    println!(
+        "[webview] synthetic openWindow: engine screen {}, native bridge {native_bridge}",
+        screen.as_deref().unwrap_or("(none yet)")
+    );
     OpenWindowRequest {
         url,
         title: Some("CORDIAL_WEBVIEW_TEST".to_string()),
         hide_header: false,
         back_button_visible: true,
         show_domain_as_title: true,
+        native_bridge,
+    }
+}
+
+// ---------------------------------------------------------- the native bridge
+//
+// roblox.com decides from the User-Agent whether it is running inside an app
+// with a native bridge, and Cordial's default identity says it is not, so a page
+// in a web window has nobody to tell when it finishes a task. Windows whose whole
+// purpose is to tell the app something are given the identity that says it is.
+
+/// The screen the engine reports (`APP_READY`) while it is asking the platform
+/// to run a sign-in challenge: the two-step verification code, the security
+/// question, and the checks that follow a password.
+///
+/// Both #83 reporters' logs have it 60 to 75 ms before the `openWindow`:
+/// `APP_READY ChallengeHybridWebView`, then the window. It is the engine saying
+/// what the window is for, which is why this is a screen name and not a
+/// guess at the window's address.
+pub const CHALLENGE_SCREEN: &str = "ChallengeHybridWebView";
+
+/// Whether a window the engine opens while `screen` is up must run with the
+/// native bridge.
+pub fn screen_needs_native_bridge(screen: Option<&str>) -> bool {
+    screen == Some(CHALLENGE_SCREEN)
+}
+
+/// The User-Agent that makes roblox.com run its hybrid layer natively.
+///
+/// **Measured, not inferred** (`docs/analysis/webview-surface.md` section 10):
+/// one page, one injected bridge, only the User-Agent changed. Under the
+/// default `Windows App ... Desktop` identity `Roblox.Hybrid.Bridge.isNative` is
+/// `false` and `Roblox.Hybrid.Navigation.navigateToFeature(...)` reaches
+/// nothing. Under `Android App ... Tablet Hybrid()` it is `true`, and the same
+/// call posts `{"moduleID":"Navigation","functionName":"navigateToFeature",
+/// "params":{"params":{"feature":"CaptchaShown"}},"callbackID":"..."}` to
+/// `window.__globalRobloxAndroidBridge__.executeRoblox`. A page that finishes a
+/// sign-in challenge tells the app through that bridge, so a window without it
+/// finishes the challenge and the engine never hears (#83). mocktail and Sober
+/// both send this shape to their web views whatever they tell the engine.
+///
+/// Both tokens are needed (`ROBLOX Android App` and `Hybrid()`): the same string
+/// without `Hybrid()` is not native. The channel stays `Cordial` rather than
+/// borrowing `GooglePlayStore`, and a string that already says Android hybrid
+/// is returned as it is. `None` when the version cannot be read out of
+/// `engine_ua`, in which case the caller keeps the engine's own string and says
+/// so.
+pub fn native_bridge_user_agent(engine_ua: &str) -> Option<String> {
+    if engine_ua.contains("ROBLOX Android App") && engine_ua.contains("Hybrid()") {
+        return Some(engine_ua.to_string());
+    }
+    let after = engine_ua.split("RobloxApp/").nth(1)?;
+    let version: String =
+        after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+    let well_formed = !version.is_empty()
+        && version.len() <= 32
+        && version.split('.').all(|part| !part.is_empty());
+    well_formed.then(|| {
+        format!(
+            "Mozilla/5.0 AppleWebKit/605.1.15 (KHTML, like Gecko)  ROBLOX Android App \
+             {version} Tablet Hybrid()  Cordial RobloxApp/{version} (GlobalDist; Cordial)"
+        )
+    })
+}
+
+// ---------------------------------------------------------- the security check
+//
+// Sign-in sometimes ends in a security check (bot verification, a security
+// code). The engine does not send `openWindow` for it; it sends the app-bridge
+// notification `OPEN_CAPTCHA_VIEW` and expects the platform to show the page.
+// Cordial printed the notification and dropped it, so sign-in stopped at the
+// check (#83).
+//
+// The payload keys, the page address and the "open it in the web view, close it
+// on success, then tell the engine focus is back" sequence are taken from
+// mocktail's `roblox_web_view_bridge.cc` (Copyright 2026 komaruworld,
+// Apache-2.0; see `NOTICE` and `third_party/mocktail-webview/`) and rewritten
+// here. **They are `INFERRED` for this client**: nothing in `docs/traces/` has
+// the notification, and a real check cannot be triggered without credentials.
+
+/// The app-bridge notification type the engine sends.
+pub const OPEN_CAPTCHA_VIEW: &str = "OPEN_CAPTCHA_VIEW";
+
+const CAPTCHA_LOGIN_URL: &str = "https://www.roblox.com/captcha/app/login";
+const CAPTCHA_SIGNUP_URL: &str = "https://www.roblox.com/captcha/app/signup";
+const CAPTCHA_TITLE: &str = "Roblox verification";
+/// `hybrid-return-token=1` is what makes the page report through the hybrid
+/// bridge instead of navigating on its own.
+const CAPTCHA_RETURN_QUERY: &str = "hybrid-return-token=1";
+const MAX_CAPTCHA_PAYLOAD_BYTES: usize = 64 * 1024;
+const MAX_CAPTCHA_CREDENTIAL_BYTES: usize = 4096;
+
+/// Set while a security check is the window on screen, so its close is
+/// reported as focus returning rather than as an `openWindow` window closing.
+static CAPTCHA_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+const BROADCAST_EVENT_SYMBOL: &str =
+    "Java_com_roblox_engine_jni_NativeGLInterface_nativeBroadcastEventWithNamespace";
+const BROADCAST_EVENT_CLASS: &str = "com/roblox/engine/jni/NativeGLInterface";
+static BROADCAST_EVENT_NATIVE: OnceLock<usize> = OnceLock::new();
+
+/// Percent-encode everything but RFC 3986 unreserved characters, which is what
+/// `curl_easy_escape` does and so what the page was written against.
+fn escape_query_value(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for &byte in value.as_bytes() {
+        if byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'.' | b'_' | b'~') {
+            out.push(byte as char);
+        } else {
+            out.push_str(&format!("%{byte:02X}"));
+        }
+    }
+    out
+}
+
+/// The page to show for an `OPEN_CAPTCHA_VIEW` payload.
+///
+/// `captchaType` is `login` for a sign-in check, which also needs the
+/// credential being signed in with (`cvalueType`: `username`, `email` or
+/// `phone_number`, and `cvalue`); anything else is the sign-up check, which
+/// needs nothing. Error text never contains the payload, because `cvalue` is a
+/// person's username, email address or phone number.
+pub fn captcha_url(payload: &str) -> Result<String, String> {
+    if payload.is_empty() || payload.len() > MAX_CAPTCHA_PAYLOAD_BYTES {
+        return Err("the payload is empty or too large".into());
+    }
+    let value: serde_json::Value =
+        serde_json::from_str(payload).map_err(|_| "the payload is not JSON".to_string())?;
+    let object = value.as_object().ok_or("the payload is not a JSON object")?;
+    let captcha_type = object
+        .get("captchaType")
+        .and_then(|v| v.as_str())
+        .ok_or("the payload has no captchaType")?;
+    if captcha_type != "login" {
+        return Ok(format!("{CAPTCHA_SIGNUP_URL}?{CAPTCHA_RETURN_QUERY}"));
+    }
+    let credential_type = match object.get("cvalueType").and_then(|v| v.as_str()) {
+        Some("username") => "username",
+        Some("email") => "email",
+        Some("phone_number") => "phonenumber",
+        Some(_) => return Err("the login check's credential type is not one Cordial knows".into()),
+        None => return Err("the login check has no credential type".into()),
+    };
+    let credential = object
+        .get("cvalue")
+        .and_then(|v| v.as_str())
+        .ok_or("the login check has no credential value")?;
+    if credential.is_empty()
+        || credential.len() > MAX_CAPTCHA_CREDENTIAL_BYTES
+        || credential.bytes().any(|b| b < 0x20 || b == 0x7f)
+    {
+        return Err("the login check's credential value is not usable".into());
+    }
+    Ok(format!(
+        "{CAPTCHA_LOGIN_URL}?credentialsType={credential_type}&credentialsValue={}&{CAPTCHA_RETURN_QUERY}",
+        escape_query_value(credential)
+    ))
+}
+
+/// What [`dispatch_app_bridge`] did with a notification.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AppBridgeOutcome {
+    /// Not a notification this module acts on.
+    Ignored,
+    /// A request was handed to the presenter.
+    Presented,
+    /// The payload could not be turned into a page; nothing was opened.
+    Refused(String),
+}
+
+/// Turn an app-bridge notification into a window, if it is one that wants one.
+///
+/// `present` is the presenter, passed in so the mapping can be tested without
+/// the process-global [`PRESENTER`].
+pub fn dispatch_app_bridge(
+    kind: &str,
+    data: &str,
+    present: impl FnOnce(OpenWindowRequest),
+) -> AppBridgeOutcome {
+    if kind != OPEN_CAPTCHA_VIEW {
+        return AppBridgeOutcome::Ignored;
+    }
+    match captcha_url(data) {
+        Ok(url) => {
+            present(OpenWindowRequest {
+                url,
+                title: Some(CAPTCHA_TITLE.to_string()),
+                hide_header: false,
+                back_button_visible: false,
+                show_domain_as_title: false,
+                // The check's whole job is to tell the app it was passed.
+                native_bridge: true,
+            });
+            AppBridgeOutcome::Presented
+        }
+        Err(reason) => AppBridgeOutcome::Refused(reason),
+    }
+}
+
+/// The sink the C side calls, on the engine's thread, for `OPEN_CAPTCHA_VIEW`.
+///
+/// The payload is not printed (it names the account being signed in), and the
+/// address is not either, for the reason [`on_open_window`] gives.
+extern "C" fn on_app_bridge(kind: *const c_char, data: *const c_char) {
+    // SAFETY: the C side passes NUL-terminated strings that outlive the call.
+    let (Some(kind), Some(data)) = (unsafe { crate::ffi_util::borrow_request(kind) }, unsafe {
+        crate::ffi_util::borrow_request(data)
+    }) else {
+        println!("[webview] an app-bridge notification arrived with a null field");
+        return;
+    };
+    let (Ok(kind), Ok(data)) = (kind.to_str(), data.to_str()) else {
+        println!("[webview] an app-bridge notification was not valid UTF-8");
+        return;
+    };
+    let outcome = dispatch_app_bridge(kind, data, |request| match PRESENTER.get() {
+        Some(present) => {
+            CAPTCHA_OPEN.store(true, Ordering::Release);
+            println!("[webview] OPEN_CAPTCHA_VIEW: opening the security check");
+            present(request);
+        }
+        None => println!(
+            "[webview] OPEN_CAPTCHA_VIEW arrived, but no presenter is installed; the security \
+             check cannot be shown"
+        ),
+    });
+    if let AppBridgeOutcome::Refused(reason) = outcome {
+        println!("[webview] OPEN_CAPTCHA_VIEW could not be opened: {reason}");
+    }
+}
+
+/// Start delivering `OPEN_CAPTCHA_VIEW` to [`on_app_bridge`].
+///
+/// Called once from `load.rs`, after the presenter is installed. The class hook
+/// that reports the notification is registered unconditionally, so a build that
+/// never calls this still logs that the engine asked, and says nothing is
+/// listening.
+pub fn install_app_bridge_sink() {
+    cordial_linker_sys::game_activity::app_bridge_set_sink(Some(on_app_bridge));
+}
+
+/// Development trigger behind `CORDIAL_WEBVIEW_TEST_CAPTCHA=signup`: send
+/// `OPEN_CAPTCHA_VIEW` for the sign-up check through the real C++ hook and sink.
+///
+/// A real sign-in check needs an account's credentials in the payload, which
+/// nothing here should ever fabricate or type, so only the sign-up check can be
+/// triggered. It carries nothing but a type, and the page it opens is the
+/// public one a new visitor would see.
+pub fn dev_trigger_captcha(kind: &str) {
+    if kind != "signup" {
+        println!("[webview] CORDIAL_WEBVIEW_TEST_CAPTCHA={kind:?} is not a check this trigger sends (only `signup`)");
+        return;
+    }
+    cordial_linker_sys::game_activity::app_bridge_test_fire(
+        OPEN_CAPTCHA_VIEW,
+        r#"{"captchaType":"signup"}"#,
+    );
+}
+
+/// Tell the engine app focus is back, after a security check closed.
+///
+/// `INFERRED`, as the section above: the call and its three arguments
+/// (`AppInput`, empty, `Focused`) are mocktail's, and nothing here has seen the
+/// engine act on it. It is the same call whether or not it does anything, so a
+/// wrong guess leaves the engine as it was.
+fn return_focus_to_engine() {
+    let Some(native) = BROADCAST_EVENT_NATIVE.get() else {
+        println!(
+            "[webview] the security check closed, but {BROADCAST_EVENT_SYMBOL} was never \
+             resolved; the engine will not be told focus is back"
+        );
+        return;
+    };
+    let f = *native as *mut c_void;
+    // SAFETY: resolved under its own symbol name in `arm` and used for nothing
+    // else; `call_static_strings` owns the buffers it passes for the call.
+    match unsafe {
+        cordial_linker_sys::game_activity::call_static_strings(
+            f,
+            BROADCAST_EVENT_CLASS,
+            &["AppInput", "", "Focused"],
+        )
+    } {
+        Ok(()) => println!("[webview] the security check closed; the engine was told focus is back"),
+        Err(e) => println!("[webview] telling the engine focus is back failed: {e}"),
     }
 }
 
@@ -686,17 +989,27 @@ extern "C" fn on_open_window(json: *const c_char) {
     };
     match parse_open_window(json, keys) {
         Ok(request) => {
+            // The engine's own window takes over: whatever closes next is
+            // answered on the message bus, not as a security check.
+            CAPTCHA_OPEN.store(false, Ordering::Release);
+            let mut request = request;
+            let screen = cordial_linker_sys::game_activity::last_app_ready();
+            request.native_bridge = screen_needs_native_bridge(screen.as_deref());
             let verdict = cordial_shell::webview_policy::evaluate(&request.url);
             println!(
-                "[webview] openWindow message arrived: {} bytes, host {} (scheme {}), privileged \
-                 {}, hideHeader {}, backButtonVisible {}, showDomainAsTitle {}",
+                "[webview] openWindow message arrived: {} bytes, host {} (scheme {}), path {}, \
+                 privileged {}, hideHeader {}, backButtonVisible {}, showDomainAsTitle {}, \
+                 engine screen {}, native bridge {}",
                 bytes.len(),
                 verdict.host,
                 verdict.scheme,
+                cordial_shell::webview_policy::loggable_path(&request.url),
                 verdict.privileged_bridge_allowed,
                 request.hide_header,
                 request.back_button_visible,
                 request.show_domain_as_title,
+                screen.as_deref().unwrap_or("(none yet)"),
+                request.native_bridge,
             );
             match PRESENTER.get() {
                 Some(present) => present(request),
@@ -779,6 +1092,18 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
         None => println!(
             "  webview: signalJavascriptCallback is not exported by this build; bridge messages \
              will not be forwarded to the engine"
+        ),
+    }
+
+    // `nativeBroadcastEventWithNamespace`, which a closed security check uses
+    // to hand app focus back to the engine -- see [`report_window_closed`].
+    match symbol(BROADCAST_EVENT_SYMBOL) {
+        Some(f) => {
+            let _ = BROADCAST_EVENT_NATIVE.set(f as usize);
+        }
+        None => println!(
+            "  webview: {BROADCAST_EVENT_SYMBOL} is not exported by this build; a closed \
+             security check will not hand focus back to the engine"
         ),
     }
 
@@ -1025,6 +1350,13 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
 /// run. Silence here would read as "the report was sent" to whoever is
 /// reading the log next to a canvas that is still blank.
 pub fn report_window_closed() {
+    // A security check was not opened by the engine's `openWindow`, so the
+    // engine is not waiting for `handleWindowClose` -- it is told app focus is
+    // back, which is what mocktail does for the same window.
+    if CAPTCHA_OPEN.swap(false, Ordering::AcqRel) {
+        return_focus_to_engine();
+        return;
+    }
     let (Some(bus_id), Some(publish_raw)) = (CLOSE_BUS_ID.get(), PUBLISH_RAW_NATIVE.get()) else {
         println!(
             "[webview] a window closed, but this build never armed a handle-window-close report \
@@ -1268,7 +1600,31 @@ pub fn to_shell_request(
         // to be. `None` here means `cordial_shell::webview::open` leaves
         // WebKitGTK's own default in place rather than fabricating a string;
         // see that module for why a mismatch is worse than a fallback.
-        user_agent: user_agent(),
+        //
+        // The one exception is a window that has to run with the native
+        // bridge, which gets the Android hybrid shape of the same identity.
+        user_agent: window_user_agent(request.native_bridge, user_agent()),
+    }
+}
+
+/// The User-Agent one window is opened with. Split from [`to_shell_request`]
+/// so the choice can be tested without a native shim to ask.
+pub fn window_user_agent(native_bridge: bool, engine_ua: Option<String>) -> Option<String> {
+    if !native_bridge {
+        return engine_ua;
+    }
+    match engine_ua.as_deref().and_then(native_bridge_user_agent) {
+        Some(ua) => {
+            println!("[webview] this window runs with the app's native bridge (Android hybrid User-Agent)");
+            Some(ua)
+        }
+        None => {
+            println!(
+                "[webview] this window needs the app's native bridge, but the engine's \
+                 User-Agent has no version to build one from; it keeps the engine's own"
+            );
+            engine_ua
+        }
     }
 }
 
@@ -1506,6 +1862,7 @@ mod tests {
                 hide_header: false,
                 back_button_visible: false,
                 show_domain_as_title: false,
+                native_bridge: false,
             });
         }
         assert_eq!(CALLS.load(O::SeqCst), 1, "the second presenter must never run");
@@ -1539,6 +1896,158 @@ mod tests {
     /// same thing, defeating the reason this diagnostic sets them at all (see
     /// `dev_trigger_open_window`'s own doc). Deliberately does not touch
     /// `PRESENTER`, so it cannot race with `set_presenter_keeps_the_first_installation`.
+    #[test]
+    fn a_login_check_carries_the_credential_escaped() {
+        let url = captcha_url(
+            r#"{"captchaType":"login","cvalueType":"email","cvalue":"a b+c@example.com"}"#,
+        )
+        .expect("a login payload");
+        assert_eq!(
+            url,
+            "https://www.roblox.com/captcha/app/login?credentialsType=email\
+             &credentialsValue=a%20b%2Bc%40example.com&hybrid-return-token=1"
+        );
+    }
+
+    #[test]
+    fn a_phone_number_is_named_phonenumber_in_the_address() {
+        let url = captcha_url(
+            r#"{"captchaType":"login","cvalueType":"phone_number","cvalue":"+15551234"}"#,
+        )
+        .unwrap();
+        assert!(url.contains("credentialsType=phonenumber&credentialsValue=%2B15551234&"), "{url}");
+    }
+
+    #[test]
+    fn any_other_captcha_type_is_the_sign_up_check() {
+        assert_eq!(
+            captcha_url(r#"{"captchaType":"signup"}"#).unwrap(),
+            "https://www.roblox.com/captcha/app/signup?hybrid-return-token=1"
+        );
+    }
+
+    #[test]
+    fn a_bad_payload_is_refused_without_echoing_the_credential() {
+        for payload in [
+            "",
+            "not json",
+            "[]",
+            r#"{}"#,
+            r#"{"captchaType":"login"}"#,
+            r#"{"captchaType":"login","cvalueType":"fax","cvalue":"secret-name"}"#,
+            r#"{"captchaType":"login","cvalueType":"username"}"#,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":""}"#,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":"se\ncret-name"}"#,
+        ] {
+            let err = captcha_url(payload).expect_err(payload);
+            assert!(!err.contains("secret-name"), "{err}");
+        }
+        let long = format!(
+            r#"{{"captchaType":"login","cvalueType":"username","cvalue":"{}"}}"#,
+            "x".repeat(MAX_CAPTCHA_CREDENTIAL_BYTES + 1)
+        );
+        assert!(captcha_url(&long).is_err());
+    }
+
+    #[test]
+    fn open_captcha_view_is_presented_as_a_window_and_nothing_else_is() {
+        let mut seen = None;
+        let outcome = dispatch_app_bridge(
+            OPEN_CAPTCHA_VIEW,
+            r#"{"captchaType":"login","cvalueType":"username","cvalue":"someone"}"#,
+            |request| seen = Some(request),
+        );
+        assert_eq!(outcome, AppBridgeOutcome::Presented);
+        let request = seen.expect("the presenter was called");
+        assert!(request.url.starts_with("https://www.roblox.com/captcha/app/login?"));
+        assert_eq!(request.title.as_deref(), Some("Roblox verification"));
+        assert!(!request.hide_header);
+        assert!(request.native_bridge, "the check reports its result through the app's bridge");
+
+        let mut called = false;
+        for kind in ["APP_READY", "PURCHASE_ROBUX", ""] {
+            assert_eq!(
+                dispatch_app_bridge(kind, "{}", |_| called = true),
+                AppBridgeOutcome::Ignored
+            );
+        }
+        assert!(!called);
+    }
+
+    /// The User-Agent the second #83 reporter's client sent, from their log.
+    const DESKTOP_UA: &str = "Mozilla/5.0 (31440MB; 1720x1350; 160x160; 1720x1350; Cordial) \
+        AppleWebKit/537.36 (KHTML, like Gecko)  ROBLOX Windows App 2.738.1397 Desktop Hybrid()  \
+        Cordial RobloxApp/2.738.1397 (GlobalDist; Cordial)";
+
+    /// The window the engine opens for a sign-in challenge is the one that must
+    /// reach the app, and nothing else is changed by it: Join works under the
+    /// desktop identity (#40) and is not to be put at risk by a fix for sign-in.
+    #[test]
+    fn only_the_challenge_screen_asks_for_the_native_bridge() {
+        assert!(screen_needs_native_bridge(Some("ChallengeHybridWebView")));
+        for other in ["Login", "Home", "Landing", "Startup", "", "challengehybridwebview"] {
+            assert!(!screen_needs_native_bridge(Some(other)), "{other:?}");
+        }
+        assert!(!screen_needs_native_bridge(None), "no screen reported yet");
+    }
+
+    /// Measured on 2026-10-16 against roblox.com: this string and mocktail's
+    /// make `Roblox.Hybrid.Bridge.isNative` true, the desktop one makes it
+    /// false, and the same string without `Hybrid()` is false too.
+    #[test]
+    fn the_native_bridge_user_agent_says_android_hybrid_and_keeps_the_cordial_channel() {
+        let ua = native_bridge_user_agent(DESKTOP_UA).expect("the version is in the string");
+        assert!(ua.contains("ROBLOX Android App 2.738.1397 Tablet Hybrid()"), "{ua}");
+        assert!(ua.ends_with("Cordial RobloxApp/2.738.1397 (GlobalDist; Cordial)"), "{ua}");
+        assert!(!ua.contains("Windows") && !ua.contains("GooglePlayStore"), "{ua}");
+        // The engine's own User-Agent is untouched: only the window changes.
+        assert!(DESKTOP_UA.contains("Windows App"));
+    }
+
+    #[test]
+    fn a_user_agent_that_is_already_android_hybrid_is_kept_as_it_is() {
+        let already = "Mozilla/5.0 AppleWebKit/537.36 ROBLOX Android App 2.738.1397 Tablet \
+            Hybrid()  GooglePlayStore RobloxApp/2.738.1397 (GlobalDist; GooglePlayStore)";
+        assert_eq!(native_bridge_user_agent(already).as_deref(), Some(already));
+    }
+
+    #[test]
+    fn no_version_means_no_native_user_agent_rather_than_an_invented_one() {
+        for ua in ["", "Mozilla/5.0", "x RobloxApp/ (GlobalDist)", "x RobloxApp/2. y", "x RobloxApp/.2 y"] {
+            assert_eq!(native_bridge_user_agent(ua), None, "{ua:?}");
+        }
+    }
+
+    #[test]
+    fn a_window_gets_the_native_user_agent_only_when_it_asks() {
+        let plain = window_user_agent(false, Some(DESKTOP_UA.into()));
+        assert_eq!(plain.as_deref(), Some(DESKTOP_UA));
+        let native = window_user_agent(true, Some(DESKTOP_UA.into())).expect("a string");
+        assert!(native.contains("Android App") && native.contains("Hybrid()"), "{native}");
+        // Asking for the bridge with nothing to build it from keeps what there is.
+        assert_eq!(window_user_agent(true, Some("no version".into())).as_deref(), Some("no version"));
+        assert_eq!(window_user_agent(true, None), None);
+        assert_eq!(window_user_agent(false, None), None);
+    }
+
+    /// The parser only knows what the engine wrote. Whether a window needs the
+    /// bridge is decided by whoever knows what it is for, so a parsed request
+    /// never asks for it on its own.
+    #[test]
+    fn a_parsed_open_window_never_asks_for_the_native_bridge() {
+        let request =
+            parse_open_window(r#"{"url":"https://www.roblox.com/x"}"#, &stand_in_keys()).unwrap();
+        assert!(!request.native_bridge);
+    }
+
+    #[test]
+    fn a_refused_open_captcha_view_never_reaches_the_presenter() {
+        let mut called = false;
+        let outcome = dispatch_app_bridge(OPEN_CAPTCHA_VIEW, "garbage", |_| called = true);
+        assert!(matches!(outcome, AppBridgeOutcome::Refused(_)), "{outcome:?}");
+        assert!(!called);
+    }
+
     #[test]
     fn the_synthetic_request_is_visibly_a_diagnostic() {
         let request = synthetic_open_window_request("https://www.roblox.com/home".to_string());

@@ -151,9 +151,105 @@ pub fn bridge_message_acceptable(policy: &UriPolicy, len: usize) -> Result<(), &
     Ok(())
 }
 
+/// The path of `uri` for a log line: no query, no fragment, and any segment
+/// that is not a short plain word replaced by `<id>`.
+///
+/// A web-view address can carry a one-time ticket in its query
+/// (`docs/analysis/webview-surface.md` section 4), and a path segment can be an
+/// identifier nobody wants in a log somebody pastes into an issue. The
+/// segments that are left (`captcha`, `app`, `login`) are what says which page
+/// the engine asked for, which is the part a bug report needs (#83 had the host
+/// and nothing else).
+pub fn loggable_path(uri: &str) -> String {
+    let Ok(parsed) = gtk4::glib::Uri::parse(uri, gtk4::glib::UriFlags::NONE) else {
+        return "(unparseable)".into();
+    };
+    let path = parsed.path().to_string();
+    if path.is_empty() {
+        return "/".into();
+    }
+    let word = |segment: &str| {
+        segment.len() <= 32 && segment.bytes().all(|b| b.is_ascii_alphabetic() || b == b'-' || b == b'_')
+    };
+    let mut shown: Vec<&str> = Vec::new();
+    for (index, segment) in path.split('/').enumerate() {
+        if index >= 9 {
+            shown.push("...");
+            break;
+        }
+        shown.push(if segment.is_empty() || word(segment) { segment } else { "<id>" });
+    }
+    shown.join("/")
+}
+
+/// Name a hybrid-bridge command for a log line: `Module.function`, with the
+/// feature in brackets for `Navigation.navigateToFeature`, which is the
+/// command the sign-in checks speak and whose feature says which one.
+///
+/// Names only, never `params`: the parameters are whatever the page and the
+/// engine are mid-conversation about. `None` when the command is not a hybrid
+/// command or a name is not a plain identifier.
+pub fn describe_command(command: &str) -> Option<String> {
+    let value: serde_json::Value = serde_json::from_str(command).ok()?;
+    let object = value.as_object()?;
+    let name = |v: Option<&serde_json::Value>| {
+        v?.as_str()
+            .filter(|s| !s.is_empty() && s.len() <= 64)
+            .filter(|s| s.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')))
+            .map(str::to_string)
+    };
+    let module = name(object.get("moduleID"))?;
+    let function = name(object.get("functionName"))?;
+    let feature = object
+        .get("params")
+        .and_then(|p| p.get("params"))
+        .and_then(|p| name(p.get("feature")));
+    Some(match feature {
+        Some(feature) => format!("{module}.{function}({feature})"),
+        None => format!("{module}.{function}"),
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_logged_path_keeps_words_and_drops_query_and_identifiers() {
+        assert_eq!(
+            loggable_path("https://www.roblox.com/captcha/app/login?credentialsValue=somebody&x=1#frag"),
+            "/captcha/app/login"
+        );
+        assert_eq!(
+            loggable_path("https://www.roblox.com/users/123456/profile"),
+            "/users/<id>/profile"
+        );
+        assert_eq!(
+            loggable_path("https://www.roblox.com/challenge/0f8fad5b-d9cb-469f-a165-70867728950e"),
+            "/challenge/<id>"
+        );
+        assert_eq!(loggable_path("https://www.roblox.com"), "/");
+        assert_eq!(loggable_path("not a uri"), "(unparseable)");
+    }
+
+    #[test]
+    fn a_command_is_named_without_its_parameters() {
+        let navigate = r#"{"moduleID":"Navigation","functionName":"navigateToFeature","params":{"params":{"feature":"CaptchaSuccess","secret":"x"}},"callbackID":"c1"}"#;
+        assert_eq!(describe_command(navigate).as_deref(), Some("Navigation.navigateToFeature(CaptchaSuccess)"));
+        let plain = r#"{"moduleID":"Game","functionName":"launchGame","params":{"placeId":1}}"#;
+        assert_eq!(describe_command(plain).as_deref(), Some("Game.launchGame"));
+        for not_a_command in [
+            "not json",
+            r#"{"placeId":1}"#,
+            r#"{"moduleID":"a b","functionName":"f"}"#,
+            r#"{"moduleID":"M","functionName":"f/g"}"#,
+        ] {
+            assert_eq!(describe_command(not_a_command), None, "{not_a_command}");
+        }
+        // A feature that is not a plain identifier is left out rather than printed.
+        let odd = r#"{"moduleID":"Navigation","functionName":"navigateToFeature","params":{"params":{"feature":"a b"}}}"#;
+        assert_eq!(describe_command(odd).as_deref(), Some("Navigation.navigateToFeature"));
+    }
 
     #[test]
     fn a_roblox_page_may_load_and_may_use_the_bridge() {

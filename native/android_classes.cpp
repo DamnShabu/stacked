@@ -726,6 +726,20 @@ std::atomic<void (*)()> g_identity_logout_sink{nullptr};
 // flag here and does its work from the looper thread, which is the thread every
 // other native call in this process is made from.
 std::atomic<void (*)(const char*)> g_app_ready_sink{nullptr};
+
+// The screen the engine most recently reported with `APP_READY` (`Login`,
+// `ChallengeHybridWebView`, `Home`...). A sink is for acting on an event; this
+// is for the one reader that needs the *state* when something else happens --
+// `webview.rs` asks which screen is up at the moment the engine opens a web
+// window, because the screen is the only thing that says what the window is
+// for (#83). A string under a mutex rather than an atomic pointer: the engine's
+// thread writes it and the thread opening the window reads it.
+std::mutex g_app_screen_mutex;
+std::string g_app_screen;
+
+// App-bridge notifications that need the platform to act rather than merely be
+// told. Today that is `OPEN_CAPTCHA_VIEW` alone; the rest are still reports.
+std::atomic<void (*)(const char*, const char*)> g_app_bridge_sink{nullptr};
 } // namespace
 
 jlong identity_user_id() {
@@ -1048,10 +1062,37 @@ public:
     /// Resolving them is worth doing on its own account, because an unresolved
     /// JNI call leaves a pending exception that the next JNI call on the same
     /// thread trips over, which surfaces far away from the cause.
+    ///
+    /// **`OPEN_CAPTCHA_VIEW` is the exception, and its payload is withheld.**
+    /// It is how the engine asks for the sign-in security check (the
+    /// "bot verification" and security-code screens), and its data carries the
+    /// username, email or phone number being signed in with, so the size is
+    /// reported and the content is not. Printing it whole was the previous
+    /// behaviour, and it also did nothing else: the request was received and
+    /// dropped, so sign-in stopped at the verification step (#83). It now goes
+    /// to the sink, which opens the page.
     static void onAppBridgeNotification(ENV*, Class*, std::shared_ptr<String> type,
                                         std::shared_ptr<String> data) {
-        fprintf(stderr, "[roblox] app bridge: %s %s\n",
-                type ? type->c_str() : "(null)", data ? data->c_str() : "");
+        dispatchAppBridge(type ? static_cast<const std::string&>(*type) : std::string(),
+                          data ? static_cast<const std::string&>(*data) : std::string());
+    }
+
+    /// The body of the hook above, split out so `cordial_app_bridge_test_fire`
+    /// can run exactly this path without a JNI call to carry the arguments.
+    static void dispatchAppBridge(const std::string& kind, const std::string& payload) {
+        if (kind == "OPEN_CAPTCHA_VIEW") {
+            fprintf(stderr, "[roblox] app bridge: OPEN_CAPTCHA_VIEW <payload elided, %zu bytes>\n",
+                    payload.size());
+            if (auto* sink = g_app_bridge_sink.load(std::memory_order_acquire)) {
+                sink(kind.c_str(), payload.c_str());
+            } else {
+                fprintf(stderr,
+                        "[roblox] app bridge: nothing is listening for OPEN_CAPTCHA_VIEW, so the "
+                        "security check cannot be shown\n");
+            }
+            return;
+        }
+        fprintf(stderr, "[roblox] app bridge: %s %s\n", kind.c_str(), payload.c_str());
     }
 
     /// The one notification Cordial acts on rather than only prints.
@@ -1110,6 +1151,10 @@ public:
                 type ? type->c_str() : "(null)", payload.c_str());
 
         if (kind == "APP_READY") {
+            {
+                std::lock_guard<std::mutex> lock(g_app_screen_mutex);
+                g_app_screen = payload;
+            }
             if (auto* sink = g_app_ready_sink.load(std::memory_order_acquire)) {
                 sink(payload.c_str());
             }
@@ -1600,6 +1645,39 @@ extern "C" void cordial_identity_set_sinks(void (*on_login)(const char*),
 /// be mistaken for "the engine never called".
 extern "C" void cordial_app_ready_set_sink(void (*on_ready)(const char*)) {
     cordial::g_app_ready_sink.store(on_ready, std::memory_order_release);
+}
+
+/// The screen the engine last reported with `APP_READY`, copied into `buf`.
+///
+/// Returns the full length whether or not it fit, as `snprintf` does, and 0 when
+/// the engine has reported none yet. The payload is a screen name, not
+/// anything about the user.
+extern "C" size_t cordial_last_app_ready(char* buf, size_t n) {
+    std::lock_guard<std::mutex> lock(cordial::g_app_screen_mutex);
+    const std::string& screen = cordial::g_app_screen;
+    if (buf && n > 0) {
+        size_t copy = screen.size() < n - 1 ? screen.size() : n - 1;
+        screen.copy(buf, copy);
+        buf[copy] = '\0';
+    }
+    return screen.size();
+}
+
+/// Where `OPEN_CAPTCHA_VIEW` is delivered, or null to stop delivering it.
+///
+/// Same split as the sinks above: the class hook is registered unconditionally
+/// and the sink decides whether anything acts, so a silent sign-in cannot be
+/// confused with an engine that never asked.
+extern "C" void cordial_app_bridge_set_sink(void (*on_notification)(const char*, const char*)) {
+    cordial::g_app_bridge_sink.store(on_notification, std::memory_order_release);
+}
+
+/// Deliver an app-bridge notification as the engine's own call would, for the
+/// development trigger in `load.rs`. A real security check needs an account's
+/// credentials, so this is how the path from the hook to the web window is
+/// exercised without one.
+extern "C" void cordial_app_bridge_test_fire(const char* kind, const char* payload) {
+    cordial::NativeGLJavaInterface::dispatchAppBridge(kind ? kind : "", payload ? payload : "");
 }
 
 namespace cordial {
