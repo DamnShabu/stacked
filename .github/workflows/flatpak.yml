@@ -305,8 +305,8 @@ jobs:
       - name: Install flatpak
         run: |
           sudo add-apt-repository -y ppa:flatpak/stable
-          sudo apt-get update
-          sudo apt-get install -y flatpak flatpak-builder ostree
+          sudo apt-get -o Acquire::Retries=5 update
+          sudo apt-get -o Acquire::Retries=5 install -y flatpak flatpak-builder ostree
           flatpak --version
           flatpak-builder --version
           have=$(flatpak --version | awk '{print $2}')
