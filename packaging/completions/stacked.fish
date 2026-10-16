@@ -35,6 +35,7 @@ complete -c stacked -n '__fish_seen_subcommand_from plugins; and test (count (co
 complete -c stacked -n '__fish_seen_subcommand_from plugins' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l crash
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l path
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l lines
 complete -c stacked -n '__fish_seen_subcommand_from desktop; and test (count (commandline -opc)) -eq 2' -a 'install remove status'

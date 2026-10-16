@@ -132,8 +132,9 @@ Setting up
   completions SHELL       Print tab completion for bash, zsh or fish.
 
 Other
-  logs [--path] [--lines N] [--profile NAME]
-                          Show the end of Roblox's own newest log.
+  logs [--crash] [--path] [--lines N] [--profile NAME]
+                          Show the end of Roblox's own newest log, or with
+                          --crash the newest crash report.
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
   help                    This. Also -h, --help.
@@ -467,6 +468,9 @@ fn play(args: &[String]) -> u8 {
         ),
         None => println!("stacked: starting Roblox on profile {profile_name:?}"),
     }
+    // Taken before the claim moves into the client, so that a crash can still
+    // be written where `stacked logs --crash` looks for it.
+    let profile_dir = claim.profile_dir().to_path_buf();
     let mut instance = match launch::spawn(
         &build,
         claim,
@@ -499,12 +503,21 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
-    if crash::is_crash(&status, &instance.recent_output()) {
+    let output = instance.recent_output();
+    if crash::is_crash(&status, &output) {
+        let saved = match crash::write_report(&profile_dir, &status, &diagnostics::report(), &output) {
+            Ok(path) => format!(
+                "The end of its output is saved in {}; attach that file to a bug report.",
+                path.display()
+            ),
+            Err(e) => format!(
+                "Its output is above; saving it to {} failed: {e}.",
+                profile_dir.join("crashes").display()
+            ),
+        };
         eprintln!();
         report(&format!(
-            "{} Its output is above, or in the journal if it was started from the desktop. \
-             `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
-             bug report needs alongside it.",
+            "{} {saved} `stacked logs` shows Roblox's own log from the same session.",
             crash::describe(&status),
         ));
         eprintln!("It was started with:\n{}", instance.command_line);
@@ -664,8 +677,9 @@ fn profiles(args: &[String]) -> u8 {
     }
 }
 
-/// `stacked logs [--profile NAME] [--path] [--lines N]`: the engine's own
-/// newest log, which the bug template calls the most useful attachment and
+/// `stacked logs [--profile NAME] [--crash] [--path] [--lines N]`: the engine's
+/// own newest log, or with `--crash` the newest report `crash::write_report`
+/// left. The engine's log is the one the bug template calls the most useful attachment and
 /// which lives four directories inside the profile where nobody finds it.
 ///
 /// `<profile>/data/files/appData/logs` is where the engine writes when the
@@ -680,11 +694,13 @@ fn logs(args: &[String]) -> u8 {
         }
     };
     let mut path_only = false;
+    let mut crash_report = false;
     let mut lines = 50usize;
     let mut it = rest.iter();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--path" => path_only = true,
+            "--crash" => crash_report = true,
             "--lines" | "-n" => match it.next().and_then(|n| n.parse().ok()) {
                 Some(n) => lines = n,
                 None => {
@@ -693,7 +709,7 @@ fn logs(args: &[String]) -> u8 {
                 }
             },
             other => {
-                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path and --lines");
+                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --crash, --path and --lines");
                 return 2;
             }
         }
@@ -706,6 +722,7 @@ fn logs(args: &[String]) -> u8 {
         }
     };
     let dir = match profile::dir(&name) {
+        Ok(d) if crash_report => d.join("crashes"),
         Ok(d) => d.join("data/files/appData/logs"),
         Err(e) => {
             eprintln!("stacked: {e}");
@@ -713,6 +730,10 @@ fn logs(args: &[String]) -> u8 {
         }
     };
     let Some(newest) = newest_log(&dir) else {
+        if crash_report {
+            eprintln!("stacked: no crash report in {}. One is written when Roblox crashes.", dir.display());
+            return 1;
+        }
         eprintln!("stacked: no Roblox log yet in {}. The engine writes one once it has started.", dir.display());
         return 1;
     };
