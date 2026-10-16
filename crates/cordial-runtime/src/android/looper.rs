@@ -765,6 +765,14 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     // `deadline`; it is now the idle period rather than the input period.
     let watching = game_activity_handle.is_some()
         && super::connection_fd().is_some_and(watch_input_fd);
+    // The X11 editor's own connection, which is a second descriptor: GTK reads
+    // it, not the engine's Xlib. Without it a key typed into the editor waited
+    // out the pump's 50 ms idle timeout before anything saw it.
+    if watching {
+        if let Some(fd) = super::x11_text::connection_fd() {
+            let _ = watch_input_fd(fd);
+        }
+    }
 
     // TEMPORARY INSTRUMENTATION -- not for commit.
     let instr = std::env::var_os("CORDIAL_INSTR").is_some();
@@ -799,6 +807,9 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
     let mut stall_reported = false;
     let mut recovery_tried = false;
     let join_watch = JOIN_REQUESTED.load(Ordering::Relaxed);
+    // Hovers owed to the engine after each game loads; see `NewGameSeed` for
+    // the measurement that puts this here (#29).
+    let mut game_seed = super::input::NewGameSeed::new();
     let join_started = std::time::Instant::now();
     let mut join_reported = false;
     let mut focus_reported: Option<bool> = Some(true);
@@ -1127,9 +1138,8 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             let secs = heartbeat_at.elapsed().as_secs_f64();
             let drawn = now.saturating_sub(heartbeat_presents);
             println!(
-                "[cordial] health: {drawn} presents in {secs:.0}s ({:.1}/s), {now} total{}",
-                drawn as f64 / secs,
-                if drawn == 0 { " -- nothing was drawn" } else { "" }
+                "{}",
+                health_line(drawn, secs, now, super::frame_pacing::summary().as_deref())
             );
             flush_stdout();
             heartbeat_at = std::time::Instant::now();
@@ -1300,6 +1310,21 @@ pub fn pump(duration: std::time::Duration, game_activity_handle: Option<i64>) {
             // pump, and a socket handler is not the place to find out whether
             // they mind. A no-op unless `CORDIAL_DEV_CONTROL` was set.
             crate::devctl::apply_queued(handle);
+            // On this thread, with the other input natives: a new game's
+            // DataModel has seen no input, and the movement controls it binds
+            // at spawn depend on that. `NewGameSeed::due` is a plain counter
+            // compare on every tick, and says yes four times a second for a few
+            // seconds around each join.
+            match game_seed.due(
+                cordial_linker_sys::game_activity::experience_starts()
+                    .wrapping_add(cordial_linker_sys::game_activity::games_loaded()),
+                std::time::Instant::now(),
+            ) {
+                super::input::SeedDue::No => {}
+                due => {
+                    super::input::seed_pointer_for_new_game(due == super::input::SeedDue::First);
+                }
+            }
             // Tell the engine when the user has switched away, and when they
             // have come back.
             //
@@ -1498,33 +1523,48 @@ fn teardown(handle: i64) {
     // kernel's to release. The watchdog is a separate thread because the
     // stuck one cannot time itself out, and it stands down as soon as the
     // sequence returns, so an ordinary exit is untouched.
+    //
+    // **It exits with `TEARDOWN_TIMEOUT_EXIT`, not zero.** The first version
+    // called `_exit(0)`, so a client that had to be cut off reported the same
+    // success as one that shut down, and a launcher, a script or a bug report
+    // could not tell them apart. Nothing else here returns 124, so the exit
+    // status alone now says the sequence did not finish.
     let finished = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let finished = finished.clone();
         let limit = teardown_limit();
-        std::thread::Builder::new()
+        let watchdog = std::thread::Builder::new()
             .name("teardown-watchdog".into())
             .spawn(move || {
-                let deadline = std::time::Instant::now() + limit;
-                while std::time::Instant::now() < deadline {
-                    if finished.load(std::sync::atomic::Ordering::Acquire) {
-                        return;
+                watch_teardown(&finished, limit, || {
+                    eprintln!(
+                        "[android] the engine's shutdown sequence has not returned after {}s; \
+                         exiting without it, with status {TEARDOWN_TIMEOUT_EXIT} (issue #52). \
+                         Cookies were saved before it started.",
+                        limit.as_secs()
+                    );
+                    extern "C" {
+                        fn _exit(status: c_int) -> !;
                     }
-                    std::thread::sleep(std::time::Duration::from_millis(100));
-                }
-                eprintln!(
-                    "[android] the engine's shutdown sequence has not returned after {}s; \
-                     exiting without it (issue #52). Cookies were saved before it started.",
-                    limit.as_secs()
-                );
-                extern "C" {
-                    fn _exit(status: c_int) -> !;
-                }
-                // SAFETY: `_exit` runs no handlers and touches no memory; the
-                // stuck thread holds nothing the kernel will not reclaim.
-                unsafe { _exit(0) }
-            })
-            .ok();
+                    // SAFETY: `_exit` runs no handlers and touches no memory;
+                    // the stuck thread holds nothing the kernel will not
+                    // reclaim.
+                    unsafe { _exit(TEARDOWN_TIMEOUT_EXIT) }
+                });
+            });
+        // **A failed spawn has to be loud, because it silences the bound.** The
+        // core of a client that froze inside this sequence for 47 minutes
+        // (upstream Cordial, 2026-10-03) held no `teardown-watchdog` thread at
+        // all, so nothing was timing the sequence out, and the `ok()` that used
+        // to answer here is the one place a reason could disappear without a
+        // word. Whether the spawn failed or the thread died is INFERRED; what
+        // is measured is that the bound was absent while the log claimed it.
+        if let Err(e) = watchdog {
+            eprintln!(
+                "[android] teardown-watchdog could not start ({e}); the engine's shutdown \
+                 sequence is unbounded in this process and a stuck one will need killing"
+            );
+        }
     }
 
     step("onWindowFocusChangedNative(false)", game_activity::window_focus(handle, false));
@@ -1559,6 +1599,28 @@ fn teardown_limit() -> std::time::Duration {
         .filter(|&s| s > 0)
         .unwrap_or(10);
     std::time::Duration::from_secs(secs)
+}
+
+/// The status the teardown watchdog exits with. 124 is `timeout(1)`'s own
+/// "the command timed out", which is what this is, and no other exit path in
+/// `cordial-run` uses it.
+const TEARDOWN_TIMEOUT_EXIT: c_int = 124;
+
+/// Call `on_expiry` if `finished` has not been set within `limit`, and return
+/// without calling it if it is set first. Split out of [`teardown`] so the
+/// stand-down and the expiry can both be tested without a stuck engine.
+fn watch_teardown(finished: &std::sync::atomic::AtomicBool, limit: std::time::Duration, on_expiry: impl FnOnce()) {
+    let deadline = std::time::Instant::now() + limit;
+    while std::time::Instant::now() < deadline {
+        if finished.load(std::sync::atomic::Ordering::Acquire) {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    if finished.load(std::sync::atomic::Ordering::Acquire) {
+        return;
+    }
+    on_expiry();
 }
 
 /// Add a descriptor to the calling thread's looper so `pollOnce` returns as soon
@@ -1973,6 +2035,25 @@ pub fn overrides() -> Vec<(&'static str, *mut c_void)> {
     ]
 }
 
+/// The periodic health line.
+///
+/// The frame-interval distribution rides on it because a mean cannot answer
+/// "does it stutter": a report of persistent micro-stutter arrived carrying
+/// only `34.2/s` from this line, which is a count over thirty seconds and is
+/// the same number for an even 8 ms cadence and for pairs of frames 16 ms
+/// apart. `frame_pacing` has kept the interval distribution since 2026-08-25,
+/// but it was reachable only over the development socket, so no user's log
+/// could carry it. The suffix is dropped, not zeroed, until enough frames have
+/// gone out for a percentile to mean anything.
+fn health_line(drawn: u64, secs: f64, total: u64, pacing: Option<&str>) -> String {
+    format!(
+        "[cordial] health: {drawn} presents in {secs:.0}s ({:.1}/s), {total} total{}{}",
+        drawn as f64 / secs,
+        if drawn == 0 { " -- nothing was drawn" } else { "" },
+        pacing.map(|p| format!("; {p}")).unwrap_or_default(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     // Only the tests close a descriptor, so the binding lives with them rather
@@ -1982,6 +2063,23 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn health_line_carries_the_frame_interval_distribution() {
+        let pacing = "frames n=1024 p50=13.3ms p95=14.1ms p99=29.8ms max=51.2ms median_fps=75";
+        let line = health_line(1061, 31.0, 1061, Some(pacing));
+        assert_eq!(
+            line,
+            format!("[cordial] health: 1061 presents in 31s (34.2/s), 1061 total; {pacing}")
+        );
+        // Before 32 frames have gone out there is nothing honest to add, and the
+        // line must stay exactly what it was so existing readers of it do not
+        // break.
+        assert_eq!(
+            health_line(0, 30.0, 0, None),
+            "[cordial] health: 0 presents in 30s (0.0/s), 0 total -- nothing was drawn"
+        );
+    }
 
     #[test]
     fn epoll_event_matches_glibcs_own_layout_for_this_architecture() {
@@ -2082,6 +2180,36 @@ mod tests {
             start.elapsed() < std::time::Duration::from_secs(2),
             "teardown took too long; its grace period must be bounded"
         );
+    }
+
+    /// The watchdog must fire when the sequence never returns, and must not
+    /// when it does. The second is the one that matters to everybody whose
+    /// exit is ordinary: a watchdog that fires anyway turns every clean
+    /// shutdown into status 124.
+    #[test]
+    fn the_teardown_watchdog_fires_only_when_the_sequence_does_not_return() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let stuck = AtomicBool::new(false);
+        let mut fired = false;
+        watch_teardown(&stuck, std::time::Duration::from_millis(50), || fired = true);
+        assert!(fired, "a sequence that never finishes must be cut off");
+
+        let done = AtomicBool::new(true);
+        let mut fired = false;
+        watch_teardown(&done, std::time::Duration::from_millis(500), || fired = true);
+        assert!(!fired, "a sequence that returned must not be cut off");
+
+        // Finishing part-way through the wait stands the watchdog down.
+        let finishing = std::sync::Arc::new(AtomicBool::new(false));
+        let setter = finishing.clone();
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(30));
+            setter.store(true, Ordering::Release);
+        });
+        let mut fired = false;
+        watch_teardown(&finishing, std::time::Duration::from_secs(5), || fired = true);
+        t.join().unwrap();
+        assert!(!fired);
     }
 
     #[test]

@@ -141,7 +141,14 @@ pub struct Instance {
     /// immediately — an exit code on its own says nothing about what was run.
     pub command_line: String,
     tail: Tail,
+    /// The two `pump` threads, so [`Instance::wait`] can let them finish.
+    readers: Vec<std::thread::JoinHandle<()>>,
 }
+
+/// How long [`Instance::wait`] lets the output readers drain after the client
+/// exits. Bounded because the pipes close only when every process holding them
+/// does, and a helper the client started could outlive it and keep them open.
+const DRAIN_LIMIT: std::time::Duration = std::time::Duration::from_secs(2);
 
 /// Per-launch values that may be absent for an ordinary button launch.
 pub struct LaunchRequest<'a> {
@@ -173,16 +180,33 @@ impl Instance {
     /// while a game runs, and waiting rather than exiting keeps the timestamped
     /// log flowing to the terminal and lets a crash be reported with the tail
     /// of what led to it.
+    ///
+    /// Only reaps. Call [`Instance::drain_output`] before reading the output,
+    /// and anything that must stop the moment the pid is gone -- the freeze
+    /// watch, which signals it -- before that.
     pub fn wait(&mut self) -> std::io::Result<std::process::ExitStatus> {
         self.child.wait()
+    }
+
+    /// Let the output readers finish, up to [`DRAIN_LIMIT`].
+    ///
+    /// **The process exiting does not mean its output has been read.** Reaping
+    /// the child and the `pump` threads reaching EOF are unrelated events, and
+    /// a client dying with `SIGSEGV` straight after printing was measured
+    /// leaving the tail empty: every line had reached the terminal, none had
+    /// reached the crash report.
+    pub fn drain_output(&self) {
+        let deadline = std::time::Instant::now() + DRAIN_LIMIT;
+        while self.readers.iter().any(|r| !r.is_finished()) && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
     }
 
     /// The last lines the client printed, oldest first, redacted.
     ///
     /// Read at the moment the crash page is built rather than streamed into it:
-    /// nothing wants a live log window, and by the time this is called the
-    /// process has exited, so the reader threads have seen EOF and there is
-    /// nothing still arriving to miss.
+    /// nothing wants a live log window. Complete only after
+    /// [`Instance::drain_output`].
     pub fn recent_output(&self) -> String {
         let tail = self.tail.lock().unwrap_or_else(|e| e.into_inner());
         tail.iter().cloned().collect::<Vec<_>>().join("\n")
@@ -242,7 +266,7 @@ fn already_stamped(line: &str) -> bool {
         && b[5] == b':'
 }
 
-fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool) {
+fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
         for line in BufReader::new(reader).lines() {
             let Ok(line) = line else { break };
@@ -278,7 +302,7 @@ fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool
             }
             tail.push_back(kept);
         }
-    });
+    })
 }
 
 /// Start the client on `build`, holding `claim`'s profile.
@@ -450,6 +474,17 @@ pub fn spawn(
         command.env("CORDIAL_GAMEPAD", "0");
     }
 
+    // Recording, and **only when it is on**: the client records nothing unless
+    // `CORDIAL_RECORD` says so, and `1` means the default folder (ADR-059).
+    if config.record_session {
+        command.env("CORDIAL_RECORD", "1");
+    }
+    // Sound is the game's own, and it applies to a hotkey recording as much as to
+    // a whole-session one, so it is set whether or not the session switch is on.
+    if config.record_audio {
+        command.env("CORDIAL_RECORD_AUDIO", "game");
+    }
+
     // Close on leave, and **only when it is on**. The client's own gate wants
     // one of "1", "true" or "yes" and reads everything else as off, so the
     // absent case and the off case agree without this having to spell either.
@@ -530,6 +565,13 @@ pub fn spawn(
     // ends agree even if one of them is given something odd.
     if let Some(sink) = config.audio_output.env_value() {
         command.env("CORDIAL_AUDIO_SINK", sink);
+    }
+    // The microphone, on the same terms: only when one was chosen, so that an
+    // unset variable keeps following the session's default source. It names a
+    // device and opens nothing -- the capture stream is created when Roblox
+    // starts recording, and not before.
+    if let Some(source) = config.audio_input.env_value() {
+        command.env("CORDIAL_AUDIO_SOURCE", source);
     }
 
     // MangoHUD is a Vulkan implicit layer, so `MANGOHUD=1` on the client's
@@ -619,11 +661,12 @@ pub fn spawn(
     // EOF rather than being held open by a struct nobody is reading -- a child
     // whose stdout nothing drains blocks on a full pipe, which for a process
     // that narrates as much as this one would be a hang rather than a crash.
+    let mut readers = Vec::with_capacity(2);
     if let Some(out) = child.stdout.take() {
-        pump(out, tail.clone(), false);
+        readers.push(pump(out, tail.clone(), false));
     }
     if let Some(err) = child.stderr.take() {
-        pump(err, tail.clone(), true);
+        readers.push(pump(err, tail.clone(), true));
     }
 
     // Dropped explicitly rather than left to fall off the end of the function,
@@ -632,7 +675,7 @@ pub fn spawn(
     // quitting the shell would be the thing that released it.
     drop(claim);
 
-    Ok(Instance { child, command_line, tail })
+    Ok(Instance { child, command_line, tail, readers })
 }
 
 fn pin_secret_store(command: &mut Command, store: Option<Store>) {

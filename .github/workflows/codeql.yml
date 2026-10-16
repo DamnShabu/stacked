@@ -1,0 +1,44 @@
+# CodeQL over the Rust workspace, the C++ in native/ and these workflows.
+#
+# build-mode none for both compiled languages: a real build needs Clang, the
+# two submodules and GTK 4.12 development headers, which is the expensive half
+# of test.yml and not worth repeating here for a static scan. Submodules are not
+# checked out, so the AOSP linker and libjnivm are not scanned; third_party/ is
+# excluded for the code that is in-tree, since none of it is this project's.
+name: CodeQL
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "0 6 * * 1"
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        language: [rust, c-cpp, actions]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: none
+          config: |
+            paths-ignore:
+              - third_party
+              - tools/sober-corpus
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
+        with:
+          category: /language:${{ matrix.language }}

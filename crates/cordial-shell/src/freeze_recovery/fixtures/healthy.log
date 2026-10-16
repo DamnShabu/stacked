@@ -1,0 +1,15 @@
+2026-09-30T01:04:14.276Z,2.276940,627fc6c0,6 [FLog::SingleSurfaceApp] setStage: (stage:Native)
+2026-09-30T01:04:14.276Z,2.276945,627fc6c0,6,Warning [FLog::SingleSurfaceApp] instantiate controllers
+2026-09-30T01:04:14.276Z,2.276950,627fc6c0,6 [FLog::SurfaceController] SurfaceController[_:2]::SurfaceController, count: 2
+2026-09-30T01:04:14.276Z,2.276955,627fc6c0,6 [FLog::SurfaceController] SurfaceController[_:1]::~SurfaceController, count: 1
+2026-09-30T01:04:14.277Z,2.277011,627fc6c0,6,Warning [FLog::Graphics] TM2: maxCloudAssetDimension: 4096
+2026-09-30T01:04:14.277Z,2.277296,627fc6c0,6,Warning [FLog::Graphics] RenderView destroyed[1]
+2026-09-30T01:04:14.277Z,2.277312,627fc6c0,6,Warning [FLog::Graphics] TM2: maxCloudAssetDimension: 4096
+2026-09-30T01:04:14.282Z,2.282730,627fc6c0,6 [FLog::Graphics] Vulkan: Saved pipeline cache (243316 bytes, hash 215f565c)
+2026-09-30T01:04:14.290Z,2.290660,627fc6c0,6,Warning [FLog::SingleSurfaceApp] instantiate experience coordinator
+2026-09-30T01:04:14.290Z,2.290690,627fc6c0,6,Warning [FLog::SingleSurfaceApp] Forcing finalize experience coordinator with state 1
+2026-09-30T01:04:14.290Z,2.290698,627fc6c0,6,Warning [FLog::UgcExperienceController] UgcExperienceController: finalize: Did not finalize due to state.
+2026-09-30T01:04:14.290Z,2.290715,627fc6c0,6,Warning [FLog::RobloxTelemetry] Lua app running status has been updated to true
+2026-09-30T01:04:14.372Z,2.372291,627fc6c0,6,Info [FLog::UgcExperienceController] UgcExperienceController::~UgcExperienceController()
+2026-09-30T01:04:14.372Z,2.372309,627fc6c0,6 [FLog::SingleSurfaceApp] initializeLuaAppWithLoggedInUser: (stage:Native).
+2026-09-30T01:04:14.372Z,2.372318,627fc6c0,6 [FLog::SingleSurfaceApp] applyLocale

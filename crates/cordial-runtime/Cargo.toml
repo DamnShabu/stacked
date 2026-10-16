@@ -64,6 +64,9 @@ ureq = "3.3.0"
 # The client-settings document is JSON and user flag overrides have to be merged
 # into it correctly. A textual splice on a 1.2 MB document is not correctness.
 serde_json = "1"
+# `localtime_r` for a recording's file name; already in the workspace through
+# `cordial-shell`, which uses it for the same reason.
+libc = "0.2"
 # Assets live in the APK, which is a zip.
 zip = { version = "2", default-features = false, features = ["deflate"] }
 # The AT-SPI bridge (android::accessibility) speaks org.a11y.atspi.* directly

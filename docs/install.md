@@ -7,9 +7,12 @@ of packaging.
 ## What you need
 
 - x86-64 Linux
-- A Wayland session. X11 still starts, but
-  [ADR-011](adr/ADR-011-wayland-and-libadwaita.md) makes Wayland the
-  backend this targets and says X11 is not developed further
+- A Wayland session. X11 works too
+  ([ADR-024](adr/ADR-024-x11-is-supported-again.md)) and is the rougher one:
+  what you type into a text box is drawn by a small window laid over the box
+  ([ADR-062](adr/ADR-062-the-x11-editor-is-an-override-redirect-window.md)),
+  tried upstream under openbox, xfwm4, icewm and Xwayland, and not under KWin,
+  Mutter's X11 mode or a tiling window manager
 - Roblox's official Android client, which **you supply** — Stacked ships no
   Roblox code, APK or assets and never will
 
@@ -30,19 +33,28 @@ it, and `CORDIAL_APK=PATH` does the same for one launch. On a split build the
 engine is in `split_config.x86_64.apk` rather than `base.apk`; Stacked checks
 the siblings itself and says which it tried when it cannot find one.
 
-## There are no Stacked packages yet
+## Packages
 
-**Building from source is the only way to install Stacked today.** There is no
-Flatpak remote, no AppImage, no `.deb`, `.rpm` or Arch package, no APT, dnf or
-pacman repository and no AUR package for Stacked. The scripts that would build
-them are in [`packaging/`](../packaging) and carry Stacked's name and
-application id, `io.github.damnshabu.Stacked`, but nothing has been published
-from them.
+Every [release](https://github.com/DamnShabu/stacked/releases) carries an
+AppImage, a `.deb`, an `.rpm` and a `.flatpak` bundle for x86_64 and aarch64,
+and an Arch `.pkg.tar.zst` for x86_64, each signed with Sigstore and with its
+`.cosign.bundle` beside it. The README's table says which command installs
+which.
 
-The Flatpak remote, repositories, release artefacts and cosign signatures you
-may find documented elsewhere are upstream Cordial's. They install Cordial,
-not Stacked, and nothing about their signing or trust carries over to this
-fork.
+There is no package repository. `packaging/` and the APT, RPM, pacman and
+Flatpak workflows can build one, but they publish through GitHub Pages and
+the fork has not turned Pages on, so `damnshabu.github.io/stacked` is a 404.
+Updating Stacked means downloading the next release. There is no AUR package
+either.
+
+From the AppImage, `desktop install` writes an entry that runs the
+`.AppImage` file, so moving the file means running it again. Before 0.21.11 it
+wrote no menu entry at all; the fix has unit tests but has not been run from a
+real AppImage.
+
+The Flatpak remote, repositories and signatures documented under upstream
+Cordial's name install Cordial, not Stacked, and nothing about their signing
+or trust carries over to this fork.
 
 Stacked is not on Flathub, and under Flathub's current generative-AI policy it
 could not be: most of its code, Cordial's included, was written with AI
