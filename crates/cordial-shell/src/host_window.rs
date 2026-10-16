@@ -347,6 +347,23 @@ pub struct HostWindow {
     /// so [`input_region`] must not punch the canvas out either. See
     /// [`Self::set_pointer_constrained`].
     pointer_constrained: std::cell::Cell<bool>,
+    /// The frame clock's counter when a lowering was last prepared, and whether
+    /// `after-paint` has fired since. `None` when no lowering is being
+    /// prepared. See [`HostWindow::arm_present_probe`].
+    present_probe: std::cell::RefCell<Option<PresentProbe>>,
+}
+
+/// What [`HostWindow::arm_present_probe`] remembers between ticks.
+struct PresentProbe {
+    /// The last frame that had begun when the probe was armed. Any frame with a
+    /// higher counter was laid out after the window was made transparent, so it
+    /// carries the new background.
+    counter: i64,
+    /// Set by the frame clock's `after-paint`. Weaker than a presentation
+    /// report -- see [`HostWindow::present_probe_committed`] -- and only the
+    /// answer when the compositor cannot report presentation at all.
+    painted: std::rc::Rc<std::cell::Cell<bool>>,
+    handler: glib::SignalHandlerId,
 }
 
 /// The Android editor rectangle Roblox asks the platform to paint over its
@@ -654,7 +671,13 @@ impl HostWindow {
     /// rather than that minus a titlebar.
     pub fn with_canvas(title: &str, width: i32, height: i32) -> Self {
         let title_bar = crate::title_bar::TitleBar::from_env();
-        let chrome_height = if title_bar.revealed(false) { header_height_hint() } else { 0 };
+        // With no header bar the window carries the visibility anchor instead,
+        // so the content still comes out the size the caller asked for.
+        let chrome_height = if title_bar.revealed(false) {
+            header_height_hint()
+        } else {
+            anchor_height(false)
+        };
         // A `GtkDrawingArea` with no draw function paints nothing at all, so
         // what shows through is the themed window background — which is
         // exactly what ADR-011 asks for behind the canvas ("the desktop's own
@@ -741,6 +764,10 @@ impl HostWindow {
         // definition the thing painting the canvas.
         let mut sheet = String::from(
             ".cordial-engine-host drawingarea { background-color: transparent; } \
+             .cordial-engine-host .cordial-visibility-anchor { \
+                 background-color: #000000; \
+                 min-height: 1px; \
+             } \
              .cordial-engine-host headerbar { \
                  background-color: @headerbar_bg_color; \
                  color: @headerbar_fg_color; \
@@ -847,6 +874,7 @@ impl HostWindow {
         let header = adw::HeaderBar::new();
         let toolbar = adw::ToolbarView::new();
         toolbar.add_top_bar(&header);
+        install_visibility_anchor(&toolbar);
         let overlay = gtk::Overlay::new();
         overlay.set_child(Some(content));
         let text_layer = gtk::Fixed::new();
@@ -1027,6 +1055,7 @@ impl HostWindow {
             canvas_rect: std::cell::Cell::new(None),
             dialog_up: std::cell::Cell::new(false),
             pointer_constrained: std::cell::Cell::new(false),
+            present_probe: std::cell::RefCell::new(None),
             editor_seeding,
             editor_changed,
             editor_font_family: std::cell::RefCell::new(None),
@@ -1893,7 +1922,8 @@ impl HostWindow {
     }
 
     /// The toplevel's whole state, for the instrumented run that established
-    /// what [`Self::visible`] can actually see. Not used by anything else.
+    /// what [`Self::visible`] can actually see, and for the line
+    /// [`Self::present_probe_report`] prints when a frame does not arrive.
     pub fn toplevel_state(&self) -> Option<gtk::gdk::ToplevelState> {
         let surface = self.window.surface()?;
         Some(surface.downcast::<gtk::gdk::Toplevel>().ok()?.state())
@@ -2009,6 +2039,12 @@ impl HostWindow {
     /// repaint the window, which reads as a stuck or torn canvas.
     /// Repaint the toplevel now, rather than on GTK's next frame.
     ///
+    /// **Since issue #53 this is only the `CORDIAL_STACKING_GATE=off` path**,
+    /// kept as the control for showing what the gate changes; the restack now
+    /// waits for a committed frame through [`Self::arm_present_probe`]
+    /// instead of for 40 ms. What follows describes the wait as it was, and
+    /// its failure -- the timeout branch's log line is the one #53 quoted.
+    ///
     /// Exists for one caller: restacking the engine's subsurface. Lowering it
     /// and turning the background transparent have to reach the compositor in
     /// the same breath, and they do not by default -- a CSS class change is
@@ -2106,6 +2142,137 @@ impl HostWindow {
         } else if std::env::var_os("CORDIAL_TRACE_TEXT").is_some() {
             eprintln!("[shell] repaint_now: painted after {:?}", started.elapsed());
         }
+    }
+
+    /// Start preparing the window for the canvas to be lowered beneath it, and
+    /// begin waiting for the proof that the compositor holds the result.
+    ///
+    /// **This replaces waiting 40 ms in [`Self::repaint_now`] and lowering
+    /// whatever happened** -- issue #53. On a KWin session GTK started a frame
+    /// after every one of those timeouts and then attached nothing to the
+    /// window surface for the two seconds the box stayed focused, while the
+    /// restack had already gone out: the compositor kept showing the last GTK
+    /// buffer, painted with the canvas above and opaque across the whole
+    /// window, with the canvas now underneath it. Grey, until the box blurred.
+    /// `repaint_now`'s own log line said so three times in that report and
+    /// nothing acted on it.
+    ///
+    /// So this only *prepares* -- transparent background, both regions, a
+    /// redraw request, the frame clock kept ticking -- and leaves the canvas
+    /// where it is. The caller polls [`Self::present_probe_committed`] and
+    /// restacks only when that says a frame painted after this call has
+    /// reached the compositor, or calls [`Self::disarm_present_probe`] if it
+    /// never does. While waiting the canvas is still on top and covering, so
+    /// the transparency cannot show.
+    pub fn arm_present_probe(&self) {
+        // A second arming without a disarm would leak the first handler and the
+        // `begin_updating` it holds.
+        self.disarm_present_probe(false);
+        self.set_canvas_see_through(true);
+        self.window.queue_draw();
+        let Some(clock) = self.window.frame_clock() else { return };
+        let painted = std::rc::Rc::new(std::cell::Cell::new(false));
+        let handler = {
+            let painted = painted.clone();
+            clock.connect_after_paint(move |_| painted.set(true))
+        };
+        // The clock does not tick when nothing else is animating, and the
+        // whole point of this call is that a tick be produced.
+        clock.begin_updating();
+        *self.present_probe.borrow_mut() =
+            Some(PresentProbe { counter: clock.frame_counter(), painted, handler });
+    }
+
+    /// Whether GTK has committed a frame, laid out after
+    /// [`Self::arm_present_probe`], that the compositor has presented.
+    ///
+    /// **`after-paint` is not that, and this used to be exactly that.** The
+    /// frame clock emits it once GTK has finished with a frame, including a
+    /// frame whose render was skipped: GDK sends the frame's window-geometry,
+    /// opaque-region, frame-callback and presentation-feedback requests before
+    /// GSK decides whether there is anything to draw, and in #53's log a frame
+    /// of exactly that shape went out and no `attach` followed. GTK had
+    /// "painted" and the compositor had been given nothing.
+    ///
+    /// What cannot happen without a commit is the compositor *presenting* the
+    /// frame, and GDK records that: a frame's timings gain a presentation time
+    /// only when `wp_presentation_feedback.presented` arrives. Nothing else
+    /// resolves it while the caller sends no parent commit of its own, which
+    /// is why the lowering, whose commit would do so, waits for this.
+    ///
+    /// With `presentation_reported` false -- the compositor has no
+    /// `wp_presentation`, so GDK never asks -- the timings can say nothing and
+    /// `after-paint` is all there is; that is the weaker old answer, used only
+    /// there.
+    ///
+    /// INFERRED: that a frame with a presentation time necessarily attached a
+    /// buffer. It follows from the protocol (feedback is delivered for a
+    /// commit, and GDK's GL path commits by attaching), and it matches
+    /// #53's log, where the feedback for the stalled frame was delivered only
+    /// after Cordial's own commit.
+    pub fn present_probe_committed(&self, presentation_reported: bool) -> bool {
+        let probe = self.present_probe.borrow();
+        let Some(probe) = probe.as_ref() else { return false };
+        let Some(clock) = self.window.frame_clock() else { return false };
+        if !presentation_reported {
+            return probe.painted.get();
+        }
+        ((probe.counter + 1)..=clock.frame_counter()).any(|n| {
+            clock
+                .timings(n)
+                .is_some_and(|t| t.is_complete() && t.presentation_time() > 0)
+        })
+    }
+
+    /// Whether [`Self::arm_present_probe`] has run and not been disarmed.
+    pub fn is_probe_armed(&self) -> bool {
+        self.present_probe.borrow().is_some()
+    }
+
+    /// Stop preparing. With `revert`, also give the window its background
+    /// back, which is right when the lowering was abandoned and wrong when it
+    /// went ahead.
+    pub fn disarm_present_probe(&self, revert: bool) {
+        if let Some(probe) = self.present_probe.borrow_mut().take() {
+            if let Some(clock) = self.window.frame_clock() {
+                clock.disconnect(probe.handler);
+                clock.end_updating();
+            }
+        }
+        if revert {
+            self.set_canvas_see_through(false);
+        }
+    }
+
+    /// One line of what GTK's frame clock has been doing, for the log line that
+    /// says a frame did not arrive. Reading `toplevel_state` here is the check
+    /// on the compositor having told the window it is suspended.
+    pub fn present_probe_report(&self) -> String {
+        let probe = self.present_probe.borrow();
+        let Some(clock) = self.window.frame_clock() else { return "no frame clock".into() };
+        let armed = probe.as_ref().map_or(-1, |p| p.counter);
+        let now = clock.frame_counter();
+        let painted = probe.as_ref().is_some_and(|p| p.painted.get());
+        let (mut complete, mut presented) = (0, 0);
+        for n in (armed + 1).max(clock.history_start())..=now {
+            if let Some(t) = clock.timings(n) {
+                complete += usize::from(t.is_complete());
+                presented += usize::from(t.presentation_time() > 0);
+            }
+        }
+        // The renderer is the first thing to know when this line is read: GTK on
+        // its GL renderer inside a process whose engine is running GLES is what
+        // never presented in #53, and cairo presented from the same binary.
+        let renderer = self
+            .window
+            .native()
+            .and_then(|n| n.renderer())
+            .map_or_else(|| "none".to_string(), |r| r.type_().name().to_string());
+        format!(
+            "renderer {renderer}, frames since arming {}, after-paint seen {painted}, complete {complete}, presented {presented}, toplevel state {:?}",
+            now - armed,
+            self.toplevel_state()
+        )
     }
 
     pub fn queue_commit(&self) {
@@ -2214,6 +2381,61 @@ fn input_region(
             .ok();
     }
     region
+}
+
+/// How tall the strip of window that keeps the host surface visible is, given
+/// whether the header bar is showing.
+///
+/// **Zero while the header bar is up, one pixel when it is not.** The engine's
+/// subsurface is opaque and, with no header bar, exactly as large as the window,
+/// so the compositor sees the GTK surface behind it as fully covered. A
+/// compositor sends no frame callbacks and no presentation feedback to a surface
+/// nobody can see (wlroots: `wl_surface.leave`, then silence), GDK's frame clock
+/// waits on a callback before it paints again, and the gate in
+/// [`crate::stacking_gate`] -- which lowers the canvas only once GTK has
+/// presented a frame -- waits for ever. Measured in a nested sway: the same
+/// binary lowers the canvas in 20 ms with a header bar and never does in
+/// fullscreen, or tiled with the title bar set to Hidden. One pixel of the
+/// window left uncovered is all the compositor needs to count it visible.
+/// ADR-056.
+pub const fn visibility_anchor_height(top_bars_revealed: bool) -> i32 {
+    if top_bars_revealed { 0 } else { 1 }
+}
+
+/// [`visibility_anchor_height`], unless `CORDIAL_VISIBILITY_ANCHOR=off`.
+///
+/// The switch is the control a before-and-after needs from one binary, the same
+/// role `CORDIAL_STACKING_GATE=off` plays for the gate. It is read each time so
+/// a test can flip it, and nothing but a measurement should set it.
+fn anchor_height(top_bars_revealed: bool) -> i32 {
+    match std::env::var("CORDIAL_VISIBILITY_ANCHOR").as_deref() {
+        Ok("off") | Ok("0") => 0,
+        _ => visibility_anchor_height(top_bars_revealed),
+    }
+}
+
+/// Put the one-pixel strip at the foot of the window, shown exactly while the
+/// header bar is not. See [`visibility_anchor_height`].
+///
+/// A bottom bar rather than a margin on the canvas because the toolbar view
+/// already owns the layout the engine's rectangle is read from
+/// (`content_rect`), so the content shrinks by the strip without a second
+/// source of truth. It paints black rather than the window's background: the
+/// background is near white under a light theme, and a white line under a game
+/// reads as a defect where a black one reads as the edge of the screen.
+fn install_visibility_anchor(toolbar: &adw::ToolbarView) {
+    let anchor = gtk::Box::new(gtk::Orientation::Horizontal, 0);
+    anchor.add_css_class("cordial-visibility-anchor");
+    anchor.set_height_request(visibility_anchor_height(false));
+    anchor.set_can_target(false);
+    anchor.set_visible(anchor_height(toolbar.reveals_top_bars()) > 0);
+    toolbar.add_bottom_bar(&anchor);
+    // Every writer of the reveal -- the fullscreen handler, the live
+    // title-bar setting, `with_canvas` -- goes through the property, so one
+    // notify keeps the strip right for all of them.
+    toolbar.connect_reveal_top_bars_notify(move |t| {
+        anchor.set_visible(anchor_height(t.reveals_top_bars()) > 0);
+    });
 }
 
 /// A first guess at the header bar's height, used only to pick the window's
@@ -2568,5 +2790,29 @@ mod tests {
         // default size" rather than as an error — a silently ignored clamp.
         let (w, h) = fit_within((1280, 767), (64, 48));
         assert!(w > 0 && h > 0, "{w}x{h}");
+    }
+
+    /// The rule that keeps the host surface visible to the compositor. With the
+    /// header bar up the window is already partly uncovered by the engine's
+    /// subsurface, so it needs nothing; the moment there is no bar -- fullscreen,
+    /// or Title bar set to Hidden -- one pixel must stay uncovered, or sway sends
+    /// the surface no frame callback at all and the editor never appears.
+    #[test]
+    fn the_host_surface_keeps_one_pixel_exactly_when_there_is_no_header_bar() {
+        assert_eq!(visibility_anchor_height(true), 0);
+        assert_eq!(visibility_anchor_height(false), 1);
+    }
+
+    /// Control for the switch the measurement uses: with it off the window goes
+    /// back to being fully covered, which is the behaviour under test.
+    #[test]
+    fn the_control_switch_removes_the_pixel_in_every_state() {
+        // `set_var` is process-wide; every other test here leaves this one alone.
+        std::env::set_var("CORDIAL_VISIBILITY_ANCHOR", "off");
+        let off = (anchor_height(true), anchor_height(false));
+        std::env::remove_var("CORDIAL_VISIBILITY_ANCHOR");
+        let on = (anchor_height(true), anchor_height(false));
+        assert_eq!(off, (0, 0));
+        assert_eq!(on, (0, 1));
     }
 }

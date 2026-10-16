@@ -1243,6 +1243,11 @@ pub struct WaylandWindow {
     /// one goes.
     open_web_view_dialogs: AtomicI32,
     text_overlay_visible: AtomicBool,
+    /// Whether the canvas may be lowered yet. See [`WaylandWindow::reconcile_stacking`].
+    stacking_gate: Mutex<cordial_shell::stacking_gate::Gate>,
+    /// Whether the compositor has `wp_presentation`, so GDK's frame timings can
+    /// say a frame reached the screen.
+    presentation_reported: bool,
     text_overlay_cache:
         Mutex<Option<(u32, u64, String, i32, cordial_linker_sys::game_activity::RawTextBoxInfo)>>,
     /// What `nativeGetTextBoxInfo` last said, for the focus generation it said
@@ -1398,6 +1403,11 @@ struct Globals {
     text_input_manager: Option<(u32, u32)>,
     pointer_constraints: Option<(u32, u32)>,
     relative_pointer_manager: Option<(u32, u32)>,
+    /// Only whether it exists, never bound: GDK binds `wp_presentation` for the
+    /// window's own frames, and the question here is whether GDK's frame
+    /// timings can report a presentation at all. See
+    /// `HostWindow::present_probe_committed`.
+    presentation: bool,
 }
 
 unsafe extern "C" fn registry_global(
@@ -1435,6 +1445,7 @@ unsafe extern "C" fn registry_global(
         "zwp_text_input_manager_v3" => globals.text_input_manager = Some((name, version)),
         "zwp_pointer_constraints_v1" => globals.pointer_constraints = Some((name, version)),
         "zwp_relative_pointer_manager_v1" => globals.relative_pointer_manager = Some((name, version)),
+        "wp_presentation" => globals.presentation = true,
         _ => {}
     }
 }
@@ -1527,6 +1538,10 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // `xdg_toplevel`, draws the header bar and answers configure/ack; this
     // file's job starts at the content area and stops there. See the module
     // doc for why the engine's surface cannot live on a connection of its own.
+    // GTK reads GSK_RENDERER when the toplevel is realised, so the choice has
+    // to be made before `HostWindow` exists. It costs nothing to ask here: the
+    // probe has been running since startup.
+    cordial_shell::gtk_renderer::settle();
     cordial_shell::host_window::init_wayland()?;
     let host = cordial_shell::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
 
@@ -1652,6 +1667,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // all". Text entry simply will not compose through an IME on such a
     // compositor, which is reported once, not hidden.
     let text_input_manager_global = globals.text_input_manager;
+    let presentation_reported = globals.presentation;
     if text_input_manager_global.is_none() {
         eprintln!(
             "[android] wayland: compositor advertises no zwp_text_input_manager_v3; \
@@ -1977,6 +1993,10 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         active_handle: AtomicI64::new(0),
         open_web_view_dialogs: AtomicI32::new(0),
         text_overlay_visible: AtomicBool::new(false),
+        stacking_gate: Mutex::new(cordial_shell::stacking_gate::Gate::new(
+            cordial_shell::stacking_gate::Mode::from_env(),
+        )),
+        presentation_reported,
         text_overlay_cache: Mutex::new(None),
         polled_textbox_info: Mutex::new(None),
         last_placement: Mutex::new(None),
@@ -2392,11 +2412,8 @@ impl WaylandWindow {
     /// site that will eventually be trusted to mean "just lowered it", which
     /// would be false the second time.
     pub fn webview_dialog_opened(&self) {
-        if self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst) == 0
-            && !self.text_overlay_visible.load(Ordering::SeqCst)
-        {
-            self.set_engine_stacking(false);
-        }
+        self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst);
+        self.reconcile_stacking();
         // **Claim the whole window for GTK while the dialog is up.**
         //
         // The parent's input region normally has the canvas rectangle punched
@@ -2441,11 +2458,8 @@ impl WaylandWindow {
     /// with two dialogs open, closing one must leave the engine hidden behind
     /// whichever is still up.
     pub fn webview_dialog_closed(&self) {
-        if self.open_web_view_dialogs.fetch_sub(1, Ordering::SeqCst) == 1
-            && !self.text_overlay_visible.load(Ordering::SeqCst)
-        {
-            self.set_engine_stacking(true);
-        }
+        self.open_web_view_dialogs.fetch_sub(1, Ordering::SeqCst);
+        self.reconcile_stacking();
         // Only on the last close. With two dialogs up, closing one must leave
         // the window claimed for the other -- the same edge the restack above
         // uses, and for the same reason.
@@ -2602,11 +2616,8 @@ impl WaylandWindow {
             x_alignment: info.x_alignment,
             y_alignment: info.y_alignment,
         }));
-        if !self.text_overlay_visible.swap(true, Ordering::SeqCst)
-            && self.open_web_view_dialogs.load(Ordering::SeqCst) == 0
-        {
-            self.set_engine_stacking(false);
-        }
+        self.text_overlay_visible.store(true, Ordering::SeqCst);
+        self.reconcile_stacking();
     }
 
     /// Where to draw the editor when the engine never told us where the box is.
@@ -2872,9 +2883,7 @@ impl WaylandWindow {
                 *self.text_overlay_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 *LAST_EDITOR_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 self.host.0.set_text_overlay(None);
-                if self.open_web_view_dialogs.load(Ordering::SeqCst) == 0 {
-                    self.set_engine_stacking(true);
-                }
+                self.reconcile_stacking();
             }
             return;
         };
@@ -3009,6 +3018,79 @@ impl WaylandWindow {
         );
     }
 
+    /// Bring the canvas's stacking in line with what wants it out of the way,
+    /// one step at a time.
+    ///
+    /// **The canvas is lowered only once the compositor holds a GTK frame that
+    /// can be seen through, and this is what waits for it -- issue #53.** The
+    /// restack used to be issued straight after a 40 ms wait that logged its
+    /// own failure and carried on. On a KWin session that produced a grey
+    /// screen for as long as the box was focused: GTK never attached a buffer
+    /// to the window surface in that time, so the compositor went on showing
+    /// the last one, which was opaque, with the canvas now beneath it.
+    ///
+    /// Called on every edge (an editor or dialog appearing or leaving) and on
+    /// every pump tick, because arming, waiting and retrying are spread over
+    /// ticks rather than blocking one. The decision itself is
+    /// [`cordial_shell::stacking_gate::Gate`], which has the tests; this is
+    /// the part that touches GTK and the wire.
+    ///
+    /// **Why not lower first and repair afterwards, or keep the window
+    /// permanently transparent:** either leaves the compositor showing a stale
+    /// opaque buffer if GTK stops presenting, and the second is the invisible
+    /// window 5a295e3 had to fix. Waiting is the only ordering that fails to
+    /// *the game staying visible*, with an editor that does not appear, which
+    /// is a smaller fault than a screen that is grey until the box blurs.
+    fn reconcile_stacking(&self) {
+        use cordial_shell::stacking_gate::Step;
+        let want_below = self.text_overlay_visible.load(Ordering::SeqCst)
+            || self.open_web_view_dialogs.load(Ordering::SeqCst) > 0;
+        let mut gate = self.stacking_gate.lock().unwrap_or_else(|e| e.into_inner());
+        let committed = gate.is_arming()
+            && self.host.0.present_probe_committed(self.presentation_reported);
+        let step = gate.poll(want_below, std::time::Instant::now(), committed);
+        // Released before anything below runs. `set_engine_stacking` calls
+        // back into GTK, which can run a callback that reaches this function.
+        drop(gate);
+        match step {
+            Step::Idle => {}
+            Step::Arm => {
+                self.host.0.arm_present_probe();
+                if super::input::trace_text() {
+                    println!("[android] wayland: canvas lowering armed, waiting for a GTK frame");
+                }
+            }
+            Step::Lower => {
+                // Legacy mode arrives here without having armed anything, and
+                // keeps the old order: transparent, repaint, then restack.
+                let prepared = self.host.0.is_probe_armed();
+                if prepared {
+                    println!(
+                        "[android] wayland: GTK committed a frame ({}); lowering the canvas",
+                        self.host.0.present_probe_report()
+                    );
+                    self.host.0.disarm_present_probe(false);
+                }
+                self.set_engine_stacking(false, prepared);
+            }
+            Step::GiveUp { attempt } => {
+                let report = self.host.0.present_probe_report();
+                self.host.0.disarm_present_probe(true);
+                // The first, then every tenth: a GTK that is not presenting is
+                // retried once a second for as long as the box has focus, and a
+                // line each time would bury everything else in the log.
+                if attempt == 1 || attempt % 10 == 0 {
+                    println!(
+                        "[android] wayland: GTK committed no frame within {} ms of being asked (attempt {attempt}; {report}); the canvas stays above the window so the game stays visible, and the editor cannot be seen until GTK presents. GSK_RENDERER=cairo takes GTK off the GL path if that is the cause",
+                        cordial_shell::stacking_gate::CONFIRM_TIMEOUT.as_millis(),
+                    );
+                }
+            }
+            Step::Cancel => self.host.0.disarm_present_probe(true),
+            Step::Raise => self.set_engine_stacking(true, false),
+        }
+    }
+
     /// Reorder the engine's subsurface relative to `parent_surface` — the
     /// only other member of this window's subsurface stack, and so the only
     /// valid reference for `place_above`/`place_below` to name (see the
@@ -3019,6 +3101,10 @@ impl WaylandWindow {
     /// of no dialog open. `above = false` is the fix: GTK's content,
     /// including anything an `AdwDialog` drew into it, shows through instead.
     ///
+    /// **Not to be called directly to lower.** [`Self::reconcile_stacking`]
+    /// decides when that is safe; `prepared` says it has already made the
+    /// window transparent and seen GTK commit a frame that way.
+    ///
     /// Follows `sync_canvas_geometry`'s own fix for the same double-buffering
     /// hazard `set_position` has: the reorder is pending on the *subsurface*
     /// but does not take effect until the *parent's* next commit, and asking
@@ -3026,7 +3112,7 @@ impl WaylandWindow {
     /// (see that function's "issue #7" comment) — so this commits
     /// `parent_surface` directly as well, the same belt-and-braces the
     /// geometry sync already needed.
-    fn set_engine_stacking(&self, above: bool) {
+    fn set_engine_stacking(&self, above: bool, prepared: bool) {
         // The window has to stop painting its own background over the canvas
         // for a lowered engine to be visible at all -- punching the opaque
         // region is not enough, because GTK's pixels are still there. Measured:
@@ -3036,18 +3122,21 @@ impl WaylandWindow {
         // **Order matters, and getting it wrong costs a visible frame.**
         //
         // Going *down*, the background must already be transparent when the
-        // restack lands: a CSS class change is honoured on GTK's next frame
-        // while the restack and the parent commit below go out immediately, so
+        // restack lands: a CSS class change is honoured on GTK's next frame while
+        // the restack and the parent commit below go out immediately, so
         // doing them in the written order hands the compositor "the canvas is
         // underneath now" together with a parent buffer that is still opaque.
         // The engine vanishes for exactly one frame and comes back when GTK
         // next paints -- reported as "once you press it, roblox disappears for
-        // a frame then reappears".
+        // a frame then reappears". `reconcile_stacking` has established that
+        // by the time `prepared` is true, and by more than a bounded wait.
         //
         // Going *up* the same reasoning runs backwards: restack first, and the
         // canvas is opaque and covering before the background stops being
         // transparent, so there is no frame where the desktop shows through.
-        if !above {
+        if !above && !prepared {
+            // `CORDIAL_STACKING_GATE=off`: the ordering as it was before #53,
+            // kept as the control for a before-and-after on one binary.
             self.host.0.set_canvas_see_through(true);
             self.host.0.repaint_now();
         }
@@ -6542,6 +6631,9 @@ impl WaylandWindow {
         self.sync_canvas_geometry();
         self.sync_ime_focus();
         self.sync_text_overlay();
+        // Every tick, not only on the edges: a lowering waits for GTK to commit
+        // a frame and is decided here, and one that timed out is retried here.
+        self.reconcile_stacking();
         // Polled rather than driven by an event, because the engine's own
         // request for a locked centre is a *getter* — `nativeGetMainWindow
         // IsMouseLockedCenter` — with nothing that calls out when it changes.

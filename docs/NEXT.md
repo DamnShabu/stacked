@@ -21,6 +21,125 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## #63 reproduced on demand: the engine records a failed Vulkan call before its device exists, 2026-10-15
+
+The `SIGSEGV` at `libroblox.so+0x29b4349`, fault address `0x5a0`, "seen 2/11,
+not reproduced since" (#63), reproduced unaided twice in 65 launches under gdb
+and once in 10 without it, always on a headless sway using the pixman renderer,
+and then in both attempts once the cause below was forced.
+
+What the crashing function is: in 2.738.0.1397 it is the recorder behind the
+engine's `VULKAN ERROR: %s returned %d` path. It keeps a short history
+(`Call`, `Error`, `PrevError`, `FrameIndex`, `History`) and reads a global
+pointer to the graphics device, `+0x5a0`, to do it. That pointer is stored
+once the Vulkan device is created and zeroed when it is torn down. The
+recorder runs only in processes whose per-process sampling draw (a value
+computed once and cached, `% 10000`) comes up under a threshold, which is why
+it is an intermittent crash and not a constant one.
+
+What triggers it here: the first `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` of
+every launch returns `VK_ERROR_SURFACE_LOST_KHR` when the compositor
+advertises no `zwp_linux_dmabuf` (sway and cage on pixman, weston headless).
+`VULKAN ERROR ... -1000000000` is in 77 of 77 engine logs from that
+configuration and in none from KWin or from sway with the GLES renderer. The
+engine goes on and the next query works; only a sampled process falls over,
+in the recorder, because the device pointer is still null at that moment.
+
+Control: the draw was forced to zero in the loaded library's data (gdb, at the
+linker's `mcpelauncher_linker_notifylldb`, which is the only way this was
+touched and only to reproduce). Software-rendered sway: crashed at the same
+address on the first run, both times. Sway on `WLR_RENDERER=gles2`, which does
+advertise dmabuf: 3 of 3 clean and Landing reached.
+
+**What did not work, so nobody repeats it:** retrying the failed query in the
+Vulkan interposer. Forty retries ten milliseconds apart (400 ms) still got
+`SURFACE_LOST` and the forced-draw run still crashed. Whatever makes the first
+query fail is not gone after 400 ms. The engine creates its Vulkan device twice
+per launch, and the first query comes before "surface handed to the engine" in
+Cordial's own log (INFERRED that this ordering is why it fails). Nothing was
+committed for it.
+
+**Not established:** that this is what the original 2/11 was. Those runs were
+on X11 (`CORDIAL_X11=1`) on a machine with dmabuf, so some other first Vulkan
+call may have failed there; the crash site is the same. Not established either
+that any user outside a software-rendered compositor can meet it. And the two
+Vulkan results (`SURFACE_LOST` on dmabuf-less compositors, the recorder's null
+read) are measurements on 2.738; 2.742 was not checked for the second.
+
+**#35's `DeviceUtils` is corrected the same day.** The class is in none of the
+three dex files of 2.742.0.1059, and a gdb log of every `FindClass` and
+`GetMethodID` the engine makes in a run never contains it, though the engine
+logs `Failed to find class 'DeviceUtils'` three times. It is not an unanswered
+Android expectation; see the comment on `DeviceUtils` in `native/init_params.cpp`.
+
+## #63: why the surface is lost, and what Cordial does about it, 2026-10-15
+
+Corrections to the section above, from reading Mesa's WSI and a bare Vulkan
+probe with no Roblox in the process. The query does not fail "first" and the
+ordering against "surface handed to the engine" is not the cause (that line was
+labelled INFERRED and is wrong): a hardware Vulkan device cannot present to a
+Wayland compositor with no `zwp_linux_dmabuf_v1`, because Mesa binds `wl_shm`
+only for software devices (`wsi_common_wayland.c`, `registry_handle_global`
+and the `!wl_dmabuf && !wl_shm` test in `wsi_wl_display_init`). The engine
+fails on both of its two device creations per launch (2 `VULKAN ERROR` lines
+in every engine log, not 1). Cordial now withholds Vulkan there; see
+[ADR-061](adr/ADR-061-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md).
+
+Measured on the 2.738 engine, unsigned, nested headless sway, `cordial-run`
+from a clean tree, 10 launches an arm:
+
+| arm | compositor | `VULKAN ERROR ... -1000000000` per launch | SIGSEGV |
+|---|---|---|---|
+| before | sway pixman | 2 (1 where it crashed) | 3 of 10, then 0 of 10; 1 of 4 in a screenshot run |
+| after | sway pixman | 0 | 0 of 10 |
+| after, `CORDIAL_FORCE_VULKAN_WITHOUT_DMABUF=1` | sway pixman | 2 | 0 of 10 |
+| after | sway gles2 | 0 | 0 of 10 |
+
+The three crashes in the first run were all `libroblox.so+0x29b4349`, fault
+address `0x5a0`, with no gdb and nothing forced. The crash is a random draw per
+process, so a clean arm is weak evidence by itself; the evidence is the error
+line going from 2 a launch to 0 while the forced control puts it back.
+On pixman sway the client now draws the landing screen on OpenGL ES; on Vulkan
+it drew nothing.
+
+**Not established:** that the 2 of 11 on X11 were this (they were on a machine
+with dmabuf); behaviour on a compositor that advertises dmabuf but whose
+hardware device cannot import it; GTK's own renderer, which also reports
+`VK_ERROR_SURFACE_LOST_KHR` on pixman sway (four `Gdk-WARNING` lines a launch)
+before falling back, and which the shell's renderer choice does not account for.
+
+## Stacked picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
+
+The remaining half of #53. `cordial_shell::gtk_renderer` decides from the Vulkan
+probe, started in `cordial-run`'s `main` and collected in `wayland::open` before
+GTK realises the window, so a healthy machine waits 0-10 ms (the probe is about
+60 ms and runs while the engine loads). No loader, `vkCreateInstance` failing, no
+devices or only a CPU renderer sets `GSK_RENDERER=cairo`; a user's own value is
+never touched or probed; a probe that hangs or crashes changes nothing.
+`CORDIAL_GRAPHICS=gles` with working Vulkan is deliberately **not** a trigger:
+GTK stayed on Vulkan and presented. On the #53 reproduction (nested KWin, no
+Vulkan, `fakefocus` x3) the user-set `ngl` control lowered 0 of 3 and the
+automatic choice 3 of 3 under presented frames. **Not observed**: the editor
+being drawn, which no capture here can see; and anything on the reporter's own
+machine. See ADR-047.
+
+## Fixed in part: the grey screen of #53 reproduces with no Vulkan, and the restack is now gated, 2026-09-30
+
+Nested KWin, `VK_ICD_FILENAMES=/nonexistent`, signed out, `fakefocus`: the engine
+falls back to GLES3, GTK to its GL renderer, and GTK then never attaches a buffer
+to the window surface again (`gdk_gl_context_make_current() failed` every 15 s,
+`repaint_now: no GTK frame landed within 40ms`). The old ordering lowered the
+canvas regardless, three times out of three, over the last opaque buffer. With
+Vulkan present, or with `GSK_RENDERER=cairo`, GTK presents and nothing is wrong.
+The restack now waits for a presented GTK frame and otherwise keeps the canvas
+above; see ADR-047. **The editor was still invisible in that configuration**;
+choosing cairo automatically was done on 2026-10-01 (entry above). This also
+corrects the 2026-09-23 note that forcing `repaint_now`'s miss did not reproduce
+it: that forced the timeout on a GTK that then painted late,
+which is not the same as a GTK that never presents. `after-paint` is not
+evidence of a commit; it fired on a frame with no attach behind it.
+
+
 ## Open: eight launches, no frozen specimen; the engine's condition variables were Cordial's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
 
 Eight signed-in `CordialTest` launches, 21:01-21:29 local, nested headless sway,
@@ -4868,6 +4987,15 @@ untouched and now also reports any non-success code, at the first of each and
 then at each power of ten. Across both runs and every transition: not one line.
 So "the engine ignored a suboptimal swapchain" and "Cordial ate the error" are
 both off the table — there was no error to ignore or eat.
+
+**Superseded for RADV, 2026-10-01 (PR #72).** That reading was taken on Intel
+and was right of it: no suboptimal code was ever seen to *present*. On RADV the
+status arrives at *acquire*, which this section never instrumented, and the
+engine answers it with a `PRESENT_SRC_KHR` barrier on `VK_NULL_HANDLE` that the
+driver crashes on (#39). The PR's control, one variable, was returning
+`VK_SUCCESS` for the same acquire. `vkAcquireNextImageKHR` is therefore now
+interposed, only for that one code; see `vk_acquire_next_image_khr` in
+`vulkan.rs`. Not reproduced on Intel, which does not return the status.
 
 **So the three named suspects are all disproved and the bug is not reproducible
 from `gtk_window_fullscreen`.** What is left is the difference between that call

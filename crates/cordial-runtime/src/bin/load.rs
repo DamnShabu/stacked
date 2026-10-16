@@ -156,7 +156,9 @@ env:
                                      responsive, and it costs power; 'fifo'
                                      saves the power and feels floatier),
                                      off (forward the engine's own choice, which
-                                     is FIFO — this is the control for a frame
+                                     is IMMEDIATE on 2.738 and was FIFO on the
+                                     builds measured in August — the log line
+                                     names it; this is the control for a frame
                                      rate measurement), or one of mailbox,
                                      immediate, uncapped, fifo, fifo-relaxed.
                                      'uncapped' means MAILBOX if the driver has
@@ -194,6 +196,18 @@ env:
                                      configuration. On Mesa, the honest
                                      equivalent is the driver's own decoder:
                                      vk_require_etc2=true
+  CORDIAL_FORCE_GPU_VENDOR=0x10de[@550.163.01]
+                                     behave as though the GPU were NVIDIA's (or
+                                     as another vendor id) for the code that is
+                                     gated on it, optionally with that driver
+                                     version. Changes what Cordial decides and
+                                     nothing the engine sees. A test-only
+                                     substitute for hardware this project lacks.
+                                     Off by default
+  CORDIAL_TEST_FAIL_PRESENT_MODES=N  on an NVIDIA-gated device, make the first N
+                                     present-mode queries fail with
+                                     VK_ERROR_UNKNOWN so the retry can be watched
+                                     recovering. Test-only
 ";
 
 fn parse() -> Result<Options, String> {
@@ -1639,6 +1653,15 @@ enum DiskMoment {
 }
 
 fn main() -> ExitCode {
+    // What `cordial_shell::gtk_renderer` runs in a child of this binary to ask
+    // Vulkan for its devices without loading a driver into the client. First,
+    // before the profile is claimed or anything else is read: the child must
+    // not be refused the profile its parent holds, and it has no business
+    // anywhere near one.
+    if std::env::args_os().nth(1).is_some_and(|a| a == "--vulkan-probe") {
+        return ExitCode::from(cordial_shell::vulkan_probe::run_probe_mode());
+    }
+
     // Desktop GPUs without ETC2 (RADV on this host) make the engine log
     // `ETC1 0 ETC2 0` where Sober, on the same card, logs `ETC1 1 ETC2 1` and
     // `using emulated fast ETC2 support` -- and Sober's textures are the crisp
@@ -1735,6 +1758,11 @@ fn main() -> ExitCode {
     // those get asked from a support thread rather than from a terminal somebody
     // is willing to re-run with a trace variable set.
     cordial_runtime::graphics::report();
+
+    // Start asking Vulkan what it can drive, so that GTK's renderer can be
+    // chosen before the window exists. Concurrent with the load below, and
+    // collected in `wayland::open`; see `cordial_shell::gtk_renderer`.
+    cordial_shell::gtk_renderer::begin();
 
     // Before anything can resolve a path: Android's `/system`, served from a
     // directory Cordial builds out of the host's fonts. Roblox asks for

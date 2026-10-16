@@ -319,6 +319,12 @@ fn load_host() -> Option<HostVulkan> {
         return None;
     }
 
+    // A compositor with no dma-buf global cannot be presented to by a hardware
+    // device, and the engine mishandles the failure (issue #63). See `wl_dmabuf`.
+    if super::wl_dmabuf::withhold_vulkan() {
+        return None;
+    }
+
     let mut handle = std::ptr::null_mut();
     // The Linux soname first, then the Android one Roblox actually asks for —
     // either is fine to load from, since what matters is which real library
@@ -559,6 +565,16 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_create_shader_module as *const () as *mut c_void
         }
+        // Forwarded untouched on every GPU but NVIDIA's, and asked again on
+        // NVIDIA's when it fails in the way hybrid laptops have been reported
+        // to fail it -- see [`vk_get_physical_device_surface_present_modes_khr`].
+        b"vkGetPhysicalDeviceSurfacePresentModesKHR" => {
+            HOST_GET_PRESENT_MODES.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_surface_present_modes_khr as *const () as *mut c_void
+        }
         // `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`'s result is patched, not
         // just forwarded — see [`vk_get_physical_device_surface_capabilities_khr`]
         // for the failure this fixes. Measured, not guessed: temporary tracing
@@ -626,8 +642,34 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
     }
 }
 
-/// The real `vkAcquireNextImageKHR`, interposed for one Roblox compatibility
-/// quirk. The driver call and image index are otherwise untouched.
+/// The real `vkAcquireNextImageKHR`, interposed for one status code and nothing
+/// else: the call, the semaphore, the fence and the image index reach the driver
+/// and come back untouched.
+///
+/// **What this changes, and what it costs.** `VK_SUBOPTIMAL_KHR` means the image
+/// was acquired and is usable, and that the swapchain could be recreated to match
+/// the surface better. On a Wayland fullscreen exit on RADV the engine was
+/// observed to answer it by recording a `PRESENT_SRC_KHR` barrier on
+/// `VK_NULL_HANDLE`, which crashed the driver (issue #39, measured by the PR
+/// author with the status as the only variable). Returning `VK_SUCCESS` for the
+/// same acquire removed the barrier. What is lost is the hint: this swapchain
+/// will not be flagged for recreation by the driver. Cordial does not need it,
+/// because every size change already reaches the engine as a new surface extent
+/// through [`settle_resize_extent`] and the engine rebuilds from that, which is
+/// the only recreation trigger that was ever observed here. `INFERRED`: that the
+/// driver's reason for the status on that machine is a compositor
+/// presentation-hint change rather than a size mismatch, which would make the
+/// lost hint a scanout optimisation and not a correctness signal; Intel's driver
+/// has not been seen to return it at all.
+///
+/// This is a downgrade between two success codes, not a stub reporting a thing
+/// that did not happen, so it stays inside AGENTS.md's rule about never making
+/// a stub lie. It is deliberately not extended to `VK_ERROR_OUT_OF_DATE_KHR`,
+/// where no image was acquired and success would be false, and the swallowed
+/// codes are counted and printed so the substitution is visible in a log
+/// ([`report_suboptimal_acquire`]). `vkAcquireNextImage2KHR` is not interposed;
+/// `INFERRED` that the engine does not resolve it, as nothing here has seen it
+/// asked for.
 static HOST_ACQUIRE_NEXT_IMAGE: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
@@ -648,12 +690,29 @@ extern "C" fn vk_acquire_next_image_khr(
     let f: Fn_ = unsafe { std::mem::transmute(f) };
     let rc = f(device, swapchain, timeout, semaphore, fence, image_index);
 
-    // In the reproduced Wayland fullscreen failure the host returned
-    // VK_SUBOPTIMAL_KHR with a valid image index; passing that status through
-    // was immediately followed by a PRESENT_SRC_KHR barrier with
-    // VK_NULL_HANDLE. Report only this successful status as VK_SUCCESS while
-    // preserving the driver's image index. Real errors still pass through.
+    if rc == VK_SUBOPTIMAL_KHR {
+        report_suboptimal_acquire();
+    }
     normalize_acquire_result(rc)
+}
+
+/// Say that an acquire's `VK_SUBOPTIMAL_KHR` was reported to the engine as
+/// success, at the first and then at each power of ten.
+///
+/// The present path prints every non-success code it forwards; this one
+/// withholds a code, so it owes the log the same honesty. Without the line a
+/// reader of a fullscreen report could not tell a driver that never said
+/// "suboptimal" from one whose word was not passed on.
+fn report_suboptimal_acquire() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SWALLOWED: AtomicU64 = AtomicU64::new(0);
+    let n = SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
+    if is_first_or_power_of_ten(n) {
+        println!(
+            "[android] vulkan: vkAcquireNextImageKHR returned VK_SUBOPTIMAL_KHR; \
+             reported to the engine as VK_SUCCESS, {n} so far"
+        );
+    }
 }
 
 fn normalize_acquire_result(rc: i32) -> i32 {
@@ -861,8 +920,15 @@ fn is_first_or_power_of_ten(n: u64) -> bool {
 // ------------------------------------------------------------- present mode
 //
 // Cordial did not ask for a present mode until this existed, so the engine's
-// own choice stood, and the engine chooses `VK_PRESENT_MODE_FIFO_KHR` — the one
-// mode the specification guarantees, and a hard vsync lock. What that costs was
+// own choice stood. **That choice is not a constant, and this comment used to
+// say it was.** The August measurements below were taken when the engine asked
+// for `VK_PRESENT_MODE_FIFO_KHR`, the one mode the specification guarantees and
+// a hard vsync lock. On 2.738.0.1397, fresh profile, default settings, nested
+// sway on an Intel iGPU, 2026-10-08, `CORDIAL_PRESENT_MODE=off` printed
+// `swapchain present mode IMMEDIATE (the engine's own choice)` on all three
+// swapchains, and a user's log on 2.739 reads `IMMEDIATE -> FIFO`. So on a
+// current build `off` is IMMEDIATE, not FIFO, and "FIFO is the control" in the
+// notes below is the control for an older engine. What that costs was
 // measured rather than assumed: with input driven continuously for the whole
 // window, presents come out equal to the output's refresh and stay there, 60.0
 // on a 59.88 Hz panel and 49.4 on a 49.96 Hz one, unchanged by fullscreen at
@@ -912,6 +978,7 @@ extern "C" fn vk_create_device(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     PHYSICAL_DEVICE.store(physical_device as usize, std::sync::atomic::Ordering::Relaxed);
+    announce_physical_device(physical_device);
     // The queue family the engine asked for, read out of its own
     // `VkDeviceCreateInfo`. A capture needs a command pool, a command pool is
     // per family, and assuming family zero would be a guess that happens to be
@@ -1269,23 +1336,26 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// forwarded unchanged here.
 ///
 /// `tools/sober-corpus`'s issue #2180 (`Crashes after SceneManager first
-/// resize when using Vulkan`) is independent evidence for a wider version of
-/// the same fault shape: Roblox's Android-targeted Vulkan renderer, run on
-/// Sober rather than Cordial, has repeatedly SIGSEGV'd immediately after a
-/// framebuffer resize on ordinary desktop Linux GPU drivers (NVIDIA 535
-/// through 550, Pascal through Ampere), with no Cordial-equivalent code
-/// involved at all — Sober's own maintainers concluded it is the engine's
-/// renderer disagreeing with the host driver, not anything in the launcher,
-/// and the confirmed workaround every reporter in that thread used is forcing
-/// the OpenGL/GLES path instead of Vulkan. Cordial already ships the same
-/// switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
+/// resize when using Vulkan due to Roblox incompatibility with NVIDIA driver
+/// 550`) is evidence for the same fault shape on **NVIDIA, and on NVIDIA only**:
+/// Roblox's Android-targeted Vulkan renderer, run on Sober rather than Cordial,
+/// SIGSEGVs right after a render-target resize on the 535 and 550 driver
+/// series (Pascal through Ampere), with no Cordial-equivalent code involved. A
+/// Sober maintainer's conclusion there was a driver incompatibility, fixed by
+/// changing driver version -- reporters on a GTX 1070 and 1070 Ti went from
+/// 535/550 to 580 and were running afterwards -- and the one workaround in the
+/// thread that was tried and worked is switching Sober to OpenGL. **It says
+/// nothing about AMD or Intel.** #35 is a Steam Deck (AMD, Mesa) and #39's GPU
+/// was never given, so this issue is not evidence about either of them; an
+/// earlier version of this comment offered it as if it were. Cordial has the
+/// same switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
 /// entirely, so the engine falls through to its own GLES3 renderer and none
 /// of this file's code ever runs. Confirmed still working on this build,
 /// 2026-09-15: `CORDIAL_GRAPHICS=gles` reached the Landing page cleanly,
 /// logging `[graphics] backend: GLES3 — Vulkan is being withheld
-/// deliberately`. That makes it a real mitigation to offer a reporter of #35
-/// or #39 today, not a fix for whatever is actually wrong with Roblox's
-/// Vulkan renderer here.
+/// deliberately`. That makes it something to *try* for a reporter of #35 or
+/// #39, not an established mitigation for their machines and not a fix for
+/// whatever is actually wrong with Roblox's Vulkan renderer here.
 extern "C" fn vk_create_swapchain_khr(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
@@ -1435,6 +1505,210 @@ extern "C" fn vk_create_swapchain_inner(
     // being the same struct on Android and desktop Linux); every pointer inside
     // it is the caller's own and outlives this call.
     f(device, &patched, allocator, swapchain_out)
+}
+
+// ------------------------------------------------------------------- NVIDIA
+//
+// Everything below runs only when the physical device's `vendorID` is NVIDIA's
+// (or `CORDIAL_FORCE_GPU_VENDOR` says to behave as though it were, which is how
+// it is exercised on a machine without one). **None of it has run against a real
+// NVIDIA driver.** The reasoning is in `cordial_shell::nvidia`; the evidence is
+// upstream Cordial's `docs/analysis/nvidia-support.md`, not carried into this
+// fork.
+
+/// The host's real `vkGetPhysicalDeviceProperties`, resolved through the
+/// instance this shim created, and how much room to give its result.
+///
+/// `VkPhysicalDeviceProperties` is 824 bytes on 64-bit Linux (20 of header, 256
+/// of name, 16 of pipeline-cache UUID, 504 of limits, 20 of sparse properties,
+/// padded). A buffer of 1024 is not a claim about the exact size; it is
+/// headroom against a future field, so the host can never write past it.
+const PROPS_BUFFER_BYTES: usize = 1024;
+
+/// What one physical device is, as the gate sees it.
+#[derive(Clone)]
+struct DeviceIdentity {
+    name: String,
+    vendor_id: u32,
+    device_id: u32,
+    gate: cordial_shell::nvidia::Gate,
+}
+
+static DEVICE_IDENTITIES: std::sync::Mutex<Vec<(usize, DeviceIdentity)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The override, read once.
+fn gpu_vendor_override() -> Option<cordial_shell::nvidia::VendorOverride> {
+    static OVERRIDE: OnceLock<Option<cordial_shell::nvidia::VendorOverride>> = OnceLock::new();
+    *OVERRIDE.get_or_init(cordial_shell::nvidia::override_from_env)
+}
+
+/// Ask the driver what `physical_device` is, once, and remember it.
+///
+/// `None` when the question cannot be asked (no instance yet, or the host has
+/// no such command), which every caller treats as "not NVIDIA": a gate that
+/// could not be read must not switch a workaround on.
+fn device_identity(physical_device: *mut c_void) -> Option<DeviceIdentity> {
+    if physical_device.is_null() {
+        return None;
+    }
+    if let Ok(known) = DEVICE_IDENTITIES.lock() {
+        if let Some((_, id)) = known.iter().find(|(pd, _)| *pd == physical_device as usize) {
+            return Some(id.clone());
+        }
+    }
+    let h = host()?;
+    let instance = HOST_INSTANCE.load(std::sync::atomic::Ordering::Relaxed);
+    if instance == 0 {
+        return None;
+    }
+    // SAFETY: `instance` is the real host `VkInstance` this shim created and the
+    // name is core Vulkan 1.0's own documented export.
+    let f = unsafe {
+        (h.get_instance_proc_addr)(instance as *mut c_void, c"vkGetPhysicalDeviceProperties".as_ptr())
+    };
+    if f.is_null() {
+        return None;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, *mut u8);
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    // `u64` elements so the buffer is 8-aligned, which the struct's `limits`
+    // member wants; only its first 276 bytes are ever read back.
+    let mut buffer = [0u64; PROPS_BUFFER_BYTES / 8];
+    f(physical_device, buffer.as_mut_ptr() as *mut u8);
+    // SAFETY: `buffer` is `PROPS_BUFFER_BYTES` long and initialised.
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, PROPS_BUFFER_BYTES) };
+    // The spec's C layout: apiVersion 0, driverVersion 4, vendorID 8, deviceID
+    // 12, deviceType 16, deviceName 20..276.
+    let word = |at: usize| u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let driver_version = word(4);
+    let vendor_id = word(8);
+    let device_id = word(12);
+    let name_bytes = &bytes[20..276];
+    let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+    let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
+    let identity = DeviceIdentity {
+        name,
+        vendor_id,
+        device_id,
+        gate: cordial_shell::nvidia::gate(vendor_id, driver_version, gpu_vendor_override()),
+    };
+    if let Ok(mut known) = DEVICE_IDENTITIES.lock() {
+        known.push((physical_device as usize, identity.clone()));
+    }
+    Some(identity)
+}
+
+/// Whether this physical device is one the NVIDIA behaviours apply to.
+fn is_nvidia_device(physical_device: *mut c_void) -> bool {
+    device_identity(physical_device).is_some_and(|id| id.gate.nvidia())
+}
+
+/// Say which device the engine is rendering on, and warn when the driver is one
+/// that has been reported to crash it.
+///
+/// Printed for **every** vendor, unconditionally: which GPU a session ran on is
+/// the first thing a report about it needs, and the launcher's crash page reads
+/// this line to decide whether to speak about NVIDIA at all. Called from
+/// [`vk_create_device`], so it describes the device the engine actually built
+/// its logical device on and not one it merely enumerated.
+fn announce_physical_device(physical_device: *mut c_void) {
+    let Some(id) = device_identity(physical_device) else { return };
+    println!(
+        "{}",
+        cordial_shell::nvidia::identity_line(&id.name, id.vendor_id, id.device_id, &id.gate)
+    );
+    if id.gate.nvidia() {
+        if let Some(text) = cordial_shell::nvidia::driver_advisory(id.gate.driver.major) {
+            println!("{} {text}", cordial_shell::nvidia::ADVISORY_MARKER);
+        }
+        if let Some(host) = cordial_shell::nvidia::host_driver_version() {
+            println!("[android] vulkan: NVIDIA kernel module {host}");
+        }
+    }
+}
+
+static HOST_GET_PRESENT_MODES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many more calls `CORDIAL_TEST_FAIL_PRESENT_MODES` will fail.
+fn injected_failures_left() -> &'static std::sync::atomic::AtomicU32 {
+    static LEFT: OnceLock<std::sync::atomic::AtomicU32> = OnceLock::new();
+    LEFT.get_or_init(|| {
+        let n = std::env::var(cordial_shell::nvidia::FAIL_PRESENT_MODES_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        std::sync::atomic::AtomicU32::new(n)
+    })
+}
+
+/// `vkGetPhysicalDeviceSurfacePresentModesKHR`, forwarded untouched unless the
+/// device is NVIDIA's, and on NVIDIA's asked again if it fails the way hybrid
+/// laptops have been reported to fail it.
+///
+/// **`INFERRED` that this helps.** What is established is the report: on hybrid
+/// NVIDIA laptops under Wayland this call fails with `VK_ERROR_UNKNOWN` on the
+/// first launch of a boot and the engine dies with it, and four independent
+/// reporters got past it by using the GPU once before launching. Whether a pause
+/// and a second ask reproduces "using the GPU once" is a guess about a mechanism
+/// nobody has named. The cost of being wrong is under two seconds on a path that
+/// was ending in a fatal error already; the retry never runs when the call
+/// succeeds. See [`cordial_shell::nvidia::retry`].
+extern "C" fn vk_get_physical_device_surface_present_modes_khr(
+    physical_device: *mut c_void,
+    surface: u64,
+    count: *mut u32,
+    modes: *mut i32,
+) -> i32 {
+    let f = HOST_GET_PRESENT_MODES.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, u64, *mut u32, *mut i32) -> i32;
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    if !is_nvidia_device(physical_device) {
+        return f(physical_device, surface, count, modes);
+    }
+    static ARMED: std::sync::Once = std::sync::Once::new();
+    ARMED.call_once(|| {
+        println!("[android] vulkan: NVIDIA device: present-mode queries will be retried if the driver refuses them")
+    });
+    let injected = injected_failures_left();
+    let result = cordial_shell::nvidia::retry(
+        || {
+            // Test-only: fail the call ourselves while the counter lasts, so the
+            // schedule can be watched on a driver that never fails it.
+            let took = injected.fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            );
+            if took.is_ok() {
+                -13
+            } else {
+                f(physical_device, surface, count, modes)
+            }
+        },
+        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+        cordial_shell::nvidia::retryable_present_modes_error,
+    );
+    if result.attempts > 1 {
+        println!(
+            "[android] vulkan: NVIDIA present-modes query took {} attempts and ended at {}",
+            result.attempts, result.rc
+        );
+    }
+    if cordial_shell::nvidia::retryable_present_modes_error(result.rc) {
+        println!(
+            "{} (last result {}); the engine will report it",
+            cordial_shell::nvidia::PRESENT_MODES_GAVE_UP_MARKER,
+            result.rc
+        );
+    }
+    result.rc
 }
 
 static HOST_GET_SURFACE_CAPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);

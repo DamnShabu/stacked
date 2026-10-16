@@ -38,6 +38,9 @@ order a newcomer would want it.
 | [ADR-016](adr/ADR-016-per-profile-network-egress.md) | Why a profile can require a VPN, and what that does and does not guarantee |
 | [ADR-017](adr/ADR-017-sober-issue-corpus.md) | Why the local Sober issue corpus exists and what it deliberately drops |
 | [ADR-018](adr/ADR-018-plugin-sub-sandboxing.md) | A kernel sandbox under Deno, why it cannot replace the broker, and the Flatpak grant not taken |
+| [ADR-047](adr/ADR-047-the-canvas-is-lowered-only-under-a-presented-frame.md) | The canvas is lowered under GTK only once GTK has presented a frame, so a stalled GTK never leaves a grey screen |
+| [ADR-056](adr/ADR-056-the-host-window-keeps-one-pixel-the-engine-does-not-cover.md) | With no header bar, the host window keeps one pixel the engine does not cover, so the compositor keeps sending GTK frames |
+| [ADR-061](adr/ADR-061-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md) | Vulkan is withheld on a Wayland compositor that advertises no dma-buf, because the engine mishandles the lost surface |
 
 ## Design notes
 

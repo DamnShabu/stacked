@@ -41,7 +41,13 @@
 pub mod branding;
 pub mod host_window;
 pub mod network;
+// What Cordial does only when the GPU is NVIDIA's, and the parsing the shell and
+// the runtime both need for it. In the library half for the reason `network`
+// is: `cordial-runtime` already depends on this crate and needs the same
+// vendor gate and driver decode the launcher could use for its diagnostics.
+pub mod nvidia;
 pub mod profile;
+pub mod stacking_gate;
 pub mod theme;
 pub mod title_bar;
 // Not pulled in by `host_window` or `network` -- registered here on its own
@@ -70,6 +76,8 @@ pub mod secrets;
 /// because the window Roblox runs in is built by `cordial-runtime`, which
 /// depends on this crate and has to read and write the same records.
 pub mod version;
+pub mod gtk_renderer;
+pub mod vulkan_probe;
 pub mod window_state;
 pub mod webview_policy;
 // Not behind `webview` for the same reason as `webview_policy`: it is plain
