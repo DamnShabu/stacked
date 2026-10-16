@@ -118,8 +118,9 @@ bool load_library() {
     if (!handle) handle = dlopen("libpipewire-0.3.so", RTLD_NOW | RTLD_GLOBAL);
     if (!handle) {
         std::fprintf(stderr,
-            "E/Cordial-Audio           libpipewire-0.3 not found (%s); Roblox's audio "
-            "has nowhere to go. Install PipeWire and its client library to enable it.\n",
+            "I/Cordial-Audio           libpipewire-0.3 not found (%s); PipeWire cannot be "
+            "used. Another backend is used if one answers; the `host backend:` line says "
+            "which. Install PipeWire's client library to enable it.\n",
             dlerror());
         return false;
     }
@@ -219,10 +220,17 @@ bool round_trip(Session* s) {
 /// that accepted the connection but is wedged, both get this far. The
 /// `pw_core_sync`/`done` round trip is what actually proves someone is home;
 /// see the "Degrade honestly" requirement this exists to satisfy.
-Session* connect_session() {
-    if (!load_library()) return nullptr;
+Session* connect_session(bool first_attempt) {
+    // Once, and the answer kept: a library that is not installed does not
+    // appear later in the same process, and each attempt would print the same
+    // complaint again.
+    static const bool library_ok = load_library();
+    if (!library_ok) return nullptr;
 
-    g_lib.init(nullptr, nullptr);
+    // Once: a failed attempt is retried (see `get_session`), and initialising
+    // the library again for each one is not what `pw_init` is for.
+    static const bool initialised = [] { g_lib.init(nullptr, nullptr); return true; }();
+    (void)initialised;
 
     pw_thread_loop* loop = g_lib.thread_loop_new("cordial-pipewire", nullptr);
     if (!loop) {
@@ -251,10 +259,20 @@ Session* connect_session() {
 
     pw_core* core = g_lib.context_connect(context, nullptr, 0);
     if (!core) {
-        std::fprintf(stderr,
-            "E/Cordial-Audio           no PipeWire session reachable (is a PipeWire "
-            "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?); "
-            "no audio output.\n");
+        // **Not an error, and not worded as one.** PipeWire is the first thing
+        // asked when nobody named a backend, so on a PulseAudio-only machine
+        // this is the expected answer, and it used to print "E/ ... no audio
+        // output" two lines above a working "host backend: pulse" (#104). Whether
+        // there is audio is `cordial_audio_backend_announce`'s verdict, made
+        // after every backend has been asked; this line only records that
+        // PipeWire did not answer. Printed for the first attempt only, since a
+        // later one is the same answer a few seconds on.
+        if (first_attempt) {
+            std::fprintf(stderr,
+                "I/Cordial-Audio           PipeWire: no session reachable (is a PipeWire "
+                "daemon running, and is PIPEWIRE_RUNTIME_DIR/XDG_RUNTIME_DIR set?). It is "
+                "asked again the next time sound is wanted.\n");
+        }
         g_lib.thread_loop_unlock(loop);
         g_lib.context_destroy(context);
         g_lib.thread_loop_stop(loop);
@@ -298,10 +316,11 @@ Session* connect_session() {
     g_lib.thread_loop_unlock(loop);
 
     if (!reachable) {
-        if (!session->sync_failed) {
+        if (!session->sync_failed && first_attempt) {
             std::fprintf(stderr,
-                "E/Cordial-Audio           PipeWire did not answer within 3s; treating "
-                "the session as unreachable. No audio output.\n");
+                "W/Cordial-Audio           PipeWire did not answer within 3s; treating "
+                "the session as unreachable for now. It is asked again the next time "
+                "sound is wanted.\n");
         }
         g_lib.thread_loop_lock(loop);
         spa_hook_remove(&session->core_listener);
@@ -334,9 +353,16 @@ Session* connect_session() {
     return session;
 }
 
+/// How long a failed connection is remembered before the next caller tries
+/// again. Long enough that a daemon which hangs for three seconds a try is not
+/// asked on every call; short enough that one which was merely slow to start at
+/// login is picked up while the player is still in the same session.
+constexpr std::chrono::seconds kSessionRetryAfter{5};
+
 Session* get_session() {
-    static Session* session = connect_session();
-    return session;
+    static testing::RetryingSlot<Session> slot{kSessionRetryAfter};
+    return slot.get([](bool first) { return connect_session(first); },
+                    [] { return std::chrono::steady_clock::now(); });
 }
 
 // -------------------------------------------------------------- PCM format
@@ -751,6 +777,15 @@ std::string choose_output_target(const std::string& requested,
     return {};
 }
 
+std::string choose_input_target(const std::string& requested,
+                                const std::vector<std::string>& available_sources,
+                                bool* fell_back) {
+    // The rule is identical and deliberately shared: "is the thing asked for
+    // present, and is empty a fallback" has one answer, and two copies of it is
+    // how the sink and the microphone would come to disagree.
+    return choose_output_target(requested, available_sources, fell_back);
+}
+
 } // namespace testing
 
 const std::string& configured_output_device() {
@@ -771,6 +806,48 @@ const std::string& configured_output_device() {
         return s;
     }();
     return name;
+}
+
+const std::string& configured_input_device() {
+    // Read once, as the sink is: the choice is made at launch (`launch.rs`
+    // passes it only when one was made) and a game already running keeps it.
+    static const std::string name = [] {
+        const char* v = std::getenv("CORDIAL_AUDIO_SOURCE");
+        std::string s = v ? v : "";
+        if (!s.empty()) {
+            // Says what was asked for and not that a microphone was opened:
+            // nothing is, until Roblox starts recording.
+            std::fprintf(stderr,
+                "I/Cordial-OpenSLES         input device: recording will be aimed at PipeWire "
+                "source '%s' (CORDIAL_AUDIO_SOURCE). Unset it to follow the system default.\n",
+                s.c_str());
+        }
+        return s;
+    }();
+    return name;
+}
+
+std::string resolve_input_target(const std::string& requested) {
+    if (requested.empty()) return {};
+
+    // Sources only, and enumeration only: this walks the registry, and the
+    // microphone rule at the top of `audio_classes.cpp` is why it must stay
+    // that. Nothing on this path may construct a `CaptureStream`.
+    std::vector<std::string> sources;
+    for (const DeviceInfo& d : enumerate_devices()) {
+        if (d.is_source) sources.push_back(d.node_name);
+    }
+
+    bool fell_back = false;
+    std::string target = testing::choose_input_target(requested, sources, &fell_back);
+    if (fell_back) {
+        std::fprintf(stderr,
+            "W/Cordial-OpenSLES         input device '%s' is not in this PipeWire session "
+            "(%zu source(s) present); falling back to the system default microphone. The "
+            "choice is kept, so replugging the device and relaunching will use it again.\n",
+            requested.c_str(), sources.size());
+    }
+    return target;
 }
 
 std::string resolve_output_target(const std::string& requested) {
@@ -1636,6 +1713,16 @@ const std::string& configured_output_device() {
 
 std::string resolve_output_target(const std::string&) { return {}; }
 
+const std::string& configured_input_device() {
+    static const std::string name = [] {
+        const char* v = std::getenv("CORDIAL_AUDIO_SOURCE");
+        return std::string(v ? v : "");
+    }();
+    return name;
+}
+
+std::string resolve_input_target(const std::string&) { return {}; }
+
 namespace testing {
 
 /// Shares no code with the real one on purpose: it is four lines, and the
@@ -1651,6 +1738,12 @@ std::string choose_output_target(const std::string& requested,
     }
     if (fell_back) *fell_back = true;
     return {};
+}
+
+std::string choose_input_target(const std::string& requested,
+                                const std::vector<std::string>& available_sources,
+                                bool* fell_back) {
+    return choose_output_target(requested, available_sources, fell_back);
 }
 
 } // namespace testing
@@ -1906,6 +1999,40 @@ size_t cordial_audio_sinks(CordialAudioSink** out) {
     *out = list;
     return count;
 }
+
+size_t cordial_audio_sources(CordialAudioSink** out) {
+    if (!out) return 0;
+    *out = nullptr;
+
+    // The same registry walk as the sinks, filtered the other way. Enumeration
+    // only: nothing here constructs a `CaptureStream`, which is the rule at the
+    // top of `audio_classes.cpp` and is pinned by the shell's own test of this
+    // call reading `cordial_audio_capture_streams` before and after.
+    std::vector<cordial::audio::DeviceInfo> devices = cordial::audio::enumerate_devices();
+
+    size_t count = 0;
+    for (const cordial::audio::DeviceInfo& d : devices) {
+        if (d.is_source && !d.node_name.empty()) ++count;
+    }
+    if (count == 0) return 0;
+
+    auto* list = static_cast<CordialAudioSink*>(std::calloc(count, sizeof(CordialAudioSink)));
+    if (!list) return 0;
+
+    size_t i = 0;
+    for (const cordial::audio::DeviceInfo& d : devices) {
+        if (!d.is_source || d.node_name.empty()) continue;
+        list[i].node_name = ::strdup(d.node_name.c_str());
+        list[i].description =
+            ::strdup(d.description.empty() ? d.node_name.c_str() : d.description.c_str());
+        list[i].is_default = d.is_default ? 1 : 0;
+        ++i;
+    }
+    *out = list;
+    return count;
+}
+
+unsigned cordial_audio_capture_streams(void) { return cordial::audio::active_capture_streams(); }
 
 void cordial_audio_sinks_free(CordialAudioSink* sinks, size_t count) {
     if (!sinks) return;

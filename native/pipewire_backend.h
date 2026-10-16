@@ -8,10 +8,12 @@
 // `pipewire_backend.cpp` for how that split is enforced.
 
 #include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <deque>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -104,6 +106,33 @@ std::vector<DeviceInfo> enumerate_devices();
 /// each file calling `getenv` for itself is how a switch comes to mean two
 /// different things in one process.
 const std::string& configured_output_device();
+
+/// The PipeWire source Cordial has been asked to record from, as a
+/// `node.name`; empty is the ordinary state and means "follow the session's
+/// default source", the behaviour before there was a microphone picker.
+///
+/// The input twin of [`configured_output_device`], with the same reasons: read
+/// once from `CORDIAL_AUDIO_SOURCE`, one reader so a switch cannot come to mean
+/// two things in one process, and a
+/// `node.name` rather than an index or a description because it is the only one
+/// of the three that survives a replug and a rename.
+///
+/// **Reading it opens nothing.** The choice is a string. The microphone rule at
+/// the top of `audio_classes.cpp` is about streams, and a stored preference is
+/// not one.
+const std::string& configured_input_device();
+
+/// The node name a capture stream should actually connect to, given what the
+/// user asked for. Empty in, empty out, and no registry walk for the common
+/// case.
+///
+/// The twin of [`resolve_output_target`] and for the same reason: a source that
+/// has been unplugged must not turn into a recording that captures nothing, so
+/// an absent one falls back to the default and says so on stderr, naming it.
+/// The callers in `audio_classes.cpp` then resolve an empty answer to the
+/// default source's name as they always have; the OpenSL and AAudio callers
+/// pass it on empty, which PipeWire reads as "the default".
+std::string resolve_input_target(const std::string& requested);
 
 /// The node name a playback stream should actually connect to, given what the
 /// user asked for.
@@ -489,6 +518,55 @@ private:
 /// checking on its own, not only by ear.
 namespace testing {
 
+/// One connection to something that may not be up yet, held for the process and
+/// retried after a failure.
+///
+/// **A failure used to be permanent.** `get_session` was a function-local
+/// static, so a PipeWire that was still starting when the first sound was
+/// wanted (a login where the audio daemon comes up a few seconds after the
+/// client) left the whole run without audio even though the daemon answered a
+/// moment later. A success is kept for the life of the process, as before; a
+/// failure is only remembered for `retry_after`, and the next caller after that
+/// tries again. The wait keeps a wedged daemon, which costs three seconds per
+/// attempt, from being asked on every call.
+///
+/// The connector and the clock are passed in so the retry rule can be checked
+/// without a PipeWire session.
+template <class T>
+class RetryingSlot {
+public:
+    using Clock = std::chrono::steady_clock;
+
+    explicit RetryingSlot(Clock::duration retry_after) : retry_after_(retry_after) {}
+
+    /// `connect(first_attempt)` returns the connection or null. `now()` is read
+    /// after it returns, so the wait is counted from when a failure ended and
+    /// not from when it began.
+    template <class Connect, class Now>
+    T* get(Connect&& connect, Now&& now) {
+        std::lock_guard<std::mutex> lock(mutex_);
+        if (value_) return value_;
+        if (attempts_ > 0 && now() - last_attempt_ < retry_after_) return nullptr;
+        const bool first = attempts_ == 0;
+        ++attempts_;
+        value_ = connect(first);
+        last_attempt_ = now();
+        return value_;
+    }
+
+    int attempts() const {
+        std::lock_guard<std::mutex> lock(mutex_);
+        return attempts_;
+    }
+
+private:
+    mutable std::mutex mutex_;
+    Clock::duration retry_after_;
+    Clock::time_point last_attempt_{};
+    T* value_ = nullptr;
+    int attempts_ = 0;
+};
+
 struct PendingBuffer {
     const uint8_t* data;
     uint32_t size;
@@ -510,6 +588,13 @@ struct PendingBuffer {
 std::string choose_output_target(const std::string& requested,
                                  const std::vector<std::string>& available_sinks,
                                  bool* fell_back);
+
+/// The input twin of [`choose_output_target`]: the same rule over the list of
+/// sources instead of sinks, kept as its own name so a call site reads as what
+/// it is and a later difference between the two has somewhere to go.
+std::string choose_input_target(const std::string& requested,
+                                const std::vector<std::string>& available_sources,
+                                bool* fell_back);
 
 /// Copies from the front of `pending` into `dst[0, want)`, popping buffers
 /// as they empty (and recording their `context` in `drained_contexts`, in
@@ -567,5 +652,25 @@ struct CordialAudioSink {
 size_t cordial_audio_sinks(CordialAudioSink** out);
 
 void cordial_audio_sinks_free(CordialAudioSink* sinks, size_t count);
+
+/// Fills `*out` with a freshly allocated array of every audio source the
+/// session has that a person would call a microphone or line input, and
+/// returns how many; the shape and ownership rules are `cordial_audio_sinks`'s,
+/// and the array goes back to `cordial_audio_sinks_free`. `is_default` marks the
+/// session's current `default.audio.source`.
+///
+/// **This opens no stream.** It is a projection of `enumerate_devices`, which
+/// walks the registry and reads properties, and the microphone rule at the top
+/// of `audio_classes.cpp` forbids anything on this path from constructing a
+/// `CaptureStream`. Sink monitors are not offered: the registry reports a
+/// monitor as a port on its sink and not as an `Audio/Source` node, so
+/// "listening to what the speakers play" is not reachable from here, which is
+/// the intended answer for a microphone row.
+size_t cordial_audio_sources(CordialAudioSink** out);
+
+/// How many capture streams this process holds open right now. Exposed so the
+/// shell's own tests can pin that listing sources opened none; see
+/// `cordial::audio::active_capture_streams`.
+unsigned cordial_audio_capture_streams(void);
 
 } // extern "C"

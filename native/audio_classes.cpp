@@ -44,7 +44,8 @@
 // user can see. `CaptureStream::close()` therefore destroys the `pw_stream`
 // rather than deactivating it.
 //
-// There are exactly three callers of `CaptureStream::open()` in Cordial:
+// There are exactly four callers of `CaptureStream::open()` in Cordial, three of
+// them named here and the AAudio input stream in `aaudio.cpp` the fourth:
 // `AudioRecord::startRecording` and `WebRtcAudioRecord::startRecording` below,
 // and `AudioRecorderObject::start_capture` in `opensles.cpp`, which runs only
 // from `SLRecordItf::SetRecordState(SL_RECORDSTATE_RECORDING)`. All three close
@@ -74,6 +75,10 @@
 //   one. `enumerate_devices()` walks the PipeWire registry and reads
 //   properties; it never constructs a `CaptureStream`. If a device picker ever
 //   starts lighting the microphone indicator, that invariant is what broke.
+//   `stacked audio-inputs` is that device picker: `cordial_audio_sources`
+//   lists, the `audio_input` config key stores a `node.name` that reaches the
+//   client as `CORDIAL_AUDIO_SOURCE`, and neither creates a stream. A chosen
+//   source is applied only where one of the callers above opens its stream.
 //
 // * **Failure closes.** Every path below that cannot honour the rule reports
 //   failure instead of opening the microphone anyway — including the case
@@ -359,6 +364,16 @@ std::string default_source_node_name() {
     return {};
 }
 
+/// Where a recording that is about to open should connect: the source the
+/// user chose (the `audio_input` config key, sent as `CORDIAL_AUDIO_SOURCE`) if
+/// it is there, otherwise the default source as it is at this moment. Empty chosen means the second, which
+/// is exactly what these two callers did before there was a microphone picker.
+/// Enumeration only -- nothing here opens a stream.
+std::string source_node_name_for_recording() {
+    std::string chosen = audio::resolve_input_target(audio::configured_input_device());
+    return chosen.empty() ? default_source_node_name() : chosen;
+}
+
 // ---------------------------------------------------- android.media.AudioManager
 
 /// `android.media.AudioManager`
@@ -596,7 +611,7 @@ public:
         auto* r = as(self);
         if (!r || r->sampleRate <= 0) return;
         if (r->capture.is_open()) return;
-        r->targetNode = default_source_node_name();
+        r->targetNode = source_node_name_for_recording();
         if (!r->capture.open(static_cast<uint32_t>(r->sampleRate),
                              static_cast<uint32_t>(r->channelCount), r->targetNode)) {
             // Stays STOPPED. A recorder that reports RECORDING with no stream
@@ -1135,7 +1150,7 @@ public:
         // switching the desktop's default microphone between two voice
         // sessions is picked up without restarting the client — the same
         // reasoning `AudioRecord::startRecording` above already applies.
-        r->targetNode = default_source_node_name();
+        r->targetNode = source_node_name_for_recording();
         if (!r->capture.open(r->sampleRate, r->channels, r->targetNode)) {
             std::fprintf(stderr,
                 "E/Cordial-Audio           WebRtcAudioRecord.startRecording could not open a "

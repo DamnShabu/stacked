@@ -276,6 +276,23 @@ impl AudioOutput {
 
 }
 
+/// The microphone Roblox records from: a PipeWire source's `node.name`, empty
+/// for "follow the system default source".
+///
+/// The same type as [`AudioOutput`] on purpose. Everything that type decides is
+/// true of an input for the same reasons -- `node.name` rather than an index or
+/// a description, global rather than per profile, and absent rather than empty
+/// -- and a second type would
+/// copy its methods and its tests while leaving the two free to drift. What
+/// differs is the consequence of a wrong value, which is a microphone that
+/// records from somewhere nobody chose; that is handled where the stream
+/// opens (`resolve_input_target` in `native/pipewire_backend.cpp`), not here.
+///
+/// Stored as `audio_input` and sent as `CORDIAL_AUDIO_SOURCE` at launch; a
+/// change reaches the next launch, not a game already running. Choosing one
+/// opens nothing.
+pub type AudioInput = AudioOutput;
+
 /// One choice that settles both of the things Cordial can ask the engine to do
 /// differently about graphics: which device it says it is, and how many of the
 /// machine's cores the engine's own worker pools may use.
@@ -547,6 +564,9 @@ pub struct ShellConfig {
     /// `node.name` and why the default must stay "follow the system".
     #[serde(default)]
     pub audio_output: AudioOutput,
+    /// Which microphone Roblox records from. See [`AudioInput`].
+    #[serde(default)]
+    pub audio_input: AudioInput,
     /// The game window's colours. See [`Theme`]; passed as `CORDIAL_THEME`.
     pub theme: Theme,
     /// Keep the cursor inside the window while it is fullscreen and the game
@@ -589,6 +609,7 @@ impl Default for ShellConfig {
             unpacked_plugins: Vec::new(),
             carry_launch_ticket: false,
             audio_output: AudioOutput::default(),
+            audio_input: AudioInput::default(),
             mangohud: false,
             vkbasalt: false,
             theme: Theme::default(),
@@ -831,6 +852,25 @@ mod tests {
         save(&p, &ShellConfig { audio_output: AudioOutput(name.into()), ..Default::default() })
             .unwrap();
         assert_eq!(load(&p).audio_output, AudioOutput(name.into()));
+    }
+
+    #[test]
+    fn the_audio_input_round_trips_and_an_old_file_follows_the_system_default() {
+        let p = scratch("audio-input.json");
+        let name = "alsa_input.usb-Generic_USB_Audio-00.mono-fallback";
+        save(&p, &ShellConfig { audio_input: AudioOutput(name.into()), ..Default::default() })
+            .unwrap();
+        let back = load(&p);
+        assert_eq!(back.audio_input, AudioOutput(name.into()));
+        assert!(back.audio_output.is_system_default(), "the two choices are separate fields");
+
+        // Everybody's file predates the field; landing on anything but the
+        // default source would move somebody's microphone because they upgraded.
+        let old = scratch("pre-audio-input.json");
+        std::fs::write(&old, r#"{"appearance":"dark","audio_output":"some-sink"}"#).unwrap();
+        let loaded = load(&old);
+        assert!(loaded.audio_input.is_system_default());
+        assert_eq!(loaded.audio_input.env_value(), None);
     }
 
     #[test]

@@ -112,6 +112,7 @@ FastFlags (each takes --profile NAME; changes apply at the next start)
   flags clear             Remove every flag.
   flags path              Where the file is.
   audio-outputs           List the audio outputs `audio_output` can name.
+  audio-inputs            List the microphones `audio_input` can name.
 
 Plugins
   plugins                 List installed plugins and whether each is on.
@@ -182,9 +183,19 @@ fn main() -> ExitCode {
                 "profiles" | "profile" => profiles(rest),
                 "config" => cli_config::run(rest),
                 "flags" | "flag" | "fflags" => cli_flags::run(rest),
+                // The `node.name` first, because it is what `audio_output` and
+                // `audio_input` match exactly; the description alone, which is
+                // all these used to print, is not a value either key accepts.
                 "audio-outputs" => {
                     for sink in audio_devices::sinks() {
-                        println!("{}", audio_devices::row_label(&sink));
+                        println!("{}\t{}", sink.node_name, audio_devices::row_label(&sink));
+                    }
+                    0
+                }
+                // Lists and opens nothing: see `audio_devices::sources`.
+                "audio-inputs" => {
+                    for source in audio_devices::sources() {
+                        println!("{}\t{}", source.node_name, audio_devices::row_label(&source));
                     }
                     0
                 }

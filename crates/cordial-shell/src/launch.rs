@@ -549,6 +549,13 @@ pub fn spawn(
     if let Some(sink) = config.audio_output.env_value() {
         command.env("CORDIAL_AUDIO_SINK", sink);
     }
+    // The microphone, on the same terms: only when one was chosen, so that an
+    // unset variable keeps following the session's default source. It names a
+    // device and opens nothing -- the capture stream is created when Roblox
+    // starts recording, and not before.
+    if let Some(source) = config.audio_input.env_value() {
+        command.env("CORDIAL_AUDIO_SOURCE", source);
+    }
 
     // MangoHUD is a Vulkan implicit layer, so `MANGOHUD=1` on the client's
     // environment is the entire mechanism — the loader finds the layer JSON on
