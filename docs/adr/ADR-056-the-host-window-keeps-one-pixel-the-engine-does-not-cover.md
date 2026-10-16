@@ -108,6 +108,12 @@ near white under a light theme.
 
 - The game loses one row of pixels in fullscreen and with the bar hidden. At the
   common sizes that is a black line at the bottom edge.
+- `INFERRED`, cost not measured: the uncovered row probably also stops
+  wlroots, KWin and Mutter from putting the engine's buffer on a scanout plane
+  in fullscreen. Direct scanout wants one opaque surface covering the output,
+  and the point of the row is that the window is not completely covered. What
+  that costs -- a composition pass per frame, latency, power -- has not been
+  measured here.
 - `INFERRED`: that Hyprland and KWin behave like sway and Mutter here. #53's
   Hyprland report did not say whether the window was fullscreen or had its
   title bar hidden. KWin's grey screen in the same issue was a different cause
@@ -117,7 +123,13 @@ near white under a light theme.
   the exit-from-fullscreen failures, not a stalled engine, and nothing here ran
   NVIDIA 580 on Mutter.
 - The crash on leaving fullscreen in #39 (a SIGSEGV on the first swapchain
-  recreation of the exit transition) is unrelated and unexplained.
+  recreation of the exit transition) is unrelated to this, and is explained
+  elsewhere: upstream Cordial's
+  [PR #72](https://github.com/luohoa97/cordial/pull/72) traced it on RADV to
+  the engine answering a `VK_SUBOPTIMAL_KHR` acquire with a barrier on a null
+  image, and the acquire is now reported to the engine as success (see
+  `vk_acquire_next_image_khr` in `vulkan.rs` and `docs/NEXT.md`). That is the
+  PR author's measurement; it has not been reproduced here.
 - Not measured: a real game with a real focused TextBox. The box was
   synthetic, so the measurement shows GTK can present and the canvas is
   lowered, not what a particular game's box looks like.

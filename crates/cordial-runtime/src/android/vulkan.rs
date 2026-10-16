@@ -57,10 +57,11 @@
 //!   that function for the measurement and for why overriding what the engine
 //!   asked for is defensible here and would not be for most calls.
 //! * `vkAcquireNextImageKHR` — `VK_SUBOPTIMAL_KHR` is a successful acquire
-//!   with a valid image index. On the reproduced Wayland fullscreen resize,
-//!   passing that status through was followed by a `VK_NULL_HANDLE` present
-//!   barrier. [`vk_acquire_next_image_khr`] preserves the acquired index while
-//!   reporting that successful acquire as `VK_SUCCESS`.
+//!   with a valid image index. On a Wayland fullscreen exit on RADV, upstream
+//!   Cordial's PR #72 found that passing that status through was followed by
+//!   a `VK_NULL_HANDLE` present barrier; that is the PR author's measurement,
+//!   not re-run here. [`vk_acquire_next_image_khr`] preserves the acquired
+//!   index while reporting that successful acquire as `VK_SUCCESS`.
 //!
 //! Everything else — every `vkCmd*`, the whole per-frame surface — is
 //! untouched: once a real `VkInstance` exists, forwarding
@@ -650,17 +651,20 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
 /// was acquired and is usable, and that the swapchain could be recreated to match
 /// the surface better. On a Wayland fullscreen exit on RADV the engine was
 /// observed to answer it by recording a `PRESENT_SRC_KHR` barrier on
-/// `VK_NULL_HANDLE`, which crashed the driver (issue #39, measured by the PR
-/// author with the status as the only variable). Returning `VK_SUCCESS` for the
-/// same acquire removed the barrier. What is lost is the hint: this swapchain
-/// will not be flagged for recreation by the driver. Cordial does not need it,
-/// because every size change already reaches the engine as a new surface extent
-/// through [`settle_resize_extent`] and the engine rebuilds from that, which is
-/// the only recreation trigger that was ever observed here. `INFERRED`: that the
-/// driver's reason for the status on that machine is a compositor
-/// presentation-hint change rather than a size mismatch, which would make the
-/// lost hint a scanout optimisation and not a correctness signal; Intel's driver
-/// has not been seen to return it at all.
+/// `VK_NULL_HANDLE`, which crashed the driver (issue #39). That was measured by
+/// the author of upstream Cordial's
+/// [PR #72](https://github.com/luohoa97/cordial/pull/72), with the status as
+/// the only variable, and has not been reproduced here: returning `VK_SUCCESS`
+/// for the same acquire removed the barrier. The hint is delayed, not lost:
+/// [`vk_queue_present_khr`] forwards the driver's result untouched, so a driver
+/// that still finds the swapchain suboptimal can say so at the present of the
+/// same frame, after it has been drawn (whether RADV does is not measured). And
+/// every size change already reaches the engine as a new surface extent through
+/// [`settle_resize_extent`], which is the only recreation trigger that was ever
+/// observed here. `INFERRED`: that the driver's reason for the status on that
+/// machine is a compositor presentation-hint change rather than a size
+/// mismatch, which would make the hint a scanout optimisation and not a
+/// correctness signal; Intel's driver has not been seen to return it at all.
 ///
 /// This is a downgrade between two success codes, not a stub reporting a thing
 /// that did not happen, so it stays inside AGENTS.md's rule about never making
@@ -1749,7 +1753,9 @@ const VK_WHOLE_SIZE_UNDEFINED_EXTENT: u32 = 0xFFFF_FFFF;
 /// collapses to one settled extent.
 ///
 /// That crash is no longer what this guards against. It was root-caused in
-/// PR #72 as `vkAcquireNextImageKHR` returning `VK_SUBOPTIMAL_KHR`, which the
+/// upstream Cordial's [PR #72](https://github.com/luohoa97/cordial/pull/72),
+/// on its author's RADV machine and not re-measured here, as
+/// `vkAcquireNextImageKHR` returning `VK_SUBOPTIMAL_KHR`, which the
 /// engine answered with a barrier on a null `VkImage`; Cordial now reports
 /// that status as success (see [`vk_acquire_next_image_khr`]). The commit that
 /// introduced this constant was an `INFERRED` guess at the storm and was never
