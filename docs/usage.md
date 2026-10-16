@@ -238,6 +238,10 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_POST_GATE=0` | Don't hold the engine's settings call until its first render step ([ADR-065](adr/ADR-065-the-late-post-waits-for-the-first-render-step.md)). For testing whether a startup freeze is that race. |
 | `CORDIAL_NO_FREEZE_RESTART=1` | Read by `stacked play`: don't stop and restart a client whose log shows it stuck starting. |
 | `CORDIAL_APK=PATH` | Run this APK for this launch only. |
+| `CORDIAL_TRACE_KEYS=1` | Log one line for every key passed to the game or held back from it. **It logs every key, including ones typed into a password box**, so read it before pasting it anywhere. |
+| `CORDIAL_NO_GAME_SEED=1` | Don't send the pointer hovers that go to the game while it loads. They are the fix for movement keys not working after a join; this is for testing that. |
+| `CORDIAL_RESIZE_MAX_LAG_MS=N` | The longest the game waits to be told the window's new size during a resize, in milliseconds. The default is 100. |
+| `CORDIAL_X11_NO_DETECTABLE_AUTOREPEAT=1` | X11 only: don't ask the X server to report a held key as one press; pair the repeats up in Stacked instead. For testing that fallback. |
 | `XDG_DATA_HOME=DIR` | Move every profile and all client data somewhere else. |
 
 Profiles and data are still stored under `~/.local/share/cordial`, and

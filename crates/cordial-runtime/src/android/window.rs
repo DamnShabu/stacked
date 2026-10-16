@@ -1605,6 +1605,12 @@ impl HostWindow {
             return;
         };
         let (x, y) = (ev.x as f32, ev.y as f32);
+        // A press on the engine window is a press outside the box, since the
+        // editor covers the box. The editor stops taking X keyboard focus back
+        // from here on; see `X11Editor::user_clicked_engine`.
+        if press {
+            super::x11_text::engine_clicked();
+        }
 
         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
@@ -1780,7 +1786,11 @@ impl HostWindow {
     /// own connection hears nothing. Two keys cannot wait for the box to blur:
     /// Escape, which is how the engine's `hideKeyboard` is reached from the
     /// keyboard; and F11, because fullscreen is this backend's own and the editor
-    /// would otherwise swallow it. Everything else stays with
+    /// would otherwise swallow it. Enter on a single-line box is a third, but
+    /// only on a build with no `nativeReturnPressedFromOnScreenKeyboard`: the
+    /// editor's activate handler is then a dead end, and the raw key is the one
+    /// way left to submit the box, which is what Wayland already did
+    /// (`input::x11_enter_goes_raw`). Everything else stays with
     /// the widget -- the engine is not told a key was pressed in a text field,
     /// as Android's `EditText` consumes them.
     ///
@@ -1794,7 +1804,10 @@ impl HostWindow {
             }
             return true;
         }
-        if keyval == 0xff1b {
+        // Consumed, so the widget's activate does not also run for it.
+        let raw_enter =
+            matches!(keyval, 0xff0d | 0xff8d) && super::input::x11_enter_goes_raw(keycode as i32 - 8);
+        if keyval == 0xff1b || raw_enter {
             let now = self.now_ms();
             let handle = super::x11_text::active_handle();
             if let Some(android) = keysym_to_android(keyval as c_ulong) {
@@ -1804,7 +1817,7 @@ impl HostWindow {
             }
             pass_key_event(down, keycode as i32 - 8, meta);
         }
-        false
+        raw_enter
     }
 
     fn dispatch_key(&self, handle: i64, buf: &mut [u8; 256], down: bool) {

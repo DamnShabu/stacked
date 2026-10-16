@@ -299,24 +299,114 @@ extern "C" void cordial_textbox_focused(long long handle, const char* text,
                 fprintf(stderr, "[cordial] textbox spec unavailable\n");
             }
         }
+        // Inside the lock, so that `textbox_new_game` below cannot
+        // land between the spec being written and the handle that goes with
+        // it, and drop one half of a box the engine has just focused.
+        g_textbox_handle.store(handle, std::memory_order_release);
+        g_textbox_generation.fetch_add(1, std::memory_order_acq_rel);
     }
-    g_textbox_handle.store(handle, std::memory_order_release);
+}
+
+namespace {
+/// Forget the focused box. `g_textbox_mutex` must be held. The spec goes with
+/// the focus: a caller that kept drawing an editor from the last known geometry
+/// would leave one over an unfocused box.
+void blur_locked() {
+    g_textbox_info_known = false;
+    g_textbox_handle.store(0, std::memory_order_release);
     g_textbox_generation.fetch_add(1, std::memory_order_acq_rel);
 }
+} // namespace
 
 extern "C" void cordial_textbox_blurred() {
     if (getenv("CORDIAL_TRACE_TEXT")) {
         fprintf(stderr, "[cordial] textbox blurred\n");
     }
-    {
-        // The spec goes with the focus. A caller that kept drawing an editor
-        // from the last known geometry would leave one over an unfocused box.
-        std::lock_guard<std::mutex> lock(g_textbox_mutex);
-        g_textbox_info_known = false;
-    }
-    g_textbox_handle.store(0, std::memory_order_release);
-    g_textbox_generation.fetch_add(1, std::memory_order_acq_rel);
+    std::lock_guard<std::mutex> lock(g_textbox_mutex);
+    blur_locked();
 }
+
+// ------------------------------------------- a box does not outlive its game
+//
+// Focus on a box was cleared in exactly one place, `hideKeyboard`, and nothing
+// cleared it when the DataModel the box belonged to was replaced. A box left
+// focused across a join, a teleport or a server switch then stayed "focused"
+// here for good: on X11 the editor window over it took X keyboard focus back
+// from the engine on every pump, so every game key went to GTK; on Wayland
+// `pass_key_event` withheld every character key from the game because a box
+// would eat it. Either way the keyboard is dead and the mouse is fine, which
+// is the report in upstream Cordial #29/#64.
+//
+// That the engine skips `hideKeyboard` on that path is **INFERRED**. The
+// real-Android capture in `docs/traces/` ends at startup and holds no join and
+// no keyboard call. The nearest observation is Sober #377 (closed by
+// inactivity, not fixed): a DM box focused in the app, a game joined from a
+// notification, and the box's caret and typed text still drawn over the game
+// afterwards -- a platform editor nobody told to close. mocktail ends a text
+// session on host focus loss and at shutdown and has nothing for a DataModel
+// change, so it neither confirms nor contradicts this.
+//
+// So the box is dropped here, on Cordial's side only, when a new game begins.
+// The engine is not called: the box it would be told about belongs to the
+// DataModel being torn down. A box the engine focuses after that point is a
+// new `showKeyboard` and is kept, which is ordering for free because the drop
+// and `cordial_textbox_focused` both run under `g_textbox_mutex`.
+//
+// "Begins" is the experience-start announcement, or a game-loaded one that no
+// start preceded, which is what a teleport is if it announces only the load
+// (which of the two a teleport announces has not been observed). A load that
+// completes a pending start drops nothing, so a box focused while the new
+// place was loading survives its load; so does a second load announcement soon
+// after the first, because one load can arrive through both
+// `gameLoadedCallback` and `NativeHelper::onGameLoaded`.
+namespace {
+/// Within this many milliseconds a load announcement is taken to be the other
+/// callback for the same load. A judgement: the pair has not been timed, and
+/// two calls made for one event need far less.
+constexpr long long kLoadRepeatMs = 5000;
+/// Guarded by `g_textbox_mutex`, with the focus they decide about.
+bool g_start_pending = false;
+bool g_load_seen = false;
+std::chrono::steady_clock::time_point g_last_load{};
+} // namespace
+
+/// Whether a game event drops a box still focused from before it. `event` is
+/// 0 for an experience start and 1 for a game load; `ms_since_last_load` is
+/// negative when no load has been seen. Pure, and exported so the decision is
+/// tested (`input.rs`) rather than argued.
+extern "C" int cordial_new_game_drops_focus(int event, int start_pending,
+                                            long long ms_since_last_load) {
+    if (event == 0) return 1;
+    if (start_pending) return 0;
+    if (ms_since_last_load >= 0 && ms_since_last_load < kLoadRepeatMs) return 0;
+    return 1;
+}
+
+namespace {
+void textbox_new_game(int event) {
+    std::lock_guard<std::mutex> lock(g_textbox_mutex);
+    const auto now = std::chrono::steady_clock::now();
+    const long long since =
+        g_load_seen ? std::chrono::duration_cast<std::chrono::milliseconds>(
+                          now - g_last_load).count()
+                    : -1;
+    const bool drops = cordial_new_game_drops_focus(event, g_start_pending, since) != 0;
+    if (event == 0) {
+        g_start_pending = true;
+    } else {
+        g_start_pending = false;
+        g_load_seen = true;
+        g_last_load = now;
+    }
+    if (drops && g_textbox_handle.load(std::memory_order_acquire) != 0) {
+        fprintf(stderr,
+                "[cordial] a new game %s with a text box still focused; "
+                "dropping the box, its DataModel is gone\n",
+                event == 0 ? "is starting" : "has loaded");
+        blur_locked();
+    }
+}
+} // namespace
 
 /// The focused box's handle, or 0 when nothing is focused. A 0 here is why
 /// text must not be sent at all, rather than sent to handle 0.
@@ -398,6 +488,9 @@ static std::atomic<long long> g_last_place{0};
 extern "C" void cordial_note_game_loaded(long long place_id) {
     g_games_loaded.fetch_add(1, std::memory_order_release);
     g_last_place.store(place_id, std::memory_order_release);
+    // A box focused in the place being left must not outlive it; see
+    // "a box does not outlive its game" above.
+    textbox_new_game(1);
 }
 
 extern "C" unsigned cordial_games_loaded(void) {
@@ -414,6 +507,8 @@ static std::atomic<unsigned> g_experience_starts{0};
 
 extern "C" void cordial_note_experience_start(void) {
     g_experience_starts.fetch_add(1, std::memory_order_release);
+    // Likewise; see "a box does not outlive its game" above.
+    textbox_new_game(0);
 }
 
 extern "C" unsigned cordial_experience_starts(void) {
