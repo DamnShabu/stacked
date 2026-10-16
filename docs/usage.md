@@ -24,7 +24,7 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked profiles` | List profiles. `profiles new NAME` creates one, `profiles use NAME` makes it the current one, and `profiles remove NAME` deletes one, including its saved sign-in in the keyring. `remove` asks you to type the name, or takes `--yes`. |
 | `stacked config` | List every setting with its current value (see below). |
 | `stacked flags` | List, set and remove the current profile's FastFlags (see [FastFlags](#fastflags)). |
-| `stacked audio-outputs` | List the names `audio_output` accepts. |
+| `stacked audio-outputs` | List the names `audio_output` accepts, each followed by its description. |
 | `stacked audio-inputs` | List the microphones `audio_input` accepts. |
 | `stacked plugins …` | Manage plugins (see below). |
 | `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |

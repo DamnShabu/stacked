@@ -41,11 +41,12 @@ use std::ffi::CStr;
 // message than this comment.
 use cordial_linker_sys as _;
 
-/// One sink, as the settings row shows it.
+/// One sink, as `stacked audio-outputs` lists it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Sink {
     /// `node.name` — the stable routing target that goes into `shell.json`
-    /// and comes back out as `CORDIAL_AUDIO_SINK`. Never shown to the user.
+    /// and comes back out as `CORDIAL_AUDIO_SINK`. Printed first by
+    /// `stacked audio-outputs`, because it is the value the key takes.
     pub node_name: String,
     /// `node.description` — what their own volume control calls this device.
     /// This is the only string a user should ever read.
