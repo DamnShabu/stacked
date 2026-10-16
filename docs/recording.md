@@ -4,19 +4,20 @@ Roblox's own Record Video button does nothing on the Android client, and nothing
 
 It needs `ffmpeg` on your `PATH`. The Flatpak runtime ships one, so the Flatpak has it; on other installs it is the `ffmpeg` package.
 
-**Press F9 in the game window to start recording, and F9 again to stop.** The window title carries `REC` while it runs, and the key never reaches the game.
+**Once recording is switched on, press F9 in the game window to start recording, and F9 again to stop.** The window title carries `REC` while it runs, and the key never reaches the game.
 
 ## Turn it on
 
-F9 works whenever the game window has focus, with no setting involved. Each press toggles: the first starts a file, the second finishes it, and the next press starts another. Control+F9 and Alt+F9 still go to the game.
-
-To record every session from its first frame instead:
+Recording is off until you switch it on, and until then F9 belongs to the game. Either setting switches it on:
 
 ```bash
-stacked config set record_session true
+stacked config set record_session true   # record every session from its first frame
+stacked config set record_audio true     # record the game's sound with it (see Sound)
 ```
 
-It applies the next time Stacked starts, not to a game already running. A recording started this way ends when you close the game; one started with F9 ends at the next press, or when you close the game. The file is finished when the client exits.
+Both apply the next time Stacked starts, not to a game already running. With either on, and `ffmpeg` found when the game starts, F9 starts and stops recordings. Without `ffmpeg`, F9 stays the game's and the log says why. To have F9 with neither setting, set `CORDIAL_RECORD_KEY=F9` (below).
+
+Each press toggles: the first starts a file, the second finishes it, and the next press starts another. Control+F9 and Alt+F9 still go to the game. A recording started by `record_session` ends when you close the game or press F9; one started with F9 ends at the next press, or when you close the game. The file is finished when the client exits.
 
 Files are named `Stacked-2026-10-15_18-07-11.mp4`.
 
@@ -34,7 +35,7 @@ MP4 with H.264 where `ffmpeg` has libx264. Where it does not, which is the Flatp
 
 Playback runs at the speed you played, not faster: the engine draws one frame a second when nothing is moving, and the recorder fills the gaps with the last frame.
 
-If you resize the window while recording, the file ends and a new one starts beside it (`Stacked-…-2.mp4`), because a video cannot change size part way.
+If you resize the window while recording, the file ends and a new one starts beside it (`Stacked-…-2.mp4`), because a video cannot change size part way. The first few frames after the resize are not recorded while the new file starts.
 
 An MP4 is written in fragments, so one cut off by a crash or a full disk still plays up to the cut.
 
@@ -57,7 +58,7 @@ Each captured frame holds the engine's present for a few milliseconds while it i
 <details>
 <summary>Other ways to start and stop, and the variables</summary>
 
-For scripts: run the client with `CORDIAL_DEV_CONTROL=1` and use the development control surface (`record start`, `record stop`, `record status`, or `cordial_record` in the MCP). Pressing F9 through `cordial_key` (evdev code 67) toggles recording the same way the real key does, and `tone <hz> <seconds>` (`cordial_tone` in the MCP) plays a quiet tone through Stacked's audio path, which is how to check what a recording hears when the game itself is silent.
+For scripts: run the client with `CORDIAL_DEV_CONTROL=1` and use the development control surface (`record start`, `record stop`, `record status`, or `cordial_record` in the MCP). Pressing F9 through `cordial_key` (evdev code 67) toggles recording the same way the real key does, when the key is in force, and `tone <hz> <seconds>` (`cordial_tone` in the MCP) plays a quiet tone through Stacked's audio path, which is how to check what a recording hears when the game itself is silent.
 
 | Variable | Meaning |
 |---|---|
@@ -65,9 +66,9 @@ For scripts: run the client with `CORDIAL_DEV_CONTROL=1` and use the development
 | `CORDIAL_RECORD_DIR` | The default folder. |
 | `CORDIAL_RECORD_FPS` | Frames a second, 1 to 120. |
 | `CORDIAL_RECORD_AUDIO` | `game` (also `1`, `on`), `desktop`, or `off`. |
-| `CORDIAL_RECORD_KEY` | The toggle key: `F1` to `F10`, `F12`, `Pause`, `ScrollLock`, or `off`. Default `F9`. A name that is none of these turns the key off and says so in the log. |
+| `CORDIAL_RECORD_KEY` | The toggle key: `F1` to `F10`, `F12`, `Pause`, `ScrollLock`, or `off`. Unset, it is `F9` when `record_session` or `record_audio` is on and `ffmpeg` is found, and off otherwise; set, it applies whether or not either is on. A name that is none of these turns the key off and says so in the log. |
 
-The client log says what was chosen (`[record] recording to … (libx264 at 30 fps, audio: the game's own sound)`, `[record] hotkey: F9 starts and stops recording while the game window has focus`) and, at the end, how many frames were written and dropped.
+The client log says what was chosen (`[record] recording to … (libx264 at 30 fps, audio: the game's own sound)`, `[record] hotkey: F9 starts and stops recording while the game window has focus`) and, at the end, how many frames were written, dropped, and skipped while an encoder started.
 
 `record_session` and `record_audio` are read at launch, so changing either does not reach a game already running. F9 is the way to start or stop mid-game.
 
