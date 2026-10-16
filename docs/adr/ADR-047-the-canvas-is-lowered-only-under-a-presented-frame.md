@@ -84,6 +84,7 @@ and reads the variable. The rule:
 | a non-CPU Vulkan device exists | untouched (GTK renders through Vulkan) |
 | no loader, `vkCreateInstance` fails, no devices, or only a CPU renderer | `cairo` |
 | the probe timed out or crashed | untouched, and a line says so |
+| Vulkan withheld from the engine because the compositor has no dmabuf (#63) | `cairo`, without waiting for the probe |
 
 One line is logged either way, `[gtk] renderer: ...`, naming the reason and how
 long the launch waited for the probe.

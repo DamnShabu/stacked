@@ -284,7 +284,8 @@ TOOLS = [
             "what is running. Needs ffmpeg on the client's PATH. Sound is chosen by "
             "CORDIAL_RECORD_AUDIO on the client, not here: game (what Cordial plays), "
             "desktop (everything the default output plays) or off. F9 toggles recording "
-            "too: cordial_key with code 67."
+            "too when the client has record_session or record_audio on, or CORDIAL_RECORD_KEY "
+            "set: cordial_key with code 67."
         ),
         "inputSchema": {
             "type": "object",
