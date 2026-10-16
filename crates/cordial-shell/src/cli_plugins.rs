@@ -145,6 +145,14 @@ pub fn run(args: &[String]) -> u8 {
             match enablement::set_enabled(&profile_dir, id, on) {
                 Ok(()) => {
                     println!("{id} is {} on profile {profile_name:?}", if on { "on" } else { "off" });
+                    // Switching on is when the permission question becomes
+                    // worth asking (ADR-021, 2026-10-05): a plugin that is off
+                    // has nothing to be silently denied, and `fps-flex` ships
+                    // off. So the grants it still lacks are named here rather
+                    // than leaving the user to find them in `plugins list`.
+                    if on {
+                        ungranted_hint(&profile_dir, id);
+                    }
                     0
                 }
                 Err(e) => {
@@ -378,6 +386,26 @@ pub(crate) fn settle_new_profile(profile_dir: &std::path::Path) {
                 eprintln!("stacked: could not leave {} off in the new profile: {e}", plugin.manifest.id);
             }
         }
+    }
+}
+
+/// Name what `id` requests that this profile has not granted, with the command
+/// that grants each. Prints nothing when everything is granted or nothing was
+/// requested, because asking to allow what is already allowed is noise.
+fn ungranted_hint(profile_dir: &std::path::Path, id: &str) {
+    let Some(plugin) = installed().into_iter().find(|p| p.manifest.id == id) else {
+        return;
+    };
+    let granted = grants::load(&grants::path_in(profile_dir));
+    let have = granted.get(id).cloned().unwrap_or_default();
+    let missing: Vec<_> = plugin.requested.iter().filter(|c| !have.contains(c)).collect();
+    if missing.is_empty() {
+        return;
+    }
+    println!("it asks for these, not granted on this profile:");
+    for cap in missing {
+        println!("  {}: {}", cap.name(), cap.consequence());
+        println!("    stacked plugins grant {id} {}", cap.name());
     }
 }
 

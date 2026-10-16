@@ -422,6 +422,18 @@ exactly the way `name`/`parse`/`all` are already held together by a test.
 earned: replacing a mesh is not a cosmetic change, and the user is the one
 deciding.
 
+### Built-in plugins: the question is due when one is switched on (2026-10-05)
+
+Upstream Cordial found its Settings window putting one permission dialog per
+built-in over whatever tab was open, `fps-flex` included although it ships off,
+and moved the question to the moment it is due: a built-in that is switched on
+and has something requested but not granted. Stacked has no dialog to stack
+(ADR-043): consent is `stacked plugins grant`, one capability at a time. What
+carries over is the timing. `stacked plugins enable ID` names the capabilities
+that plugin still lacks on the profile, with the command for each, and says
+nothing when everything is granted or nothing was requested. Nothing is granted
+by it; default deny is unchanged.
+
 ## Consequences
 
 **Accepted:** `entry` becomes optional in `plugin.json`, and a manifest with
