@@ -183,10 +183,53 @@ fn freeze_corpus() {
 
 /// A stand-in client: `sleep`, copied to a file named `cordial-run` so that
 /// [`signal`]'s check on `/proc/<pid>/exe` lets the watch act on it.
-fn fake_client(dir: &Path) -> std::process::Child {
+///
+/// Found through `PATH`, because NixOS has neither `/bin/sleep` nor
+/// `/usr/bin/sleep` and the hard-coded path failed every run there. Its
+/// `sleep` is also a link into a multi-call `coreutils` that picks the program
+/// by `argv[0]`, so the copy is run as `sleep` whatever its file is called.
+/// Copied once: the copy keeps the store's read-only mode, and a second copy
+/// over it is refused.
+fn fake_client_exe(dir: &Path) -> PathBuf {
+    let sleep = std::env::split_paths(&std::env::var_os("PATH").unwrap_or_default())
+        .map(|d| d.join("sleep"))
+        .find(|p| p.is_file())
+        .expect("no `sleep` on PATH");
     let exe = dir.join("cordial-run");
-    std::fs::copy("/bin/sleep", &exe).unwrap();
-    std::process::Command::new(&exe).arg("60").spawn().unwrap()
+    std::fs::copy(&sleep, &exe).unwrap();
+    exe
+}
+
+/// Start the copy, retrying `ETXTBSY`.
+///
+/// The harness runs tests on several threads, and one that forks while the
+/// copy's write descriptor is still open hands its child that descriptor until
+/// the child execs. Executing a file that anything holds open for writing is
+/// `ETXTBSY`, so a spawn just after the copy can fail for a few milliseconds
+/// for reasons that have nothing to do with this test.
+fn fake_client(exe: &Path) -> std::process::Child {
+    use std::os::unix::process::CommandExt;
+    let mut tries = 0;
+    loop {
+        match std::process::Command::new(exe).arg0("sleep").arg("60").spawn() {
+            Err(e) if e.raw_os_error() == Some(libc::ETXTBSY) && tries < 100 => {
+                tries += 1;
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            r => return r.unwrap(),
+        }
+    }
+}
+
+/// Write a log the way the engine does, some time after the watch began.
+///
+/// Written straight after [`Supervisor::new`], the file's coarse mtime can be
+/// earlier than the watch's `since` (see there), and the watch then never sees
+/// it: this test waited out the whole sixty seconds of `sleep` and failed, two
+/// runs of three, once copying `sleep` no longer happened in between.
+fn write_log(path: &Path, text: &str) {
+    std::thread::sleep(Duration::from_millis(50));
+    std::fs::write(path, text).unwrap();
 }
 
 /// The command line's watch, end to end against a real child: a healthy log
@@ -198,13 +241,14 @@ fn the_watch_stops_a_frozen_client_and_leaves_a_healthy_one() {
     let dir = std::env::temp_dir().join(format!("cordial-freeze-watch-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
+    let exe = fake_client_exe(&dir);
 
     // Control: healthy. The watch gives up on its first decision.
     let logs = dir.join("healthy");
     std::fs::create_dir_all(&logs).unwrap();
     let supervisor = Supervisor::new(logs.clone());
-    let mut child = fake_client(&dir);
-    std::fs::write(logs.join("a_last.log"), HEALTHY).unwrap();
+    let mut child = fake_client(&exe);
+    write_log(&logs.join("a_last.log"), HEALTHY);
     let watch = Watchdog::start(child.id(), supervisor);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(child.try_wait().unwrap().is_none(), "a healthy client must be left running");
@@ -217,8 +261,8 @@ fn the_watch_stops_a_frozen_client_and_leaves_a_healthy_one() {
     let logs = dir.join("frozen");
     std::fs::create_dir_all(&logs).unwrap();
     let supervisor = Supervisor::new(logs.clone());
-    let mut child = fake_client(&dir);
-    std::fs::write(logs.join("b_last.log"), FROZEN).unwrap();
+    let mut child = fake_client(&exe);
+    write_log(&logs.join("b_last.log"), FROZEN);
     let watch = Watchdog::start(child.id(), supervisor);
     let status = child.wait().unwrap();
     assert_eq!(status.signal(), Some(libc::SIGTERM), "{status:?}");

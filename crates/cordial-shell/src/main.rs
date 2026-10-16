@@ -492,6 +492,13 @@ fn play(args: &[String]) -> u8 {
     loop {
         let freeze_watch = freeze_recovery::enabled(std::env::var("CORDIAL_NO_FREEZE_RESTART").ok().as_deref())
             .then(|| freeze_recovery::Supervisor::new(freeze_recovery::logs_dir(claim.profile_dir())));
+        // Asked again as late as possible before a restart's spawn, because a
+        // Ctrl-C pressed after the restart was decided and before this reached no
+        // client at all. One pressed between here and the fork still starts it.
+        if restarts > 0 && freeze_recovery::interrupted() {
+            println!("stacked: {}", freeze_recovery::INTERRUPTED_WHILE_STUCK);
+            return 130;
+        }
         let mut instance = match launch::spawn(
             &build,
             claim,
@@ -506,18 +513,12 @@ fn play(args: &[String]) -> u8 {
 
         println!("stacked: cordial-run is pid {}", instance.pid());
         let watchdog = freeze_watch.map(|s| freeze_recovery::Watchdog::start(instance.pid(), s));
-        // Ctrl-C reaches the whole foreground process group, so the client hears
-        // it and shuts down in order on its own. This process must not die first:
-        // it holds the read end of the client's output, and a client that loses
-        // its stdout mid-shutdown fails there instead of exiting cleanly. Set only
-        // now, after the spawn, because an ignored signal survives `exec` and a
-        // client started with SIGINT ignored would never hear Ctrl-C at all.
-        //
-        // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
-        // changes this process's disposition.
-        unsafe {
-            libc::signal(libc::SIGINT, libc::SIG_IGN);
-        }
+        // From here a Ctrl-C is the client's to act on and this process only
+        // notes it; `catch_interrupt` says why it is a handler and not
+        // `SIG_IGN`. Installed after the first spawn rather than before, so a
+        // Ctrl-C while the launch is still being prepared stops the launch as it
+        // always did. A no-op on a restart, where it is already in place.
+        freeze_recovery::catch_interrupt();
         let status = instance.wait();
         // Before anything else is read: the watch must stop signalling a pid that
         // has now been reaped and may be reused. So before the output drains too,
@@ -535,18 +536,16 @@ fn play(args: &[String]) -> u8 {
         // crash nor a clean exit. It is reaped, so the profile's lock went with it
         // and the relaunch is an ordinary launch that can take the lock again.
         if stopped_frozen {
+            // A Ctrl-C the frozen client did not act on is still the user asking
+            // to quit, and the watch stopping the client has done that for them.
+            if freeze_recovery::interrupted() {
+                println!("stacked: {}", freeze_recovery::INTERRUPTED_WHILE_STUCK);
+                return 130;
+            }
             match freeze_recovery::after_freeze(restarts) {
                 freeze_recovery::Next::Restart { attempt, of } => {
                     println!("stacked: {}", freeze_recovery::status_line(attempt, of));
                     restarts += 1;
-                    // SIGINT was ignored for the client just reaped. Put back before
-                    // the next spawn, or the relaunched client inherits the ignored
-                    // disposition through `exec` and Ctrl-C stops nothing.
-                    //
-                    // SAFETY: as above, a disposition change and no handler code.
-                    unsafe {
-                        libc::signal(libc::SIGINT, libc::SIG_DFL);
-                    }
                     claim = match profile::acquire(&profile_name) {
                         Ok(claim) => claim,
                         Err(e) => {
