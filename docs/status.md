@@ -44,7 +44,7 @@ releases of its own yet.
 | App shell reaches `APP_READY (Landing)` | ✅ |
 | Renders — Vulkan on both backends | ✅ |
 | Networking / HTTPS | ✅ |
-| **Signing in** | ✅ **via Quick Sign-in**, which is a code flow and needs no typing |
+| **Signing in** | ✅ **via Quick Sign-in**, which is a code flow and needs no typing. The security check a password sign-in can ask for (`OPEN_CAPTCHA_VIEW`, and the two-step verification window) now opens in a web view with the app's native bridge; `INFERRED` to complete a sign-in, not yet seen with a real challenge ([ADR-063](adr/ADR-063-sign-in-challenge-windows-get-the-native-bridge.md)) |
 | **Keyboard in an experience** | ✅ WASD, space, the lot |
 | Mouse: navigation, buttons, field focus | ✅ |
 | Mouse: turning the camera | ✅ right-drag, using the compositor's accelerated delta by default, so your desktop mouse settings apply to the camera too; `stacked config set pointer_acceleration unlockedcursor` gives raw movement. The pointer lock holds the cursor still during the drag; on Hyprland that needs a workaround for the compositor dropping the button ([ADR-060](adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates.md)), and `CORDIAL_DRAG_LOCK=0` turns it off |
@@ -91,6 +91,14 @@ If MAILBOX follows the panel — near 60 on the 59.88 Hz one and near 50 on the
 it. If it stays near 60 on the 49.96 Hz output, the ceiling is the engine's own
 pacing and the display is irrelevant. `refresh.rs` notes Cordial has never told
 the engine the real refresh rate, so that is the third arm worth running.
+
+**Upstream Cordial has since measured it on NVIDIA hardware (2026-10-03), and
+a flat 60 is the engine's own frame target, not a display lock.** On a
+240.001 Hz output with input driven the whole run, the engine was told the real
+rate and still held 59.9 presents a second until `DFIntTaskSchedulerTargetFps`
+was raised past 60; at 240 it presented 216-232 a second, and MAILBOX and FIFO
+both cleared 60 with it set. In this fork that flag is `stacked config set
+fps_cap`. Not re-measured on this fork's build.
 
 **What is left is polish and broader live coverage.** Focused text fields now
 have a desktop overlay, and web views forward both bridge formats observed in

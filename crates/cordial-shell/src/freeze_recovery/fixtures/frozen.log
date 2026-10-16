@@ -1,0 +1,15 @@
+2026-08-23T10:38:18.415Z,1.415950,e24eb6c0,6 [FLog::SingleSurfaceApp] initializeSingleton
+2026-08-23T10:38:18.416Z,1.416705,e24eb6c0,6 [FLog::Output] Evaluating deferred inferred crashes
+2026-08-23T10:38:18.424Z,1.424253,e24eb6c0,6 [FLog::SingleSurfaceApp] registerForForceOTAUpdateAvailableConnection stage = 3
+2026-08-23T10:38:18.424Z,1.424276,e24eb6c0,6 [FLog::SingleSurfaceApp] setStage: (stage:Native)
+2026-08-23T10:38:18.424Z,1.424281,e24eb6c0,6,Warning [FLog::SingleSurfaceApp] instantiate controllers
+2026-08-23T10:38:18.424Z,1.424285,e24eb6c0,6 [FLog::SurfaceController] SurfaceController[_:2]::SurfaceController, count: 2
+2026-08-23T10:38:18.424Z,1.424289,e24eb6c0,6 [FLog::SurfaceController] SurfaceController[_:1]::~SurfaceController, count: 1
+2026-08-23T10:38:18.424Z,1.424295,e24eb6c0,6,Warning [FLog::SingleSurfaceApp] instantiate experience coordinator
+2026-08-23T10:38:18.424Z,1.424297,e24eb6c0,6,Warning [FLog::SingleSurfaceApp] Forcing finalize experience coordinator with state 1
+2026-08-23T10:38:18.424Z,1.424303,e24eb6c0,6,Warning [FLog::UgcExperienceController] UgcExperienceController: finalize: Did not finalize due to state.
+2026-08-23T10:38:18.424Z,1.424318,e24eb6c0,6,Warning [FLog::RobloxTelemetry] Lua app running status has been updated to true
+2026-08-23T10:38:18.634Z,1.634318,e0ce86c0,6,Info [FLog::NativeDM] (callback) initEngine_: ... sync cookies from engine.
+2026-08-23T10:38:19.234Z,2.234902,e0ce86c0,6,Info [FLog::PerformanceControlIXP] Is device exposed to experiments: false
+2026-08-23T10:38:23.520Z,6.520251,e34ed6c0,6,Info [FLog::NativeEngine] APP_CMD_LOST_FOCUS
+2026-08-23T10:38:32.693Z,15.693240,e34ed6c0,6,Info [FLog::NativeEngine] APP_CMD_LOST_FOCUS

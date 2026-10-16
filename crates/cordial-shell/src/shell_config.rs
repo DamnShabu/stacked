@@ -277,6 +277,23 @@ impl AudioOutput {
 
 }
 
+/// The microphone Roblox records from: a PipeWire source's `node.name`, empty
+/// for "follow the system default source".
+///
+/// The same type as [`AudioOutput`] on purpose. Everything that type decides is
+/// true of an input for the same reasons -- `node.name` rather than an index or
+/// a description, global rather than per profile, and absent rather than empty
+/// -- and a second type would
+/// copy its methods and its tests while leaving the two free to drift. What
+/// differs is the consequence of a wrong value, which is a microphone that
+/// records from somewhere nobody chose; that is handled where the stream
+/// opens (`resolve_input_target` in `native/pipewire_backend.cpp`), not here.
+///
+/// Stored as `audio_input` and sent as `CORDIAL_AUDIO_SOURCE` at launch; a
+/// change reaches the next launch, not a game already running. Choosing one
+/// opens nothing.
+pub type AudioInput = AudioOutput;
+
 /// One choice that settles both of the things Cordial can ask the engine to do
 /// differently about graphics: which device it says it is, and how many of the
 /// machine's cores the engine's own worker pools may use.
@@ -479,6 +496,21 @@ pub struct ShellConfig {
     /// and the test below caught it, which is why both the attribute's absence
     /// and the reason are written down.
     pub gamepad: bool,
+    /// Record every session to a video file (ADR-059).
+    ///
+    /// Off by default: a recording writes a few hundred megabytes an hour and
+    /// costs the engine's present thread about three milliseconds a captured
+    /// frame, neither of which somebody who did not ask for it should pay. The
+    /// client reads it at launch only; there is no live toggle yet.
+    ///
+    /// This or `record_audio` is also what gives the client its F9 recording
+    /// key. With both off F9 is the game's, because a key taken from somebody
+    /// who never asked to record is a key their game has lost.
+    pub record_session: bool,
+    /// Record the game's own sound with it, copied from the buffers Cordial
+    /// plays. Off by default, a switch of its own: a recording that included
+    /// sound nobody asked for is a surprise in a file about to be shared.
+    pub record_audio: bool,
     /// Quit the client when the user leaves a game and returns to the home
     /// screen.
     ///
@@ -548,6 +580,9 @@ pub struct ShellConfig {
     /// `node.name` and why the default must stay "follow the system".
     #[serde(default)]
     pub audio_output: AudioOutput,
+    /// Which microphone Roblox records from. See [`AudioInput`].
+    #[serde(default)]
+    pub audio_input: AudioInput,
     /// The game window's colours. See [`Theme`]; passed as `CORDIAL_THEME`.
     pub theme: Theme,
     /// Keep the cursor inside the window while it is fullscreen and the game
@@ -586,10 +621,13 @@ impl Default for ShellConfig {
             graphics_optimization_mode: GraphicsOptimization::default(),
             present_mode: PresentMode::default(),
             gamepad: true,
+            record_session: false,
+            record_audio: false,
             close_on_leave: false,
             unpacked_plugins: Vec::new(),
             carry_launch_ticket: false,
             audio_output: AudioOutput::default(),
+            audio_input: AudioInput::default(),
             mangohud: false,
             vkbasalt: false,
             theme: Theme::default(),
@@ -835,6 +873,25 @@ mod tests {
     }
 
     #[test]
+    fn the_audio_input_round_trips_and_an_old_file_follows_the_system_default() {
+        let p = scratch("audio-input.json");
+        let name = "alsa_input.usb-Generic_USB_Audio-00.mono-fallback";
+        save(&p, &ShellConfig { audio_input: AudioOutput(name.into()), ..Default::default() })
+            .unwrap();
+        let back = load(&p);
+        assert_eq!(back.audio_input, AudioOutput(name.into()));
+        assert!(back.audio_output.is_system_default(), "the two choices are separate fields");
+
+        // Everybody's file predates the field; landing on anything but the
+        // default source would move somebody's microphone because they upgraded.
+        let old = scratch("pre-audio-input.json");
+        std::fs::write(&old, r#"{"appearance":"dark","audio_output":"some-sink"}"#).unwrap();
+        let loaded = load(&old);
+        assert!(loaded.audio_input.is_system_default());
+        assert_eq!(loaded.audio_input.env_value(), None);
+    }
+
+    #[test]
     fn a_config_written_before_the_audio_row_existed_follows_the_system_default() {
         // Everybody's shell.json predates this field, and landing on anything
         // but "follow the system" would move somebody's game audio to another
@@ -859,6 +916,19 @@ mod tests {
         assert!(parsed.gamepad, "a config predating the key must not read as controllers off");
         let off: ShellConfig = serde_json::from_str(r#"{"gamepad":false}"#).unwrap();
         assert!(!off.gamepad, "an explicit false must survive");
+    }
+
+    /// Recording writes files and costs the present thread time, so nothing is
+    /// recorded for somebody who never set either key, and an older config
+    /// without the keys must not start recording on upgrade.
+    #[test]
+    fn recording_is_off_until_it_is_switched_on() {
+        let d = ShellConfig::default();
+        assert!(!d.record_session && !d.record_audio);
+        let older: ShellConfig = serde_json::from_str(r#"{"gamemode":true}"#).unwrap();
+        assert!(!older.record_session && !older.record_audio);
+        let on: ShellConfig = serde_json::from_str(r#"{"record_session":true,"record_audio":true}"#).unwrap();
+        assert!(on.record_session && on.record_audio);
     }
 
     /// **A fresh install is responsive, and pays power for it.**

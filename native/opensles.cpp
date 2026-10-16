@@ -1042,11 +1042,14 @@ struct AudioRecorderObject {
     /// `record_SetRecordState(SL_RECORDSTATE_RECORDING)`.
     bool start_capture() {
         if (capture.is_open()) return true;
-        // Empty target: `CaptureStream::open` connects to whatever PipeWire
-        // calls the default source, read at this moment rather than cached, so
-        // changing the desktop's default microphone between two recordings is
-        // picked up without restarting the client.
-        if (!capture.open(rateHz, channels, std::string())) {
+        // Empty target unless the user chose a microphone
+        // (`CORDIAL_AUDIO_SOURCE`): `CaptureStream::open` then connects to
+        // whatever PipeWire calls the default source, read at this moment
+        // rather than cached, so changing the desktop's default microphone
+        // between two recordings is picked up without restarting the client.
+        if (!capture.open(rateHz, channels,
+                          cordial::audio::resolve_input_target(
+                              cordial::audio::configured_input_device()))) {
             return false;
         }
         pumping.store(true);

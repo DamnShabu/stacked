@@ -80,6 +80,10 @@ pub enum Cmd {
     /// same call be sent to a client caught already wedged, by present count,
     /// with no guess about when.
     Redraw,
+    /// `updatesurface [app|game|both]`: deliver the surface and platform
+    /// parameters to the engine again, on the pump thread. See
+    /// `android::surface_params` for the experiment this is for.
+    UpdateSurface { app: bool, game: bool },
 }
 
 static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
@@ -87,6 +91,11 @@ static QUEUE: Mutex<Vec<Cmd>> = Mutex::new(Vec::new());
 /// Commands accepted since start, so `info` can show the surface is live even
 /// when the thing being driven is not.
 static ACCEPTED: AtomicU64 = AtomicU64::new(0);
+
+/// The font id the next `fakefocus` puts in its synthetic spec. Zero is what it
+/// always sent, which `Enum.Font` calls `Legacy` and the shipped manifest has
+/// no row for; set by `fakefont` so the editor can be drawn in any id.
+static FAKE_FONT: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 
 fn push(c: Cmd) {
     if let Ok(mut q) = QUEUE.lock() {
@@ -245,7 +254,8 @@ fn handle(line: &str) -> String {
                     // A handle no real engine build has ever assigned to
                     // anything Cordial has captured -- see the caveat above
                     // about not overlapping this with a real focus.
-                    const SYNTHETIC_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
+                    const SYNTHETIC_HANDLE: i64 =
+                        cordial_linker_sys::game_activity::SYNTHETIC_TEXTBOX_HANDLE;
                     let info = cordial_linker_sys::game_activity::RawTextBoxInfo {
                         x, y, width: w, height: h,
                         font_size: 16.0,
@@ -256,7 +266,7 @@ fn handle(line: &str) -> String {
                         // project has ever reported (`android_classes.cpp`'s
                         // own doc comment) rather than an invented colour.
                         text_color: 0xffd5_d5ddu32 as i32,
-                        font: 0,
+                        font: FAKE_FONT.load(Ordering::Relaxed),
                         text_input_type: 0,
                         return_key_type: 0,
                         manual_focus_release: 1,
@@ -275,9 +285,34 @@ fn handle(line: &str) -> String {
                 _ => "err fakefocus <0|1> <x> <y> <w> <h> [text]".into(),
             }
         }
+        // `fakefont <id>` -- the font id later `fakefocus` calls carry. Synthetic,
+        // for the same reason `fakefocus` is: it shows which face the editor
+        // draws for an id, and says nothing about which id a game sends.
+        "fakefont" => match it.next().and_then(|v| v.parse::<i32>().ok()) {
+            Some(id) => {
+                FAKE_FONT.store(id, Ordering::Relaxed);
+                format!("ok fakefont synthetic id={id}")
+            }
+            None => "err fakefont <id>".into(),
+        },
         "fakeblur" => {
             cordial_linker_sys::game_activity::test_blur_textbox();
             "ok fakeblur".into()
+        }
+        // `enginetext <text>` -- deliver `text` through the entry point
+        // `onLuaTextBoxChangedCallback` uses, as the engine would when it
+        // rewrites the focused box (a chat box emptied by sending).
+        //
+        // **Synthetic, and a reading taken through it must say so.** It proves
+        // the pump side -- echo guard, mirror, widget seeding, caret -- does
+        // what it should with a push; it says nothing about what a real engine
+        // sends or when. The reply echoes the byte count only, never the text.
+        // An empty payload is meaningful (it is the chat-box clear), which is
+        // why the text is whatever follows the verb rather than a token.
+        "enginetext" => {
+            let rest = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            cordial_linker_sys::game_activity::test_engine_text(rest);
+            format!("ok enginetext synthetic bytes={}", rest.len())
         }
         // `natives <class>` -- what the engine registered on a Java class, as
         // opposed to what it exported. See `registered_natives`' own doc for
@@ -413,7 +448,60 @@ fn handle(line: &str) -> String {
             }
             _ => "err gameseed <on|off>".into(),
         },
+        "updatesurface" => match it.next().unwrap_or("game") {
+            "app" => {
+                push(Cmd::UpdateSurface { app: true, game: false });
+                "ok".into()
+            }
+            "game" => {
+                push(Cmd::UpdateSurface { app: false, game: true });
+                "ok".into()
+            }
+            "both" => {
+                push(Cmd::UpdateSurface { app: true, game: true });
+                "ok".into()
+            }
+            _ => "err updatesurface [app|game|both]".into(),
+        },
         // The capture the compositor would not give us. See `vulkan::capture`.
+        // Recording (ADR-059). The rest of the line is the target, so a path
+        // with a space in it survives the whitespace split above.
+        "record" => {
+            let rest = line.trim_start().strip_prefix("record").unwrap_or("").trim();
+            let (sub, arg) = rest.split_once(char::is_whitespace).unwrap_or((rest, ""));
+            match sub {
+                "start" => match crate::recording::start(arg) {
+                    Ok(desc) => format!("ok {desc}"),
+                    Err(e) => format!("err {e}"),
+                },
+                "stop" => match crate::recording::stop() {
+                    Ok(summary) => format!("ok {summary}"),
+                    Err(e) => format!("err {e}"),
+                },
+                "status" | "" => format!("ok {}", crate::recording::status()),
+                _ => "err record <start [path]|stop|status>".into(),
+            }
+        }
+        // A quiet sine through Cordial's own audio path (ADR-059), for checking
+        // what a recording hears in a client whose engine is silent. The native
+        // side caps the level, so a script cannot make this loud.
+        "tone" => {
+            extern "C" {
+                fn cordial_audio_dev_tone(hz: f64, amp: f64, seconds: f64) -> i32;
+            }
+            let num = |v: Option<&str>| v.and_then(|s| s.parse::<f64>().ok());
+            match (num(it.next()), num(it.next()), num(it.next())) {
+                (Some(hz), Some(secs), amp) => {
+                    // SAFETY: plain values in, no pointers.
+                    match unsafe { cordial_audio_dev_tone(hz, amp.unwrap_or(0.03), secs) } {
+                        0 => "ok".into(),
+                        -1 => "err tone: frequency 20-20000, seconds above 0, level above 0".into(),
+                        _ => "err tone: the audio backend would not open a float stream".into(),
+                    }
+                }
+                _ => "err tone <hz> <seconds> [level, at most 0.05]".into(),
+            }
+        }
         "screenshot" => match it.next() {
             Some(path) => match crate::android::vulkan::request_capture(path) {
                 Ok(desc) => format!("ok {desc}"),
@@ -479,12 +567,13 @@ fn textbox_line() -> String {
         .map(|(x, y, w, h, src)| format!(" x={x} y={y} w={w} h={h} placed={src}"))
         .unwrap_or_else(|| " x=none y=none w=none h=none placed=none".into());
     format!(
-        "ok focus={} gen={} rev={} chars={} bytes={} caret={caret}{geometry}{} text={}",
+        "ok focus={} gen={} rev={} chars={} bytes={} caret={caret} returns={}{geometry}{} text={}",
         focus.map(|h| h.to_string()).unwrap_or_else(|| "none".into()),
         cordial_linker_sys::game_activity::textbox_generation(),
         crate::android::input::text_buffer_revision(),
         text.chars().count(),
         text.len(),
+        crate::android::input::return_pressed_calls(),
         textbox_font_fields(),
         crate::android::input::redacted(&text),
     )
@@ -589,6 +678,12 @@ pub fn apply_queued(handle: i64) {
                 crate::android::input::script_button(handle, x, y, down, button, now_ms())
             }
             Cmd::Key { down, evdev, modifiers } => {
+                // The recording hotkey is taken here as it is in the window's
+                // own key path, so `cordial_key` exercises the same toggle.
+                let chord = modifiers & (crate::android::input::META_CTRL_ON | crate::android::input::META_ALT_ON) != 0;
+                if crate::recording::hotkey_event(evdev, down, chord) {
+                    continue;
+                }
                 crate::android::input::pass_key_event(down, evdev, modifiers)
             }
             Cmd::Text(s) => {
@@ -623,6 +718,11 @@ pub fn apply_queued(handle: i64) {
                 report_replace("settext", &text, crate::android::clipboard::set_text(handle, &text))
             }
             Cmd::Redraw => crate::android::input::deliver_surface_redraw(handle),
+            Cmd::UpdateSurface { app, game } => {
+                for line in crate::android::surface_params::redeliver(app, game) {
+                    println!("  devctl: updatesurface {line}");
+                }
+            }
         }
     }
 }

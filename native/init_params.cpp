@@ -34,6 +34,7 @@
 #include <cctype>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <memory>
 #include <map>
 #include <mutex>
@@ -43,6 +44,8 @@
 // so the join watchdog does not have to know which of them a given build calls.
 extern "C" void cordial_note_game_loaded(long long place_id);
 extern "C" void cordial_note_experience_start(void);
+extern "C" void cordial_note_home_ready(void);
+extern "C" void cordial_note_flags_failed(void);
 
 namespace cordial {
 class Surface;
@@ -324,6 +327,11 @@ const DeviceProfile& device_profile() {
     return v;
 }
 
+/// The base URL `InitParams` hands the engine. A constant of its own so the
+/// value can be read back out (`cordial_base_url`) and pinned by a test against
+/// the capture, rather than by a grep of this file.
+static constexpr const char kBaseUrl[] = "https://www.roblox.com/";
+
 /// The `User-Agent` the engine puts on every HTTP request it makes.
 ///
 /// **This was `"Roblox/Android"`, and the comment above it was wrong in the most
@@ -497,6 +505,19 @@ extern "C" size_t cordial_build_user_agent(char* buf, size_t n) {
         buf[copy] = '\0';
     }
     return ua.size();
+}
+
+/// The base URL `InitParams.baseURL` is built with, for the test that holds it
+/// to the real client's. Same `snprintf`-style contract as
+/// `cordial_build_user_agent`: the full length is returned whether or not it fit.
+extern "C" size_t cordial_base_url(char* buf, size_t n) {
+    size_t len = std::strlen(cordial::kBaseUrl);
+    if (buf && n > 0) {
+        size_t copy = len < n - 1 ? len : n - 1;
+        std::memcpy(buf, cordial::kBaseUrl, copy);
+        buf[copy] = '\0';
+    }
+    return len;
 }
 
 namespace cordial {
@@ -1242,6 +1263,7 @@ public:
 class NativeHelper : public Object {
 public:
     static void onFlagsFailed(ENV*, Object*) {
+        cordial_note_flags_failed();
         fprintf(stderr,
             "[roblox] flags: engine reported onFlagsFailed (the flag data did "
             "load, and this blocks neither startup nor the content store — "
@@ -1265,6 +1287,7 @@ public:
     }
     static void onAppReady(ENV*, Object*, std::shared_ptr<String> s) {
         fprintf(stderr, "[roblox] app ready: %s\n", s ? s->c_str() : "");
+        if (s && std::string(s->c_str()) == "Home") cordial_note_home_ready();
     }
 
     // The experience lifecycle, which the engine has been announcing to nobody.
@@ -1828,7 +1851,12 @@ public:
 
     static std::shared_ptr<InitParams> Create(ENV* env, const char* assets, int width, int height) {
         auto p = std::make_shared<InitParams>();
-        p->baseURL = S("https://www.roblox.com");
+        // Android passes no base URL (`setBaseUrl() null`) and its engine settles
+        // on `https://www.roblox.com/`, with the slash, as the capture in
+        // docs/traces/waydroid-roblox-startup.log.gz shows. Handed the bare form,
+        // this client's engine logged it without the slash (#2); with the slash
+        // the `The base url is` line matches the capture.
+        p->baseURL = S(kBaseUrl);
         p->buildVariant = S("release");
         // See `build_user_agent`. The literal that used to be here was
         // invented, and the comment beside it claimed the opposite.

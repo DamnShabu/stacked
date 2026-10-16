@@ -1,6 +1,6 @@
 # ADR-024: X11 is supported again, and it gets the editor
 
-**Status:** accepted
+**Status:** accepted; the plan under "What this costs" (a GTK toplevel holding the engine's window as a child, with X keyboard delivery rebuilt) is superseded by [ADR-062](ADR-062-the-x11-editor-is-an-override-redirect-window.md), which gives X11 its editor as a separate override-redirect window and leaves the engine's window alone. The commitments under "How the rot ADR-011 predicted is prevented" stand, and ADR-062 says how far they are kept.
 **Supersedes:** [ADR-011](ADR-011-wayland-and-libadwaita.md)'s "X11 is not developed further" and its deletion trigger
 **Related:** [ADR-002](ADR-002-core-shell-and-ui-handoff.md), [ADR-023](ADR-023-host-audio-backends.md)
 

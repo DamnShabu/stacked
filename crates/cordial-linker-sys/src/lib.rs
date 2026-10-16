@@ -640,6 +640,11 @@ pub mod game_activity {
             n: usize,
         ) -> c_int;
         fn cordial_app_ready_set_sink(on_ready: Option<extern "C" fn(*const c_char)>);
+        fn cordial_last_app_ready(buf: *mut c_char, n: usize) -> usize;
+        fn cordial_app_bridge_set_sink(
+            on_notification: Option<extern "C" fn(*const c_char, *const c_char)>,
+        );
+        fn cordial_app_bridge_test_fire(kind: *const c_char, payload: *const c_char);
         fn cordial_report_battery_state_changed(
             f: *mut c_void,
             status: c_int,
@@ -1247,6 +1252,49 @@ pub mod game_activity {
         // SAFETY: the far side stores the pointer in an atomic and calls it
         // from the engine's thread; a null clears it.
         unsafe { cordial_app_ready_set_sink(on_ready) }
+    }
+
+    /// The screen the engine most recently reported with `APP_READY`, or `None`
+    /// before it has reported one.
+    ///
+    /// State rather than an event, for a reader that needs to know which screen
+    /// is up when something else happens: the web view asks it when the engine
+    /// opens a window, because the screen is what says what the window is for.
+    /// The payload is a screen name (`Login`, `ChallengeHybridWebView`, `Home`).
+    pub fn last_app_ready() -> Option<String> {
+        let mut buf = vec![0u8; 128];
+        // SAFETY: the far side fills a caller-owned buffer, NUL-terminates it
+        // when `n > 0`, and returns the full length whether or not it fit.
+        let len = unsafe { cordial_last_app_ready(buf.as_mut_ptr() as *mut c_char, buf.len()) };
+        if len == 0 {
+            return None;
+        }
+        let end = buf.iter().position(|&b| b == 0).unwrap_or(buf.len());
+        String::from_utf8(buf[..end].to_vec()).ok()
+    }
+
+    /// Install the sink `OPEN_CAPTCHA_VIEW` is delivered to, or clear it with `None`.
+    ///
+    /// Called with the notification type and its JSON payload, both
+    /// NUL-terminated and valid only for the call, on the engine's own thread.
+    /// The payload names the account being signed in, so a sink must not print
+    /// it; the C side already elides it from its own log line.
+    pub fn app_bridge_set_sink(on_notification: Option<extern "C" fn(*const c_char, *const c_char)>) {
+        // SAFETY: the far side stores the pointer in an atomic and calls it
+        // from the engine's thread; a null clears it.
+        unsafe { cordial_app_bridge_set_sink(on_notification) }
+    }
+
+    /// Deliver an app-bridge notification the way the engine's own call would,
+    /// for a development trigger. Goes through the same C++ handler and sink as
+    /// a real one; only the JNI argument unwrapping is skipped.
+    pub fn app_bridge_test_fire(kind: &str, payload: &str) {
+        let (Ok(kind), Ok(payload)) = (CString::new(kind), CString::new(payload)) else {
+            return;
+        };
+        // SAFETY: both pointers are valid NUL-terminated strings for the call,
+        // and the C side copies them before returning.
+        unsafe { cordial_app_bridge_test_fire(kind.as_ptr(), payload.as_ptr()) }
     }
 
     /// Hand the framework layer the identity its Java mirrors answer from.
@@ -2251,6 +2299,9 @@ pub mod game_activity {
             f: *mut c_void, which: i64, text: *const c_char, flag: c_int, cursor: c_int,
             err: *mut c_char, n: usize,
         ) -> c_int;
+        fn cordial_input_return_pressed(
+            f: *mut c_void, which: i64, err: *mut c_char, n: usize,
+        ) -> c_int;
         fn cordial_input_mouse_move(
             f: *mut c_void, x: f32, y: f32, dx: f32, dy: f32,
             err: *mut c_char, n: usize,
@@ -2296,6 +2347,11 @@ pub mod game_activity {
         fn cordial_textbox_generation() -> c_int;
         fn cordial_textbox_property_generation() -> c_int;
         fn cordial_textbox_text(buf: *mut c_char, n: c_int) -> c_int;
+        fn cordial_textbox_engine_text_generation() -> c_int;
+        fn cordial_textbox_engine_text(
+            buf: *mut c_char, n: c_int, focus_generation: *mut u32,
+        ) -> c_int;
+        fn cordial_textbox_engine_text_changed(utf8: *const c_char);
         fn cordial_registered_natives(
             class_name: *const c_char, out: *mut c_char, n: usize,
         ) -> c_int;
@@ -2305,6 +2361,8 @@ pub mod game_activity {
         ) -> c_int;
         fn cordial_games_loaded() -> u32;
         fn cordial_experience_starts() -> u32;
+        fn cordial_home_ready() -> u32;
+        fn cordial_flags_failed() -> u32;
         fn cordial_last_place() -> i64;
         fn cordial_game_activity_window_focus(
             handle: i64,
@@ -2557,6 +2615,20 @@ pub mod game_activity {
         unsafe { cordial_experience_starts() }
     }
 
+    /// How many times the engine has reported its flag load failed, which is
+    /// what a launch with no usable flag cache gets.
+    pub fn flags_failed() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_flags_failed() }
+    }
+
+    /// How many times the engine has announced `Home` ready. Non-zero once the
+    /// first Lua app has reached its home screen.
+    pub fn home_ready() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_home_ready() }
+    }
+
     /// The place id of the most recent load, or 0 if none has been reported.
     pub fn last_place() -> i64 {
         // SAFETY: a plain atomic load on the C++ side.
@@ -2654,6 +2726,57 @@ pub mod game_activity {
         String::from_utf8_lossy(&buf[..n as usize]).into_owned()
     }
 
+    /// Moves each time `onLuaTextBoxChangedCallback` delivers text. A third
+    /// counter beside [`textbox_generation`] (focus changed) and
+    /// [`textbox_property_generation`] (geometry or style changed): this one
+    /// means "the engine has said what the box now contains".
+    pub fn engine_text_generation() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_textbox_engine_text_generation() as u32 }
+    }
+
+    /// What the engine last pushed through `onLuaTextBoxChangedCallback`, and
+    /// the [`textbox_generation`] that was current when it arrived. A caller
+    /// that finds the second no longer equals the first is holding text meant
+    /// for a box that has since lost focus.
+    pub fn engine_text() -> (String, u32) {
+        let mut buf = vec![0u8; 4096];
+        let mut focus_generation: u32 = 0;
+        loop {
+            // SAFETY: `buf` is writable for its full length and
+            // `focus_generation` is a live out-parameter.
+            let full = unsafe {
+                cordial_textbox_engine_text(
+                    buf.as_mut_ptr() as *mut c_char,
+                    buf.len() as c_int,
+                    &mut focus_generation,
+                )
+            };
+            if full < 0 {
+                return (String::new(), focus_generation);
+            }
+            if (full as usize) < buf.len() {
+                let text = String::from_utf8_lossy(&buf[..full as usize]).into_owned();
+                return (text, focus_generation);
+            }
+            buf = vec![0u8; full as usize + 1];
+        }
+    }
+
+    /// Deliver `text` exactly as `onLuaTextBoxChangedCallback` does -- for
+    /// devctl's `enginetext` verb.
+    ///
+    /// **Test-only, and the engine never calls this.** A real engine-side
+    /// clear (a chat box emptied by sending) needs a signed-in session to
+    /// produce; this is the same entry point the callback uses, so the pump
+    /// side can be exercised without one. Anything measured through it is
+    /// synthetic and must be reported as such.
+    pub fn test_engine_text(text: &str) {
+        let text = CString::new(text.replace('\0', "")).unwrap_or_default();
+        // SAFETY: `text` outlives the call, which copies it.
+        unsafe { cordial_textbox_engine_text_changed(text.as_ptr()) }
+    }
+
     /// Re-drive `onSurfaceChangedNative` after the host window is resized.
     pub fn surface_resized(handle: i64, format: i32, width: i32, height: i32) -> Result<(), String> {
         let mut err = vec![0u8; 512];
@@ -2714,6 +2837,28 @@ pub mod game_activity {
                 native, t.as_ptr(), cursor,
                 err.as_mut_ptr() as *mut c_char, err.len(),
             )
+        };
+        if rc == 0 { Ok(()) } else { Err(take_err(err)) }
+    }
+
+    /// `NativeGLInterface.nativeReturnPressedFromOnScreenKeyboard` -- Enter on
+    /// a single-line box, after the final text has been synced. Takes the
+    /// `showKeyboard` handle, like `nativePassText`.
+    ///
+    /// # Safety
+    ///
+    /// `native` must be a live pointer to the exported JNI native this call
+    /// names, obtained via [`Library::symbol`] (or the module-level dlsym
+    /// equivalent) against a `libroblox.so` Cordial has `dlopen`'d and never
+    /// `dlclose`s. The C shim supplies the `JNIEnv`/`jobject` from the
+    /// process's own `JavaVM`. `which` is handed to the engine unchecked, so
+    /// it must be a handle `showKeyboard` issued, never
+    /// [`SYNTHETIC_TEXTBOX_HANDLE`].
+    pub unsafe fn return_pressed(native: *mut c_void, which: i64) -> Result<(), String> {
+        let mut err = vec![0u8; 512];
+        // SAFETY: `err` outlives the call.
+        let rc = unsafe {
+            cordial_input_return_pressed(native, which, err.as_mut_ptr() as *mut c_char, err.len())
         };
         if rc == 0 { Ok(()) } else { Err(take_err(err)) }
     }
@@ -3144,6 +3289,12 @@ pub mod game_activity {
         );
         fn cordial_textbox_blurred();
     }
+
+    /// The handle devctl's `fakefocus` gives its synthetic box. No real engine
+    /// build has issued it, so nothing that takes a box handle may pass it on
+    /// to the engine: a native that looks the handle up would be handed a
+    /// number it never made.
+    pub const SYNTHETIC_TEXTBOX_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
 
     /// Synthesise a focused `NativeTextBoxInfo` exactly as the engine's own
     /// `showKeyboard`/`<init>` hook would -- for devctl's `fakefocus` verb,

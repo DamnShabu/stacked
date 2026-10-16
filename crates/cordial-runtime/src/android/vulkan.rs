@@ -56,6 +56,12 @@
 //!   `VK_PRESENT_MODE_MAILBOX_KHR` instead when a setting asks for it. See
 //!   that function for the measurement and for why overriding what the engine
 //!   asked for is defensible here and would not be for most calls.
+//! * `vkAcquireNextImageKHR` — `VK_SUBOPTIMAL_KHR` is a successful acquire
+//!   with a valid image index. On a Wayland fullscreen exit on RADV, upstream
+//!   Cordial's PR #72 found that passing that status through was followed by
+//!   a `VK_NULL_HANDLE` present barrier; that is the PR author's measurement,
+//!   not re-run here. [`vk_acquire_next_image_khr`] preserves the acquired
+//!   index while reporting that successful acquire as `VK_SUCCESS`.
 //!
 //! Everything else — every `vkCmd*`, the whole per-frame surface — is
 //! untouched: once a real `VkInstance` exists, forwarding
@@ -314,6 +320,12 @@ fn load_host() -> Option<HostVulkan> {
         return None;
     }
 
+    // A compositor with no dma-buf global cannot be presented to by a hardware
+    // device, and the engine mishandles the failure (issue #63). See `wl_dmabuf`.
+    if super::wl_dmabuf::withhold_vulkan() {
+        return None;
+    }
+
     let mut handle = std::ptr::null_mut();
     // The Linux soname first, then the Android one Roblox actually asks for —
     // either is fine to load from, since what matters is which real library
@@ -529,6 +541,14 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_create_swapchain_khr as *const () as *mut c_void
         }
+        // Roblox compatibility wrapper; see [`vk_acquire_next_image_khr`].
+        b"vkAcquireNextImageKHR" => {
+            HOST_ACQUIRE_NEXT_IMAGE.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_acquire_next_image_khr as *const () as *mut c_void
+        }
         // Counted, not altered — same reasoning as `vkGetPhysicalDeviceFormatProperties`
         // above: a shader-compile count next to the TM1/TM2 choice is the
         // cheapest available evidence on whether "TextureManager2" and "how many
@@ -546,11 +566,21 @@ extern "C" fn vk_get_instance_proc_addr(instance: *mut c_void, name: *const c_ch
             );
             vk_create_shader_module as *const () as *mut c_void
         }
+        // Forwarded untouched on every GPU but NVIDIA's, and asked again on
+        // NVIDIA's when it fails in the way hybrid laptops have been reported
+        // to fail it -- see [`vk_get_physical_device_surface_present_modes_khr`].
+        b"vkGetPhysicalDeviceSurfacePresentModesKHR" => {
+            HOST_GET_PRESENT_MODES.store(
+                unsafe { (h.get_instance_proc_addr)(instance, name) } as usize,
+                std::sync::atomic::Ordering::Relaxed,
+            );
+            vk_get_physical_device_surface_present_modes_khr as *const () as *mut c_void
+        }
         // `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`'s result is patched, not
         // just forwarded — see [`vk_get_physical_device_surface_capabilities_khr`]
-        // for the failure this fixes. Measured, not guessed: instrumenting this
-        // call (and `vkCreateSwapchainKHR`/`vkAcquireNextImageKHR`, since
-        // reverted — the finding is what matters, not the scaffolding) showed
+        // for the failure this fixes. Measured, not guessed: temporary tracing
+        // of this call together with `vkCreateSwapchainKHR` and
+        // `vkAcquireNextImageKHR` showed
         // `currentExtent` coming back as `4294967295x4294967295` on Wayland and
         // a real `1280x720` on X11 for the identical query, and zero calls to
         // `vkCreateSwapchainKHR` ever following it on Wayland, against one
@@ -595,6 +625,11 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
             vk_create_swapchain_khr as *const () as *mut c_void
         }
+        b"vkAcquireNextImageKHR" => {
+            HOST_ACQUIRE_NEXT_IMAGE
+                .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
+            vk_acquire_next_image_khr as *const () as *mut c_void
+        }
         b"vkCreateShaderModule" => {
             HOST_CREATE_SHADER_MODULE
                 .store(host(device, name) as usize, std::sync::atomic::Ordering::Relaxed);
@@ -605,6 +640,90 @@ extern "C" fn vk_get_device_proc_addr(device: *mut c_void, name: *const c_char) 
             vk_create_image as *const () as *mut c_void
         }
         _ => host(device, name),
+    }
+}
+
+/// The real `vkAcquireNextImageKHR`, interposed for one status code and nothing
+/// else: the call, the semaphore, the fence and the image index reach the driver
+/// and come back untouched.
+///
+/// **What this changes, and what it costs.** `VK_SUBOPTIMAL_KHR` means the image
+/// was acquired and is usable, and that the swapchain could be recreated to match
+/// the surface better. On a Wayland fullscreen exit on RADV the engine was
+/// observed to answer it by recording a `PRESENT_SRC_KHR` barrier on
+/// `VK_NULL_HANDLE`, which crashed the driver (issue #39). That was measured by
+/// the author of upstream Cordial's
+/// [PR #72](https://github.com/luohoa97/cordial/pull/72), with the status as
+/// the only variable, and has not been reproduced here: returning `VK_SUCCESS`
+/// for the same acquire removed the barrier. The hint is delayed, not lost:
+/// [`vk_queue_present_khr`] forwards the driver's result untouched, so a driver
+/// that still finds the swapchain suboptimal can say so at the present of the
+/// same frame, after it has been drawn (whether RADV does is not measured). And
+/// every size change already reaches the engine as a new surface extent through
+/// [`settle_resize_extent`], which is the only recreation trigger that was ever
+/// observed here. `INFERRED`: that the driver's reason for the status on that
+/// machine is a compositor presentation-hint change rather than a size
+/// mismatch, which would make the hint a scanout optimisation and not a
+/// correctness signal; Intel's driver has not been seen to return it at all.
+///
+/// This is a downgrade between two success codes, not a stub reporting a thing
+/// that did not happen, so it stays inside AGENTS.md's rule about never making
+/// a stub lie. It is deliberately not extended to `VK_ERROR_OUT_OF_DATE_KHR`,
+/// where no image was acquired and success would be false, and the swallowed
+/// codes are counted and printed so the substitution is visible in a log
+/// ([`report_suboptimal_acquire`]). `vkAcquireNextImage2KHR` is not interposed;
+/// `INFERRED` that the engine does not resolve it, as nothing here has seen it
+/// asked for.
+static HOST_ACQUIRE_NEXT_IMAGE: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+extern "C" fn vk_acquire_next_image_khr(
+    device: *mut c_void,
+    swapchain: u64,
+    timeout: u64,
+    semaphore: u64,
+    fence: u64,
+    image_index: *mut u32,
+) -> i32 {
+    let f = HOST_ACQUIRE_NEXT_IMAGE.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, u64, u64, u64, u64, *mut u32) -> i32;
+    // SAFETY: resolved from the host loader for exactly vkAcquireNextImageKHR.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    let rc = f(device, swapchain, timeout, semaphore, fence, image_index);
+
+    if rc == VK_SUBOPTIMAL_KHR {
+        report_suboptimal_acquire();
+    }
+    normalize_acquire_result(rc)
+}
+
+/// Say that an acquire's `VK_SUBOPTIMAL_KHR` was reported to the engine as
+/// success, at the first and then at each power of ten.
+///
+/// The present path prints every non-success code it forwards; this one
+/// withholds a code, so it owes the log the same honesty. Without the line a
+/// reader of a fullscreen report could not tell a driver that never said
+/// "suboptimal" from one whose word was not passed on.
+fn report_suboptimal_acquire() {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SWALLOWED: AtomicU64 = AtomicU64::new(0);
+    let n = SWALLOWED.fetch_add(1, Ordering::Relaxed) + 1;
+    if is_first_or_power_of_ten(n) {
+        println!(
+            "[android] vulkan: vkAcquireNextImageKHR returned VK_SUBOPTIMAL_KHR; \
+             reported to the engine as VK_SUCCESS, {n} so far"
+        );
+    }
+}
+
+fn normalize_acquire_result(rc: i32) -> i32 {
+    if rc == VK_SUBOPTIMAL_KHR {
+        VK_SUCCESS
+    } else {
+        rc
     }
 }
 
@@ -632,7 +751,10 @@ extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i
     // finished rendering it and left it in `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
     // Once the present has been forwarded the image belongs to the driver and
     // reading it is a race.
-    if super::capture::pending() {
+    //
+    // A recording asks the same question every frame it wants one, and for the
+    // same reason this is the place to ask it (`recording`, ADR-059).
+    if super::capture::pending() || crate::recording::frame_due() {
         take_capture(queue, info);
     }
     // SAFETY: resolved from the host loader for exactly this name.
@@ -711,18 +833,30 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
     }
     // SAFETY: both were resolved from the loader for exactly these names, and
     // are called with the signatures the specification gives them.
-    unsafe {
-        super::capture::capture(
-            queue as u64,
-            swapchain,
-            image_index,
+    let (gdpa, gpdmp) = unsafe {
+        (
             std::mem::transmute::<usize, extern "C" fn(u64, *const c_char) -> *mut c_void>(gdpa),
             std::mem::transmute::<
                 *mut c_void,
                 extern "C" fn(*mut c_void, *mut super::capture::PhysicalDeviceMemoryProperties),
             >(gpdmp),
-            phys,
-        );
+        )
+    };
+    // The screenshot and the recording both read this present's image, so one
+    // present can serve a harness that asks for a still while recording.
+    super::capture::capture(queue as u64, swapchain, image_index, gdpa, gpdmp, phys);
+    if crate::recording::frame_due() {
+        match super::capture::frame_target(queue as u64, swapchain, image_index, gdpa) {
+            Ok(target) => crate::recording::on_frame(queue as u64, target, gdpa, gpdmp, phys),
+            Err(e) => {
+                // Once: this is the engine's present, and a complaint per
+                // frame would bury the run at sixty lines a second.
+                static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    println!("[record] cannot read the presented frame: {e}");
+                }
+            }
+        }
     }
 }
 
@@ -766,17 +900,9 @@ pub fn last_extent() -> (u32, u32) {
 /// report_unregistered` gives: one line would be indistinguishable from a
 /// transient at a resize, and one per frame would bury the run.
 ///
-/// **Checked against issue #35's Steam Deck SIGSEGV, and ruled out as this
-/// file's doing.** The reporter's log has `vkAcquireNextImageKHR` returning
-/// `VK_SUBOPTIMAL_KHR` immediately before the crash, but `VK_SUBOPTIMAL_KHR`
-/// is a success code — the image is still usable — and this function's own
-/// logic above confirms it: the return value from `vkQueuePresentKHR` is
-/// read only to decide what to print, never to change `rc`, which the caller
-/// returns to the engine exactly as the driver gave it. `vkAcquireNextImageKHR`
-/// itself is not interposed anywhere in this file at all (there is no
-/// `vk_acquire_next_image_khr` here), so that call reaches the host driver
-/// completely unmodified. Neither fact leaves room for this file to be
-/// turning a benign resize signal into the crash.
+/// `vkQueuePresentKHR` itself remains observational. `vkAcquireNextImageKHR`
+/// has a separate compatibility normalization; see
+/// [`vk_acquire_next_image_khr`].
 fn report_present_result(rc: i32) {
     use std::sync::atomic::{AtomicU64, Ordering};
     static SUBOPTIMAL: AtomicU64 = AtomicU64::new(0);
@@ -813,8 +939,15 @@ fn is_first_or_power_of_ten(n: u64) -> bool {
 // ------------------------------------------------------------- present mode
 //
 // Cordial did not ask for a present mode until this existed, so the engine's
-// own choice stood, and the engine chooses `VK_PRESENT_MODE_FIFO_KHR` — the one
-// mode the specification guarantees, and a hard vsync lock. What that costs was
+// own choice stood. **That choice is not a constant, and this comment used to
+// say it was.** The August measurements below were taken when the engine asked
+// for `VK_PRESENT_MODE_FIFO_KHR`, the one mode the specification guarantees and
+// a hard vsync lock. On 2.738.0.1397, fresh profile, default settings, nested
+// sway on an Intel iGPU, 2026-10-08, `CORDIAL_PRESENT_MODE=off` printed
+// `swapchain present mode IMMEDIATE (the engine's own choice)` on all three
+// swapchains, and a user's log on 2.739 reads `IMMEDIATE -> FIFO`. So on a
+// current build `off` is IMMEDIATE, not FIFO, and "FIFO is the control" in the
+// notes below is the control for an older engine. What that costs was
 // measured rather than assumed: with input driven continuously for the whole
 // window, presents come out equal to the output's refresh and stay there, 60.0
 // on a 59.88 Hz panel and 49.4 on a 49.96 Hz one, unchanged by fullscreen at
@@ -864,6 +997,7 @@ extern "C" fn vk_create_device(
         return VK_ERROR_INITIALIZATION_FAILED;
     }
     PHYSICAL_DEVICE.store(physical_device as usize, std::sync::atomic::Ordering::Relaxed);
+    announce_physical_device(physical_device);
     // The queue family the engine asked for, read out of its own
     // `VkDeviceCreateInfo`. A capture needs a command pool, a command pool is
     // per family, and assuming family zero would be a guess that happens to be
@@ -1215,35 +1349,32 @@ static HOST_CREATE_SWAPCHAIN: std::sync::atomic::AtomicUsize =
 /// forgets, and a capture against a stale swapchain handle is a driver crash
 /// rather than a wrong picture.
 ///
-/// **Checked against issue #39's SIGSEGV on the first swapchain recreation of
-/// a fullscreen-exit transition, and not confirmed as this file's doing.**
-/// This function and [`vk_create_swapchain_inner`] change exactly two scalar
-/// fields of the caller's `VkSwapchainCreateInfoKHR` — `presentMode` and,
-/// rarely, `minImageCount` — and forward `oldSwapchain` unexamined; the actual
-/// handling of an outgoing swapchain's in-flight images is a matter between
-/// the engine and the host driver that never passes through Rust code at all,
-/// because neither `vkAcquireNextImageKHR` nor `vkDestroySwapchainKHR` is
-/// interposed anywhere in this file. There is consequently no lever here to
-/// have mishandled a stale image or a torn-down swapchain.
+/// Issue #39 was isolated to `vkAcquireNextImageKHR` status handling rather
+/// than this create wrapper; see [`vk_acquire_next_image_khr`] and `docs/NEXT.md`.
+/// `vkDestroySwapchainKHR` remains uninterposed, and `oldSwapchain` is still
+/// forwarded unchanged here.
 ///
 /// `tools/sober-corpus`'s issue #2180 (`Crashes after SceneManager first
-/// resize when using Vulkan`) is independent evidence for a wider version of
-/// the same fault shape: Roblox's Android-targeted Vulkan renderer, run on
-/// Sober rather than Cordial, has repeatedly SIGSEGV'd immediately after a
-/// framebuffer resize on ordinary desktop Linux GPU drivers (NVIDIA 535
-/// through 550, Pascal through Ampere), with no Cordial-equivalent code
-/// involved at all — Sober's own maintainers concluded it is the engine's
-/// renderer disagreeing with the host driver, not anything in the launcher,
-/// and the confirmed workaround every reporter in that thread used is forcing
-/// the OpenGL/GLES path instead of Vulkan. Cordial already ships the same
-/// switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
+/// resize when using Vulkan due to Roblox incompatibility with NVIDIA driver
+/// 550`) is evidence for the same fault shape on **NVIDIA, and on NVIDIA only**:
+/// Roblox's Android-targeted Vulkan renderer, run on Sober rather than Cordial,
+/// SIGSEGVs right after a render-target resize on the 535 and 550 driver
+/// series (Pascal through Ampere), with no Cordial-equivalent code involved. A
+/// Sober maintainer's conclusion there was a driver incompatibility, fixed by
+/// changing driver version -- reporters on a GTX 1070 and 1070 Ti went from
+/// 535/550 to 580 and were running afterwards -- and the one workaround in the
+/// thread that was tried and worked is switching Sober to OpenGL. **It says
+/// nothing about AMD or Intel.** #35 is a Steam Deck (AMD, Mesa) and #39's GPU
+/// was never given, so this issue is not evidence about either of them; an
+/// earlier version of this comment offered it as if it were. Cordial has the
+/// same switch: `CORDIAL_GRAPHICS=gles` withholds the virtual Vulkan library
 /// entirely, so the engine falls through to its own GLES3 renderer and none
 /// of this file's code ever runs. Confirmed still working on this build,
 /// 2026-09-15: `CORDIAL_GRAPHICS=gles` reached the Landing page cleanly,
 /// logging `[graphics] backend: GLES3 — Vulkan is being withheld
-/// deliberately`. That makes it a real mitigation to offer a reporter of #35
-/// or #39 today, not a fix for whatever is actually wrong with Roblox's
-/// Vulkan renderer here.
+/// deliberately`. That makes it something to *try* for a reporter of #35 or
+/// #39, not an established mitigation for their machines and not a fix for
+/// whatever is actually wrong with Roblox's Vulkan renderer here.
 extern "C" fn vk_create_swapchain_khr(
     device: *mut c_void,
     create_info: *const VkSwapchainCreateInfoKHR,
@@ -1395,6 +1526,210 @@ extern "C" fn vk_create_swapchain_inner(
     f(device, &patched, allocator, swapchain_out)
 }
 
+// ------------------------------------------------------------------- NVIDIA
+//
+// Everything below runs only when the physical device's `vendorID` is NVIDIA's
+// (or `CORDIAL_FORCE_GPU_VENDOR` says to behave as though it were, which is how
+// it is exercised on a machine without one). **None of it has run against a real
+// NVIDIA driver.** The reasoning is in `cordial_shell::nvidia`; the evidence is
+// upstream Cordial's `docs/analysis/nvidia-support.md`, not carried into this
+// fork.
+
+/// The host's real `vkGetPhysicalDeviceProperties`, resolved through the
+/// instance this shim created, and how much room to give its result.
+///
+/// `VkPhysicalDeviceProperties` is 824 bytes on 64-bit Linux (20 of header, 256
+/// of name, 16 of pipeline-cache UUID, 504 of limits, 20 of sparse properties,
+/// padded). A buffer of 1024 is not a claim about the exact size; it is
+/// headroom against a future field, so the host can never write past it.
+const PROPS_BUFFER_BYTES: usize = 1024;
+
+/// What one physical device is, as the gate sees it.
+#[derive(Clone)]
+struct DeviceIdentity {
+    name: String,
+    vendor_id: u32,
+    device_id: u32,
+    gate: cordial_shell::nvidia::Gate,
+}
+
+static DEVICE_IDENTITIES: std::sync::Mutex<Vec<(usize, DeviceIdentity)>> =
+    std::sync::Mutex::new(Vec::new());
+
+/// The override, read once.
+fn gpu_vendor_override() -> Option<cordial_shell::nvidia::VendorOverride> {
+    static OVERRIDE: OnceLock<Option<cordial_shell::nvidia::VendorOverride>> = OnceLock::new();
+    *OVERRIDE.get_or_init(cordial_shell::nvidia::override_from_env)
+}
+
+/// Ask the driver what `physical_device` is, once, and remember it.
+///
+/// `None` when the question cannot be asked (no instance yet, or the host has
+/// no such command), which every caller treats as "not NVIDIA": a gate that
+/// could not be read must not switch a workaround on.
+fn device_identity(physical_device: *mut c_void) -> Option<DeviceIdentity> {
+    if physical_device.is_null() {
+        return None;
+    }
+    if let Ok(known) = DEVICE_IDENTITIES.lock() {
+        if let Some((_, id)) = known.iter().find(|(pd, _)| *pd == physical_device as usize) {
+            return Some(id.clone());
+        }
+    }
+    let h = host()?;
+    let instance = HOST_INSTANCE.load(std::sync::atomic::Ordering::Relaxed);
+    if instance == 0 {
+        return None;
+    }
+    // SAFETY: `instance` is the real host `VkInstance` this shim created and the
+    // name is core Vulkan 1.0's own documented export.
+    let f = unsafe {
+        (h.get_instance_proc_addr)(instance as *mut c_void, c"vkGetPhysicalDeviceProperties".as_ptr())
+    };
+    if f.is_null() {
+        return None;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, *mut u8);
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    // `u64` elements so the buffer is 8-aligned, which the struct's `limits`
+    // member wants; only its first 276 bytes are ever read back.
+    let mut buffer = [0u64; PROPS_BUFFER_BYTES / 8];
+    f(physical_device, buffer.as_mut_ptr() as *mut u8);
+    // SAFETY: `buffer` is `PROPS_BUFFER_BYTES` long and initialised.
+    let bytes = unsafe { std::slice::from_raw_parts(buffer.as_ptr() as *const u8, PROPS_BUFFER_BYTES) };
+    // The spec's C layout: apiVersion 0, driverVersion 4, vendorID 8, deviceID
+    // 12, deviceType 16, deviceName 20..276.
+    let word = |at: usize| u32::from_ne_bytes([bytes[at], bytes[at + 1], bytes[at + 2], bytes[at + 3]]);
+    let driver_version = word(4);
+    let vendor_id = word(8);
+    let device_id = word(12);
+    let name_bytes = &bytes[20..276];
+    let end = name_bytes.iter().position(|&b| b == 0).unwrap_or(name_bytes.len());
+    let name = String::from_utf8_lossy(&name_bytes[..end]).into_owned();
+    let identity = DeviceIdentity {
+        name,
+        vendor_id,
+        device_id,
+        gate: cordial_shell::nvidia::gate(vendor_id, driver_version, gpu_vendor_override()),
+    };
+    if let Ok(mut known) = DEVICE_IDENTITIES.lock() {
+        known.push((physical_device as usize, identity.clone()));
+    }
+    Some(identity)
+}
+
+/// Whether this physical device is one the NVIDIA behaviours apply to.
+fn is_nvidia_device(physical_device: *mut c_void) -> bool {
+    device_identity(physical_device).is_some_and(|id| id.gate.nvidia())
+}
+
+/// Say which device the engine is rendering on, and warn when the driver is one
+/// that has been reported to crash it.
+///
+/// Printed for **every** vendor, unconditionally: which GPU a session ran on is
+/// the first thing a report about it needs, and the launcher's crash page reads
+/// this line to decide whether to speak about NVIDIA at all. Called from
+/// [`vk_create_device`], so it describes the device the engine actually built
+/// its logical device on and not one it merely enumerated.
+fn announce_physical_device(physical_device: *mut c_void) {
+    let Some(id) = device_identity(physical_device) else { return };
+    println!(
+        "{}",
+        cordial_shell::nvidia::identity_line(&id.name, id.vendor_id, id.device_id, &id.gate)
+    );
+    if id.gate.nvidia() {
+        if let Some(text) = cordial_shell::nvidia::driver_advisory(id.gate.driver.major) {
+            println!("{} {text}", cordial_shell::nvidia::ADVISORY_MARKER);
+        }
+        if let Some(host) = cordial_shell::nvidia::host_driver_version() {
+            println!("[android] vulkan: NVIDIA kernel module {host}");
+        }
+    }
+}
+
+static HOST_GET_PRESENT_MODES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// How many more calls `CORDIAL_TEST_FAIL_PRESENT_MODES` will fail.
+fn injected_failures_left() -> &'static std::sync::atomic::AtomicU32 {
+    static LEFT: OnceLock<std::sync::atomic::AtomicU32> = OnceLock::new();
+    LEFT.get_or_init(|| {
+        let n = std::env::var(cordial_shell::nvidia::FAIL_PRESENT_MODES_ENV)
+            .ok()
+            .and_then(|v| v.trim().parse().ok())
+            .unwrap_or(0);
+        std::sync::atomic::AtomicU32::new(n)
+    })
+}
+
+/// `vkGetPhysicalDeviceSurfacePresentModesKHR`, forwarded untouched unless the
+/// device is NVIDIA's, and on NVIDIA's asked again if it fails the way hybrid
+/// laptops have been reported to fail it.
+///
+/// **`INFERRED` that this helps.** What is established is the report: on hybrid
+/// NVIDIA laptops under Wayland this call fails with `VK_ERROR_UNKNOWN` on the
+/// first launch of a boot and the engine dies with it, and four independent
+/// reporters got past it by using the GPU once before launching. Whether a pause
+/// and a second ask reproduces "using the GPU once" is a guess about a mechanism
+/// nobody has named. The cost of being wrong is under two seconds on a path that
+/// was ending in a fatal error already; the retry never runs when the call
+/// succeeds. See [`cordial_shell::nvidia::retry`].
+extern "C" fn vk_get_physical_device_surface_present_modes_khr(
+    physical_device: *mut c_void,
+    surface: u64,
+    count: *mut u32,
+    modes: *mut i32,
+) -> i32 {
+    let f = HOST_GET_PRESENT_MODES.load(std::sync::atomic::Ordering::Relaxed);
+    if f == 0 {
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+    type Fn_ = extern "C" fn(*mut c_void, u64, *mut u32, *mut i32) -> i32;
+    // SAFETY: resolved from the host loader for exactly this name.
+    let f: Fn_ = unsafe { std::mem::transmute(f) };
+    if !is_nvidia_device(physical_device) {
+        return f(physical_device, surface, count, modes);
+    }
+    static ARMED: std::sync::Once = std::sync::Once::new();
+    ARMED.call_once(|| {
+        println!("[android] vulkan: NVIDIA device: present-mode queries will be retried if the driver refuses them")
+    });
+    let injected = injected_failures_left();
+    let result = cordial_shell::nvidia::retry(
+        || {
+            // Test-only: fail the call ourselves while the counter lasts, so the
+            // schedule can be watched on a driver that never fails it.
+            let took = injected.fetch_update(
+                std::sync::atomic::Ordering::Relaxed,
+                std::sync::atomic::Ordering::Relaxed,
+                |n| n.checked_sub(1),
+            );
+            if took.is_ok() {
+                -13
+            } else {
+                f(physical_device, surface, count, modes)
+            }
+        },
+        |ms| std::thread::sleep(std::time::Duration::from_millis(ms)),
+        cordial_shell::nvidia::retryable_present_modes_error,
+    );
+    if result.attempts > 1 {
+        println!(
+            "[android] vulkan: NVIDIA present-modes query took {} attempts and ended at {}",
+            result.attempts, result.rc
+        );
+    }
+    if cordial_shell::nvidia::retryable_present_modes_error(result.rc) {
+        println!(
+            "{} (last result {}); the engine will report it",
+            cordial_shell::nvidia::PRESENT_MODES_GAVE_UP_MARKER,
+            result.rc
+        );
+    }
+    result.rc
+}
+
 static HOST_GET_SURFACE_CAPS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// `0xFFFFFFFF` in both dimensions of `VkSurfaceCapabilitiesKHR::currentExtent`
@@ -1406,59 +1741,116 @@ static HOST_GET_SURFACE_CAPS: std::sync::atomic::AtomicUsize = std::sync::atomic
 const VK_WHOLE_SIZE_UNDEFINED_EXTENT: u32 = 0xFFFF_FFFF;
 
 /// How long a raw extent must stop changing before
-/// [`settle_resize_extent`] hands it to the engine.
+/// [`settle_resize_extent`] hands it to the engine, however recently the last
+/// commit was.
 ///
 /// [Issue #39](https://github.com/luohoa97/cordial/issues/39) logged a
-/// fullscreen transition as nine extent steps in well under half a second —
-/// two consecutive steps were 48 ms apart — with a swapchain rebuilt at each
+/// fullscreen transition as nine extent steps in well under half a second --
+/// two consecutive steps were 48 ms apart -- with a swapchain rebuilt at each
 /// one, because this file handed the engine whatever `geometry()` returned on
 /// every call. 120 ms is comfortably longer than the 48 ms gap actually
-/// observed between animation steps, so a single Mutter resize collapses to
-/// one settled extent, while still being far short of the time a user holds a
-/// window at a size they chose by dragging.
+/// observed between animation steps, so the tail of a Mutter resize still
+/// collapses to one settled extent.
+///
+/// That crash is no longer what this guards against. It was root-caused in
+/// upstream Cordial's [PR #72](https://github.com/luohoa97/cordial/pull/72),
+/// on its author's RADV machine and not re-measured here, as
+/// `vkAcquireNextImageKHR` returning `VK_SUBOPTIMAL_KHR`, which the
+/// engine answered with a barrier on a null `VkImage`; Cordial now reports
+/// that status as success (see [`vk_acquire_next_image_khr`]). The commit that
+/// introduced this constant was an `INFERRED` guess at the storm and was never
+/// run live. What remains is cost: a swapchain rebuilt every compositor frame
+/// is wasted work, so extent changes are still rate-limited, by
+/// [`RESIZE_MAX_LAG`], not suppressed.
 const RESIZE_SETTLE: std::time::Duration = std::time::Duration::from_millis(120);
 
-/// State for [`settle_resize_extent`]: the extent last handed to the engine,
-/// the most recent raw extent observed, and when that raw extent was first
-/// seen.
+/// The longest a changed extent is held back from the engine while it keeps
+/// changing, since the previous commit.
+///
+/// As a pure debounce, [`RESIZE_SETTLE`] alone never committed during an
+/// interactive drag, because the compositor delivers a new size every frame
+/// and each one restarted the clock: the game kept its old size until the
+/// pointer paused, then jumped. 100 ms is the number that gives about ten
+/// rebuilds a second under a continuous drag, which reads as live, while
+/// staying above the 48 ms step gap of issue #39's fullscreen animation so
+/// that storm still collapses to a handful of commits rather than nine. It is
+/// a judgement and not a measurement of what the engine tolerates; below about
+/// 50 ms it stops being a rate limit at all. `CORDIAL_RESIZE_MAX_LAG_MS`
+/// overrides it, so that a very large value restores the old debounce for a
+/// same-session comparison.
+const RESIZE_MAX_LAG: std::time::Duration = std::time::Duration::from_millis(100);
+
+/// [`RESIZE_MAX_LAG`], or `CORDIAL_RESIZE_MAX_LAG_MS` if set, read once.
+fn resize_max_lag() -> std::time::Duration {
+    static LAG: OnceLock<std::time::Duration> = OnceLock::new();
+    *LAG.get_or_init(|| {
+        std::env::var("CORDIAL_RESIZE_MAX_LAG_MS")
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok())
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(RESIZE_MAX_LAG)
+    })
+}
+
+/// State for [`settle_resize_extent`]: the extent last handed to the engine
+/// and when, the most recent raw extent observed, and when that raw extent
+/// was first seen.
 #[derive(Clone, Copy)]
 struct ResizeSettleState {
     committed: (u32, u32),
+    committed_at: std::time::Instant,
     pending: (u32, u32),
     pending_since: std::time::Instant,
 }
 
-/// The debounce state behind [`vk_get_physical_device_surface_capabilities_khr`].
+/// The throttle state behind [`vk_get_physical_device_surface_capabilities_khr`].
 /// `None` until the first call, so the very first extent this process ever
 /// reports needs no settling.
 static RESIZE_SETTLE_STATE: std::sync::Mutex<Option<ResizeSettleState>> = std::sync::Mutex::new(None);
 
-/// Collapse a storm of raw extents into one commit per settled size.
+/// Rate-limit the extents handed to the engine: one commit per settled size,
+/// and during continuous change one per `max_lag`.
 ///
-/// A pure step over `(previous state, raw extent, now)` -> `(reported extent,
-/// next state)`, so the coalescing behaviour that fixes issue #39 can be
-/// tested without a Wayland compositor animating a resize. The caller owns
-/// the actual mutable state ([`RESIZE_SETTLE_STATE`]); this function only
-/// decides what to do with it.
+/// A pure step over `(previous state, raw extent, now, max_lag)` ->
+/// `(reported extent, next state)`, so the behaviour can be tested without a
+/// compositor animating a resize. The caller owns the actual mutable state
+/// ([`RESIZE_SETTLE_STATE`]); this function only decides what to do with it.
 ///
-/// While `raw` keeps changing from one call to the next, `pending` chases it
-/// and `committed` — what gets reported — stays put, because every change
-/// resets the settle clock. Once `raw` stops moving for [`RESIZE_SETTLE`],
-/// `committed` jumps straight to it. The engine sees exactly one extent change
-/// per settled resize instead of one per animation frame, and never sees an
-/// extent Cordial's window did not end up at.
+/// `pending` always chases `raw`. `committed` -- what gets reported -- takes
+/// the pending extent when either `raw` has been still for [`RESIZE_SETTLE`]
+/// (a resize has finished, so the engine ends at the size the window is) or
+/// `max_lag` has passed since the last commit (a resize is still going, so the
+/// engine follows it a step behind rather than not at all). The engine
+/// therefore never sees more than one extent per `max_lag` once a resize is
+/// under way, always ends on the final size, and never sees an extent the
+/// window did not actually have. A change after a long quiet spell commits at
+/// once, since the last commit is then old; that costs one early rebuild at an
+/// intermediate size and removes `max_lag` of latency on the first step.
+///
+/// This only advances when it is called, so the rate is also bounded by how
+/// often the engine asks `vkGetPhysicalDeviceSurfaceCapabilitiesKHR`.
 fn settle_resize_extent(
     state: Option<ResizeSettleState>,
     raw: (u32, u32),
     now: std::time::Instant,
+    max_lag: std::time::Duration,
 ) -> ((u32, u32), ResizeSettleState) {
-    let mut state = state.unwrap_or(ResizeSettleState { committed: raw, pending: raw, pending_since: now });
+    let mut state = state.unwrap_or(ResizeSettleState {
+        committed: raw,
+        committed_at: now,
+        pending: raw,
+        pending_since: now,
+    });
     if raw != state.pending {
         state.pending = raw;
         state.pending_since = now;
     }
-    if state.pending != state.committed && now.duration_since(state.pending_since) >= RESIZE_SETTLE {
+    if state.pending != state.committed
+        && (now.duration_since(state.pending_since) >= RESIZE_SETTLE
+            || now.duration_since(state.committed_at) >= max_lag)
+    {
         state.committed = state.pending;
+        state.committed_at = now;
     }
     (state.committed, state)
 }
@@ -1846,13 +2238,14 @@ extern "C" fn vk_get_physical_device_surface_capabilities_khr(
                 clamp(width, caps.min_image_extent.width, caps.max_image_extent.width),
                 clamp(height, caps.min_image_extent.height, caps.max_image_extent.height),
             );
-            // Settled, not raw -- see `settle_resize_extent`. Reporting every
-            // intermediate size of an animated resize is issue #39: a
-            // fullscreen transition produced nine extents in well under half a
-            // second and the engine rebuilt its swapchain at each one.
+            // Throttled, not raw -- see `settle_resize_extent`. Reporting every
+            // intermediate size of an animated resize made the engine rebuild
+            // its swapchain at each one (issue #39: nine in under half a
+            // second); holding all of them back until the pointer paused left
+            // an interactive drag showing the old size.
             let settled = {
                 let mut guard = RESIZE_SETTLE_STATE.lock().unwrap();
-                let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now());
+                let (reported, next) = settle_resize_extent(*guard, raw, std::time::Instant::now(), resize_max_lag());
                 *guard = Some(next);
                 reported
             };
@@ -2178,6 +2571,20 @@ mod tests {
         .0
     }
 
+    #[test]
+    fn suboptimal_acquire_is_the_only_result_normalized_for_roblox() {
+        assert_eq!(normalize_acquire_result(VK_SUBOPTIMAL_KHR), VK_SUCCESS);
+        assert_eq!(normalize_acquire_result(VK_SUCCESS), VK_SUCCESS);
+        assert_eq!(
+            normalize_acquire_result(VK_ERROR_OUT_OF_DATE_KHR),
+            VK_ERROR_OUT_OF_DATE_KHR
+        );
+        assert_eq!(
+            normalize_acquire_result(VK_ERROR_INITIALIZATION_FAILED),
+            VK_ERROR_INITIALIZATION_FAILED
+        );
+    }
+
     /// **The default is MAILBOX, and it is latency that decides it.**
     ///
     /// This assertion has now been written three ways and the history is the
@@ -2282,11 +2689,14 @@ mod tests {
         assert!(PRESENT_MODE_KEY.starts_with("Cordial"));
     }
 
+    const LAG: std::time::Duration = RESIZE_MAX_LAG;
+
     /// Issue #39's storm, replayed against the pure step function: nine
-    /// extents 48 ms apart, the closest gap actually logged. Every
-    /// intermediate one must be swallowed and only the last reported.
+    /// extents 48 ms apart, the closest gap actually logged. The engine used
+    /// to be handed all nine; now it gets a handful, each one a size the
+    /// window really had, and the last one is the final size once still.
     #[test]
-    fn a_storm_of_extents_48ms_apart_settles_to_only_the_last_one() {
+    fn a_storm_of_extents_48ms_apart_collapses_to_a_handful() {
         let steps: [(u32, u32); 9] = [
             (1920, 1034),
             (1920, 1049),
@@ -2303,48 +2713,105 @@ mod tests {
         let mut reports = Vec::new();
         for (i, &extent) in steps.iter().enumerate() {
             let now = start + std::time::Duration::from_millis(48 * i as u64);
-            let (reported, next) = settle_resize_extent(state, extent, now);
+            let (reported, next) = settle_resize_extent(state, extent, now, LAG);
             state = Some(next);
             reports.push(reported);
         }
-        // None of the nine calls made during the storm ever reports anything
-        // but the size the window started at -- the storm never stops moving
-        // for a whole `RESIZE_SETTLE`, so nothing commits mid-animation.
-        assert!(reports.iter().all(|&r| r == steps[0]));
+        assert!(reports.iter().all(|r| steps.contains(r)));
+        let mut distinct = reports.clone();
+        distinct.dedup();
+        assert!(distinct.len() < steps.len() / 2 + 1, "reported {distinct:?}");
 
-        // Only once the extent stops changing for `RESIZE_SETTLE` does the
-        // final size get reported -- one commit, not nine.
         let settle_time = start
             + std::time::Duration::from_millis(48 * (steps.len() as u64 - 1))
             + RESIZE_SETTLE;
-        let (reported, _) = settle_resize_extent(state, *steps.last().unwrap(), settle_time);
+        let (reported, _) = settle_resize_extent(state, *steps.last().unwrap(), settle_time, LAG);
         assert_eq!(reported, *steps.last().unwrap());
     }
 
+    /// The bug this change exists for: a drag delivers a new size every
+    /// compositor frame, and the pure debounce never committed during it. A
+    /// drag sampled every 16 ms for a second must now commit about every
+    /// 100 ms, each commit being the newest size seen, and finish on the final
+    /// size once the pointer stops.
+    #[test]
+    fn a_continuous_drag_commits_about_every_max_lag() {
+        let start = std::time::Instant::now();
+        let mut state = None;
+        let mut last = (0, 0);
+        let mut commits: Vec<(u64, (u32, u32))> = Vec::new();
+        let mut final_raw = (0, 0);
+        for i in 0..63u64 {
+            let ms = 16 * i;
+            final_raw = (800 + 8 * i as u32, 600);
+            let now = start + std::time::Duration::from_millis(ms);
+            let (reported, next) = settle_resize_extent(state, final_raw, now, LAG);
+            state = Some(next);
+            if reported != last {
+                // The first call commits the starting size; only changes after
+                // it are rebuilds the engine would be asked to do.
+                if i > 0 {
+                    commits.push((ms, reported));
+                    // The newest size at the moment of commit, never a stale one.
+                    assert_eq!(reported, final_raw);
+                }
+                last = reported;
+            }
+        }
+        assert!((8..=10).contains(&commits.len()), "commits {commits:?}");
+        for pair in commits.windows(2) {
+            let gap = pair[1].0 - pair[0].0;
+            assert!((100..=116).contains(&gap), "gap {gap} ms in {commits:?}");
+        }
+        let still = start + std::time::Duration::from_millis(16 * 62) + RESIZE_SETTLE;
+        let (reported, _) = settle_resize_extent(state, final_raw, still, LAG);
+        assert_eq!(reported, final_raw);
+    }
+
+    /// With the lag set far beyond a drag's length the throttle degenerates
+    /// to the old debounce: nothing commits mid-drag. This is the control the
+    /// `CORDIAL_RESIZE_MAX_LAG_MS` override exists to provide.
+    #[test]
+    fn an_enormous_max_lag_restores_the_pure_debounce() {
+        let huge = std::time::Duration::from_secs(100_000);
+        let start = std::time::Instant::now();
+        let mut state = None;
+        for i in 0..63u64 {
+            let now = start + std::time::Duration::from_millis(16 * i);
+            let (reported, next) = settle_resize_extent(state, (800 + 8 * i as u32, 600), now, huge);
+            state = Some(next);
+            assert_eq!(reported, (800, 600));
+        }
+    }
+
     /// The very first extent a process ever reports needs no settling --
-    /// there is nothing to debounce against yet, and the engine's first
+    /// there is nothing to throttle against yet, and the engine's first
     /// swapchain must be built at the window's real starting size.
     #[test]
     fn the_first_extent_reports_immediately() {
-        let (reported, _) = settle_resize_extent(None, (1280, 720), std::time::Instant::now());
+        let (reported, _) = settle_resize_extent(None, (1280, 720), std::time::Instant::now(), LAG);
         assert_eq!(reported, (1280, 720));
     }
 
-    /// A deliberate resize the user holds for longer than `RESIZE_SETTLE`
-    /// (dragging a window edge, say) must still be reported once it stops --
-    /// this is a debounce, not a permanent lock to the first size seen.
+    /// A single deliberate resize that then holds still is reported once it
+    /// has been still for `RESIZE_SETTLE`, and exactly once: a quarter of a
+    /// second later it is still the same committed size, not a repeat.
     #[test]
     fn a_resize_that_holds_past_the_settle_window_is_reported() {
         let start = std::time::Instant::now();
-        let (_, state) = settle_resize_extent(None, (1280, 720), start);
-        let (_, state) =
-            settle_resize_extent(Some(state), (1600, 900), start + std::time::Duration::from_millis(10));
-        let (reported, _) = settle_resize_extent(
+        let (_, state) = settle_resize_extent(None, (1280, 720), start, LAG);
+        let at = start + std::time::Duration::from_millis(10);
+        let (held, state) = settle_resize_extent(Some(state), (1600, 900), at, LAG);
+        assert_eq!(held, (1280, 720));
+        let (reported, state) = settle_resize_extent(Some(state), (1600, 900), at + RESIZE_SETTLE, LAG);
+        assert_eq!(reported, (1600, 900));
+        let (again, _) = settle_resize_extent(
             Some(state),
             (1600, 900),
-            start + std::time::Duration::from_millis(10) + RESIZE_SETTLE,
+            at + RESIZE_SETTLE + std::time::Duration::from_millis(250),
+            LAG,
         );
-        assert_eq!(reported, (1600, 900));
+        assert_eq!(again, (1600, 900));
     }
 
     /// Boundary values for each `VkFormat` range `format_family` groups, read

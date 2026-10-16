@@ -700,6 +700,10 @@ struct WlClient {
     /// should be given when creating one — see the text-input section of the
     /// module doc for what a guess cost here.
     get_version: unsafe extern "C" fn(*mut c_void) -> u32,
+    /// For giving the canvas a `GdkSurface` to answer to; see
+    /// [`attach_touch_stand_in`] for why a surface GDK did not create has to
+    /// carry one.
+    set_user_data: unsafe extern "C" fn(*mut c_void, *mut c_void),
     /// Set once the connection is unusable. Non-zero means every later request
     /// is discarded and every dispatch fails, so a run that reaches this is
     /// over whatever it does next; `pump` reports it rather than letting the
@@ -805,6 +809,7 @@ impl WlClient {
             marshal_flags: sym!("wl_proxy_marshal_flags"),
             add_listener: sym!("wl_proxy_add_listener"),
             get_version: sym!("wl_proxy_get_version"),
+            set_user_data: sym!("wl_proxy_set_user_data"),
             get_error: sym!("wl_display_get_error"),
             get_protocol_error: sym!("wl_display_get_protocol_error"),
             registry_interface: sym!("wl_registry_interface"),
@@ -1114,11 +1119,25 @@ struct HostWindowCell(cordial_shell::host_window::HostWindow);
 unsafe impl Send for HostWindowCell {}
 unsafe impl Sync for HostWindowCell {}
 
+/// The unmapped `GdkSurface` [`attach_touch_stand_in`] makes. GTK refcounts
+/// non-atomically, so this is main-thread-only like `HostWindowCell`; nothing
+/// ever touches it again after `open` stores it, and it is never dropped,
+/// because `WINDOW` lives for the whole process.
+struct TouchStandIn(#[allow(dead_code)] gtk4::gdk::Surface);
+// SAFETY: see above -- created on the thread that called `open`, never used
+// again, and not dropped before the process exits.
+unsafe impl Send for TouchStandIn {}
+unsafe impl Sync for TouchStandIn {}
+
 pub struct WaylandWindow {
     wl: WlClient,
     egl: Option<WlEgl>,
     display: *mut c_void,
     host: HostWindowCell,
+    /// The `GdkSurface` the canvas answers to for GDK's touch handler. Held
+    /// only so it lives as long as the canvas does; see
+    /// [`attach_touch_stand_in`].
+    _touch_stand_in: TouchStandIn,
     // Kept named and typed even though only `surface`/`subsurface`/`compositor`
     // are read again after construction — the rest are still owned proxies for
     // the life of this one-window-per-process runtime (the same scope
@@ -1224,6 +1243,11 @@ pub struct WaylandWindow {
     /// one goes.
     open_web_view_dialogs: AtomicI32,
     text_overlay_visible: AtomicBool,
+    /// Whether the canvas may be lowered yet. See [`WaylandWindow::reconcile_stacking`].
+    stacking_gate: Mutex<cordial_shell::stacking_gate::Gate>,
+    /// Whether the compositor has `wp_presentation`, so GDK's frame timings can
+    /// say a frame reached the screen.
+    presentation_reported: bool,
     text_overlay_cache:
         Mutex<Option<(u32, u64, String, i32, cordial_linker_sys::game_activity::RawTextBoxInfo)>>,
     /// What `nativeGetTextBoxInfo` last said, for the focus generation it said
@@ -1379,6 +1403,11 @@ struct Globals {
     text_input_manager: Option<(u32, u32)>,
     pointer_constraints: Option<(u32, u32)>,
     relative_pointer_manager: Option<(u32, u32)>,
+    /// Only whether it exists, never bound: GDK binds `wp_presentation` for the
+    /// window's own frames, and the question here is whether GDK's frame
+    /// timings can report a presentation at all. See
+    /// `HostWindow::present_probe_committed`.
+    presentation: bool,
 }
 
 unsafe extern "C" fn registry_global(
@@ -1416,6 +1445,7 @@ unsafe extern "C" fn registry_global(
         "zwp_text_input_manager_v3" => globals.text_input_manager = Some((name, version)),
         "zwp_pointer_constraints_v1" => globals.pointer_constraints = Some((name, version)),
         "zwp_relative_pointer_manager_v1" => globals.relative_pointer_manager = Some((name, version)),
+        "wp_presentation" => globals.presentation = true,
         _ => {}
     }
 }
@@ -1436,6 +1466,68 @@ static FULLSCREEN_AFTER_FIRST_PRESENT: std::sync::atomic::AtomicBool =
 static REGISTRY_LISTENER: RegistryListener =
     RegistryListener { global: registry_global, global_remove: registry_global_remove };
 
+/// Give the canvas `wl_surface` something GDK's touch handler can hold.
+///
+/// **Issue #36: any touch on the engine's canvas killed the client with
+/// SIGSEGV in `gdk_surface_handle_event`, reproduced on GTK 4.22.4 with a touch
+/// injected by `tools/touch-compositor`.** GDK's `touch_handle_down` stores
+/// `wl_surface_get_user_data(surface)` as the contact's surface and builds a
+/// `GDK_TOUCH_BEGIN` on it without asking whether it is a `GdkSurface`.
+/// `pointer_handle_enter` and `keyboard_handle_enter` both do ask, which is why
+/// the canvas -- a plain `wl_surface` this file made, with no user data --
+/// has never troubled the pointer. A touch on it therefore queued an event
+/// whose surface was NULL (**INFERRED** from the 4.22 source; the fault site
+/// and the cure are measured), and the main loop dereferenced it on the next
+/// iteration, inside `HostWindow::pump`. `CORDIAL_NO_TOUCH=1` cannot prevent
+/// it: that stops this file binding its own `wl_touch`, and GDK binds one
+/// regardless -- the crash was reproduced with it set.
+///
+/// The stand-in is a toplevel `GdkSurface` that is never presented. GTK has
+/// no widget for it, so a touch on the canvas is queued against it and
+/// dropped, which is what ought to happen to a contact on a surface GTK does
+/// not draw; the engine still gets the touch from this file's own `wl_touch`,
+/// which filters by `wl_surface` pointer and never consults the user data.
+///
+/// **What this does to the pointer, measured.** The canvas used to fail GDK's
+/// `GDK_IS_SURFACE` check on pointer enter and be ignored. With a user data it
+/// passes, so GDK now takes pointer focus on the stand-in while the pointer is
+/// over the canvas, and drops the events that follow because GTK has no widget
+/// for it. The one visible difference is on the wire:
+/// `tools/touch-compositor/touch-e2e.py --pointer-only` records the
+/// `wl_pointer.set_cursor` requests, and where only this file's pointer sent one
+/// over the canvas before, GDK's pointer now sends one as well, after it. That
+/// is why the stand-in carries the `none` cursor: GDK attaches a NULL buffer for
+/// it, so both requests hide the cursor. **INFERRED for a real cursor theme:**
+/// the headless sway used for the measurement draws no arrow in any state, so
+/// the two outcomes could not be told apart there, and the claim rests on GDK's
+/// `_gdk_wayland_cursor_get_buffer` returning NULL for `none`.
+///
+/// The alternatives were worse. The toplevel's own `GdkSurface` would have GTK
+/// hit-test canvas coordinates against the header bar and click whatever sits
+/// under them. An empty input region on the canvas is the change
+/// `set_engine_stacking` records as reverted, because a click then falls
+/// through to the window behind.
+fn attach_touch_stand_in(
+    wl: &WlClient,
+    host: &cordial_shell::host_window::HostWindow,
+    canvas: *mut c_void,
+) -> TouchStandIn {
+    use gtk4::glib::prelude::ObjectType;
+    use gtk4::prelude::{SurfaceExt, WidgetExt};
+    let stand_in = gtk4::gdk::Surface::new_toplevel(&host.window().display());
+    // Hidden, because GDK sets the cursor for whichever surface holds its
+    // pointer focus and a surface with none gets the default arrow -- which
+    // lands after this file's own `hide_pointer` and puts the system cursor
+    // back over the engine's own.
+    stand_in.set_cursor(gtk4::gdk::Cursor::from_name("none", None).as_ref());
+    // SAFETY: `canvas` is the live `wl_surface` proxy created in `open`, and
+    // the pointer stored is the `GdkSurface` just made, which `TouchStandIn`
+    // keeps alive for the life of the process. GDK only ever compares and
+    // dereferences it as a `GdkSurface`.
+    unsafe { (wl.set_user_data)(canvas, stand_in.as_ptr() as *mut c_void) };
+    TouchStandIn(stand_in)
+}
+
 pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWindow, String> {
     if let Some(w) = WINDOW.get() {
         return Ok(w);
@@ -1446,6 +1538,10 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // `xdg_toplevel`, draws the header bar and answers configure/ack; this
     // file's job starts at the content area and stops there. See the module
     // doc for why the engine's surface cannot live on a connection of its own.
+    // GTK reads GSK_RENDERER when the toplevel is realised, so the choice has
+    // to be made before `HostWindow` exists. It costs nothing to ask here: the
+    // probe has been running since startup.
+    cordial_shell::gtk_renderer::settle();
     cordial_shell::host_window::init_wayland()?;
     let host = cordial_shell::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
 
@@ -1571,6 +1667,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // all". Text entry simply will not compose through an IME on such a
     // compositor, which is reported once, not hidden.
     let text_input_manager_global = globals.text_input_manager;
+    let presentation_reported = globals.presentation;
     if text_input_manager_global.is_none() {
         eprintln!(
             "[android] wayland: compositor advertises no zwp_text_input_manager_v3; \
@@ -1671,6 +1768,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     if surface.is_null() {
         return Err("wl_compositor.create_surface failed".into());
     }
+    let touch_stand_in = attach_touch_stand_in(&wl, &host, surface);
     let subsurface = unsafe {
         (wl.marshal_flags)(
             subcompositor,
@@ -1882,6 +1980,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         egl,
         display,
         host: HostWindowCell(host),
+        _touch_stand_in: touch_stand_in,
         compositor,
         subcompositor,
         surface,
@@ -1918,6 +2017,10 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         active_handle: AtomicI64::new(0),
         open_web_view_dialogs: AtomicI32::new(0),
         text_overlay_visible: AtomicBool::new(false),
+        stacking_gate: Mutex::new(cordial_shell::stacking_gate::Gate::new(
+            cordial_shell::stacking_gate::Mode::from_env(),
+        )),
+        presentation_reported,
         text_overlay_cache: Mutex::new(None),
         polled_textbox_info: Mutex::new(None),
         last_placement: Mutex::new(None),
@@ -1964,6 +2067,22 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
         if handle != 0 {
             super::input::deliver_surface_redraw(handle);
         }
+    });
+
+    // **Enter on a single-line box, which is an editor action rather than text.**
+    //
+    // GTK's `activate` is Android's IME action listener: the final text goes
+    // to the engine first, then the engine is told Enter was pressed on this
+    // box. What follows -- focus released through `hideKeyboard`, the text
+    // cleared or kept through `onLuaTextBoxChangedCallback` -- is the
+    // engine's answer, and nothing here second-guesses it. A multi-line box
+    // never reaches this: its Enter is a newline GTK inserts and
+    // `connect_editor_changed` above syncs like any other edit.
+    host.host.0.connect_editor_activate(|| {
+        let Some(w) = WINDOW.get() else { return };
+        let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else { return };
+        w.send_current_text(which);
+        super::input::return_pressed(which);
     });
 
     // Listeners that dereference `current()` can only be installed now.
@@ -2346,11 +2465,8 @@ impl WaylandWindow {
     /// site that will eventually be trusted to mean "just lowered it", which
     /// would be false the second time.
     pub fn webview_dialog_opened(&self) {
-        if self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst) == 0
-            && !self.text_overlay_visible.load(Ordering::SeqCst)
-        {
-            self.set_engine_stacking(false);
-        }
+        self.open_web_view_dialogs.fetch_add(1, Ordering::SeqCst);
+        self.reconcile_stacking();
         // **Claim the whole window for GTK while the dialog is up.**
         //
         // The parent's input region normally has the canvas rectangle punched
@@ -2395,11 +2511,8 @@ impl WaylandWindow {
     /// with two dialogs open, closing one must leave the engine hidden behind
     /// whichever is still up.
     pub fn webview_dialog_closed(&self) {
-        if self.open_web_view_dialogs.fetch_sub(1, Ordering::SeqCst) == 1
-            && !self.text_overlay_visible.load(Ordering::SeqCst)
-        {
-            self.set_engine_stacking(true);
-        }
+        self.open_web_view_dialogs.fetch_sub(1, Ordering::SeqCst);
+        self.reconcile_stacking();
         // Only on the last close. With two dialogs up, closing one must leave
         // the window claimed for the other -- the same edge the restack above
         // uses, and for the same reason.
@@ -2556,11 +2669,8 @@ impl WaylandWindow {
             x_alignment: info.x_alignment,
             y_alignment: info.y_alignment,
         }));
-        if !self.text_overlay_visible.swap(true, Ordering::SeqCst)
-            && self.open_web_view_dialogs.load(Ordering::SeqCst) == 0
-        {
-            self.set_engine_stacking(false);
-        }
+        self.text_overlay_visible.store(true, Ordering::SeqCst);
+        self.reconcile_stacking();
     }
 
     /// Where to draw the editor when the engine never told us where the box is.
@@ -2826,12 +2936,14 @@ impl WaylandWindow {
                 *self.text_overlay_cache.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 *LAST_EDITOR_RECT.lock().unwrap_or_else(|e| e.into_inner()) = None;
                 self.host.0.set_text_overlay(None);
-                if self.open_web_view_dialogs.load(Ordering::SeqCst) == 0 {
-                    self.set_engine_stacking(true);
-                }
+                self.reconcile_stacking();
             }
             return;
         };
+        // Before the revision is read, because applying the engine's text is
+        // what moves it -- reading first would draw the old text for one more
+        // tick, and an engine-side clear would show a tick late.
+        super::input::apply_engine_text();
         let generation = cordial_linker_sys::game_activity::textbox_generation();
         let revision = super::input::text_buffer_revision();
         // **A missing spec is not a reason to draw nothing.**
@@ -2963,6 +3075,79 @@ impl WaylandWindow {
         );
     }
 
+    /// Bring the canvas's stacking in line with what wants it out of the way,
+    /// one step at a time.
+    ///
+    /// **The canvas is lowered only once the compositor holds a GTK frame that
+    /// can be seen through, and this is what waits for it -- issue #53.** The
+    /// restack used to be issued straight after a 40 ms wait that logged its
+    /// own failure and carried on. On a KWin session that produced a grey
+    /// screen for as long as the box was focused: GTK never attached a buffer
+    /// to the window surface in that time, so the compositor went on showing
+    /// the last one, which was opaque, with the canvas now beneath it.
+    ///
+    /// Called on every edge (an editor or dialog appearing or leaving) and on
+    /// every pump tick, because arming, waiting and retrying are spread over
+    /// ticks rather than blocking one. The decision itself is
+    /// [`cordial_shell::stacking_gate::Gate`], which has the tests; this is
+    /// the part that touches GTK and the wire.
+    ///
+    /// **Why not lower first and repair afterwards, or keep the window
+    /// permanently transparent:** either leaves the compositor showing a stale
+    /// opaque buffer if GTK stops presenting, and the second is the invisible
+    /// window 5a295e3 had to fix. Waiting is the only ordering that fails to
+    /// *the game staying visible*, with an editor that does not appear, which
+    /// is a smaller fault than a screen that is grey until the box blurs.
+    fn reconcile_stacking(&self) {
+        use cordial_shell::stacking_gate::Step;
+        let want_below = self.text_overlay_visible.load(Ordering::SeqCst)
+            || self.open_web_view_dialogs.load(Ordering::SeqCst) > 0;
+        let mut gate = self.stacking_gate.lock().unwrap_or_else(|e| e.into_inner());
+        let committed = gate.is_arming()
+            && self.host.0.present_probe_committed(self.presentation_reported);
+        let step = gate.poll(want_below, std::time::Instant::now(), committed);
+        // Released before anything below runs. `set_engine_stacking` calls
+        // back into GTK, which can run a callback that reaches this function.
+        drop(gate);
+        match step {
+            Step::Idle => {}
+            Step::Arm => {
+                self.host.0.arm_present_probe();
+                if super::input::trace_text() {
+                    println!("[android] wayland: canvas lowering armed, waiting for a GTK frame");
+                }
+            }
+            Step::Lower => {
+                // Legacy mode arrives here without having armed anything, and
+                // keeps the old order: transparent, repaint, then restack.
+                let prepared = self.host.0.is_probe_armed();
+                if prepared {
+                    println!(
+                        "[android] wayland: GTK committed a frame ({}); lowering the canvas",
+                        self.host.0.present_probe_report()
+                    );
+                    self.host.0.disarm_present_probe(false);
+                }
+                self.set_engine_stacking(false, prepared);
+            }
+            Step::GiveUp { attempt } => {
+                let report = self.host.0.present_probe_report();
+                self.host.0.disarm_present_probe(true);
+                // The first, then every tenth: a GTK that is not presenting is
+                // retried once a second for as long as the box has focus, and a
+                // line each time would bury everything else in the log.
+                if attempt == 1 || attempt % 10 == 0 {
+                    println!(
+                        "[android] wayland: GTK committed no frame within {} ms of being asked (attempt {attempt}; {report}); the canvas stays above the window so the game stays visible, and the editor cannot be seen until GTK presents. GSK_RENDERER=cairo takes GTK off the GL path if that is the cause",
+                        cordial_shell::stacking_gate::CONFIRM_TIMEOUT.as_millis(),
+                    );
+                }
+            }
+            Step::Cancel => self.host.0.disarm_present_probe(true),
+            Step::Raise => self.set_engine_stacking(true, false),
+        }
+    }
+
     /// Reorder the engine's subsurface relative to `parent_surface` — the
     /// only other member of this window's subsurface stack, and so the only
     /// valid reference for `place_above`/`place_below` to name (see the
@@ -2973,6 +3158,10 @@ impl WaylandWindow {
     /// of no dialog open. `above = false` is the fix: GTK's content,
     /// including anything an `AdwDialog` drew into it, shows through instead.
     ///
+    /// **Not to be called directly to lower.** [`Self::reconcile_stacking`]
+    /// decides when that is safe; `prepared` says it has already made the
+    /// window transparent and seen GTK commit a frame that way.
+    ///
     /// Follows `sync_canvas_geometry`'s own fix for the same double-buffering
     /// hazard `set_position` has: the reorder is pending on the *subsurface*
     /// but does not take effect until the *parent's* next commit, and asking
@@ -2980,7 +3169,7 @@ impl WaylandWindow {
     /// (see that function's "issue #7" comment) — so this commits
     /// `parent_surface` directly as well, the same belt-and-braces the
     /// geometry sync already needed.
-    fn set_engine_stacking(&self, above: bool) {
+    fn set_engine_stacking(&self, above: bool, prepared: bool) {
         // The window has to stop painting its own background over the canvas
         // for a lowered engine to be visible at all -- punching the opaque
         // region is not enough, because GTK's pixels are still there. Measured:
@@ -2990,18 +3179,21 @@ impl WaylandWindow {
         // **Order matters, and getting it wrong costs a visible frame.**
         //
         // Going *down*, the background must already be transparent when the
-        // restack lands: a CSS class change is honoured on GTK's next frame
-        // while the restack and the parent commit below go out immediately, so
+        // restack lands: a CSS class change is honoured on GTK's next frame while
+        // the restack and the parent commit below go out immediately, so
         // doing them in the written order hands the compositor "the canvas is
         // underneath now" together with a parent buffer that is still opaque.
         // The engine vanishes for exactly one frame and comes back when GTK
         // next paints -- reported as "once you press it, roblox disappears for
-        // a frame then reappears".
+        // a frame then reappears". `reconcile_stacking` has established that
+        // by the time `prepared` is true, and by more than a bounded wait.
         //
         // Going *up* the same reasoning runs backwards: restack first, and the
         // canvas is opaque and covering before the background stops being
         // transparent, so there is no frame where the desktop shows through.
-        if !above {
+        if !above && !prepared {
+            // `CORDIAL_STACKING_GATE=off`: the ordering as it was before #53,
+            // kept as the control for a before-and-after on one binary.
             self.host.0.set_canvas_see_through(true);
             self.host.0.repaint_now();
         }
@@ -6063,6 +6255,7 @@ unsafe extern "C" fn keyboard_key(_data: *mut c_void, _kb: *mut c_void, _serial:
     // held" are different states and only the second should drop a key.
     reconcile_keyboard_focus();
     if !KEYBOARD_FOCUSED.load(Ordering::Acquire) {
+        super::input::trace_gated_key(state == 1, key as i32);
         return;
     }
     if let Some(w) = current() {
@@ -6244,6 +6437,16 @@ impl WaylandWindow {
             return;
         }
 
+        // The recording hotkey (ADR-059) is taken the same way, before the
+        // engine hears it. Control or Alt held leaves the chord to the game.
+        if crate::recording::hotkey_event(
+            evdev_key as i32,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
+
         let handle = self.active_handle.load(Ordering::Relaxed);
         let now = self.now_ms();
 
@@ -6273,9 +6476,18 @@ impl WaylandWindow {
         // no F5 and no F11 at all. The `else` branch did say so on every press
         // -- `wayland: unmapped keysym` -- but it is a trace line, and the
         // greps that were run looked for `passKeyEvent`.
+        //
+        // **Enter is decided once, before either path.** While the editor
+        // widget is on a box it is Android's `EditText` here, and an
+        // `EditText` consumes the key: a multi-line box gets its newline from
+        // GTK and a single-line one gets `nativeReturnPressedFromOnScreenKeyboard`
+        // (see `connect_editor_activate`), and neither also hears a raw key.
+        let enter_to_editor = super::input::editor_consumes_enter(down, evdev_key as i32);
         if let Some(keycode) = super::input::keysym_to_android(keysym) {
             if handle != 0 {
-                super::input::deliver_key(handle, down, keycode, evdev_key as i32, meta, 0, unicode, now, now);
+                if !enter_to_editor {
+                    super::input::deliver_key(handle, down, keycode, evdev_key as i32, meta, 0, unicode, now, now);
+                }
             } else {
                 // **A mapped key with no handle went nowhere and said nothing.**
                 //
@@ -6314,7 +6526,9 @@ impl WaylandWindow {
         }
         // The evdev code, not the Android keycode: this native speaks the
         // platform's own vocabulary. See `pass_key_event`.
-        super::input::pass_key_event(down, evdev_key as i32, meta);
+        if !enter_to_editor {
+            super::input::pass_key_event(down, evdev_key as i32, meta);
+        }
 
         if !down {
             return;
@@ -6355,41 +6569,52 @@ impl WaylandWindow {
         // is no longer the authority -- which is what the comment above wanted
         // and could not have until something else was willing to own it.
         //
-        // **This is also why Enter needs no special case for a multi-line
-        // box.** `gtk::TextView`'s own default key bindings insert a newline
-        // on Enter -- unlike `gtk::Text`, which is single-line and has
-        // nothing to insert it into -- and that binding runs on GDK's own
-        // keyboard object, entirely below this function, whichever widget
-        // `editor_owns_text` says is up. Nothing here decides "newline versus
-        // submit"; the widget already drew that line for free by being the
-        // right shape of widget. `pass_key_event`/`deliver_key` above still
-        // hand the engine the same raw Enter regardless, exactly as for any
-        // other key, so Roblox's own script-side `TextBox.FocusLost` handling
-        // sees it too and can still act on `EnterPressed` if a game wants to.
+        // **Enter is the editor's, as it is on Android -- and the engine's
+        // answer to it comes back through its own callbacks.**
+        //
+        // The focused Roblox box is an `EditText` on a phone, and an
+        // `EditText` consumes Enter: nothing downstream hears a key. On a
+        // multi-line box it inserts "\n" into the text, the text is synced,
+        // and whatever happens next (a chat script that sends on seeing the
+        // newline and empties the box, or a box that simply keeps it) is the
+        // engine's, delivered through `onLuaTextBoxChangedCallback` and
+        // `input::apply_engine_text`. On a single-line box it is an editor
+        // action: the final text is synced and
+        // `nativeReturnPressedFromOnScreenKeyboard` tells the engine, which
+        // decides whether the box loses focus (`hideKeyboard`) and whether its
+        // text clears or stays -- see `connect_editor_activate`.
+        //
+        // So `editor_consumes_enter` above keeps the raw key from the engine
+        // on both paths while a box is focused, and this file neither blurs a
+        // box nor clears the editor on Enter itself.
+        //
+        // **An earlier version swallowed Return in the multi-line widget and
+        // sent the engine the raw key instead, and that was the wrong
+        // owner.** It fixed one symptom -- GTK's newline overwriting a chat
+        // box the engine had just cleared -- by deciding in the host that a
+        // multi-line box never keeps its newline, which is the engine's
+        // decision per box, and it left single-line boxes with a key the
+        // platform never sends them. The control for both is
+        // `tools/text-input-e2e.py`'s section 15.
+        //
+        // What is INFERRED, because no signed-in run has held it: that the
+        // engine acts on `nativeReturnPressedFromOnScreenKeyboard` the way it
+        // acted on the raw key. A synthetic `fakefocus` box has no engine
+        // behind it, so it can show that the call is made once and the key is
+        // withheld; it cannot show what a chat box or a search box does next.
         //
         // **Escape and a click outside need no special case here either**, for
         // the same reason the comment above this function gives Escape: both
         // reach the engine as ordinary input (Escape through this same path,
         // an outside click through `dispatch_button`) and it is the engine's
         // `hideKeyboard`/focus-loss handling that decides whether the box
-        // blurs -- Cordial never second-guesses that decision for a
-        // single-line box today, so there is nothing to add for a multi-line
-        // one.
+        // blurs.
         //
         // **`returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo`'s slots 11
-        // and 12) are not read anywhere in this file, and that is consistent
-        // rather than an oversight.** On Android they tell the real
-        // `EditText` wrapper which IME action button to show and whether it,
-        // rather than the game, is allowed to release focus on it -- both
-        // meaningless without a soft keyboard to draw a button on. Cordial
-        // supplies neither: every key reaches the engine and no widget here
-        // ever calls `hideKeyboard` unprompted, which is the same as always
-        // deferring to the game the way `manualFocusRelease=1` would ask for.
-        // A build that changes this would need to read `return_key_type` to
-        // decide when Enter should end editing on a *single*-line box
-        // (`Enum.ReturnKeyType::Done`/`Send`, say) -- untested here because no
-        // capture in this project has yet shown Cordial itself needing to
-        // make that call.
+        // and 12) are read only to be traced, in `input::return_pressed`.** On
+        // Android they pick the IME action button and say whether the game,
+        // not the `EditText`, releases focus on it -- meaningless without a
+        // soft keyboard to draw a button on, and Cordial supplies neither.
         if self.editor_owns_text() {
             return;
         }
@@ -6421,7 +6646,7 @@ impl WaylandWindow {
         // key events only and never text" and a paste is text. What is left
         // here is a Wayland session where the editor widget is not up, plus
         // the X11 path, which has its own copy of this branch in `window.rs`
-        // and no editor widget at all (ADR-024).
+        // for when its editor window is off (ADR-062).
         if super::input::is_paste_shortcut(keysym, meta) {
             if let Err(e) = super::clipboard::paste_into_engine(handle) {
                 super::trace(format_args!("wayland: clipboard paste failed: {e}"));
@@ -7005,6 +7230,15 @@ impl WaylandWindow {
             super::input::report_keyboard_state((gw, gh));
         }
 
+        // The recording marker in the title (ADR-059), set here because
+        // this is the GTK thread, and recording starts and stops on others.
+        if let Some(on) = crate::recording::take_indicator_change() {
+            const MARK: &str = " \u{25cf} REC";
+            let window = self.host.0.window();
+            let base = window.title().map(|t| t.trim_end_matches(MARK).to_string()).unwrap_or_default();
+            window.set_title(Some(&if on { format!("{base}{MARK}") } else { base }));
+        }
+
         // GTK's main loop does not get a thread of its own. It is iterated
         // here, on the thread that ran `gtk_init`, from inside the engine's
         // own message pump — which is what makes the header bar's buttons,
@@ -7041,6 +7275,9 @@ impl WaylandWindow {
         self.sync_canvas_geometry();
         self.sync_ime_focus();
         self.sync_text_overlay();
+        // Every tick, not only on the edges: a lowering waits for GTK to commit
+        // a frame and is decided here, and one that timed out is retried here.
+        self.reconcile_stacking();
         // Polled rather than driven by an event, because the engine's own
         // request for a locked centre is a *getter* — `nativeGetMainWindow
         // IsMouseLockedCenter` — with nothing that calls out when it changes.
