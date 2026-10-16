@@ -192,12 +192,12 @@ pub struct Watcher {
     /// other half would never be seen, so the join would simply be missed --
     /// intermittently, and more often on a busy machine, which is the worst
     /// shape of bug to have here.
-    partial: String,
+    partial: Vec<u8>,
 }
 
 impl Watcher {
     pub fn new(dir: impl Into<PathBuf>) -> Self {
-        Self { dir: dir.into(), current: None, last_scan: None, partial: String::new() }
+        Self { dir: dir.into(), current: None, last_scan: None, partial: Vec::new() }
     }
 
     /// Whatever has been written since the last call.
@@ -230,25 +230,34 @@ impl Watcher {
 
         let mut events = Vec::new();
         let mut read = offset;
-        let mut line = String::new();
+        // Bytes, decoded lossily once a line is whole. `read_line` refused a
+        // line that was not UTF-8 without advancing `read`, so every later
+        // poll seeked back to the same line and failed again: one bad byte in
+        // the engine's log stopped join, leave and presence events for the
+        // rest of the session. Partial lines stay as bytes so a codepoint
+        // split across two polls is joined before it is decoded.
+        let mut line = Vec::new();
         loop {
             line.clear();
-            match reader.read_line(&mut line) {
+            match reader.read_until(b'\n', &mut line) {
                 Ok(0) => break,
                 Ok(n) => {
                     read += n as u64;
-                    if line.ends_with('\n') {
-                        let whole = std::mem::take(&mut self.partial) + line.trim_end();
-                        if let Some(event) = parse_line(&whole) {
+                    if line.ends_with(b"\n") {
+                        let mut whole = std::mem::take(&mut self.partial);
+                        whole.extend_from_slice(&line);
+                        let whole = String::from_utf8_lossy(&whole);
+                        if let Some(event) = parse_line(whole.trim_end()) {
                             events.push(event);
                         }
                     } else {
                         // No newline: the writer is mid-line. Keep it and stop
                         // -- the offset below still counts it, so the rest
                         // arrives next poll and is joined onto this.
-                        self.partial.push_str(&line);
+                        self.partial.extend_from_slice(&line);
                     }
                 }
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
                 Err(_) => break,
             }
         }
@@ -781,6 +790,35 @@ mod tests {
                 user_id: 1826805362,
             }],
             "the two halves must join up"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// One line that is not UTF-8 must not stop the watcher. `read_line`
+    /// refused it without advancing, so every later poll re-read the same
+    /// bad line and no join after it was ever reported.
+    #[test]
+    fn a_line_that_is_not_utf8_does_not_stall_the_watcher() {
+        let dir = std::env::temp_dir().join(format!("cordial-gamelog-utf8-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let log = dir.join("session.log");
+
+        let mut bytes = b"garbage \xe2\x82 \xff cut mid-codepoint\n".to_vec();
+        bytes.extend_from_slice(JOIN.as_bytes());
+        bytes.push(b'\n');
+        std::fs::write(&log, &bytes).unwrap();
+
+        let mut w = Watcher::new(&dir);
+        assert_eq!(
+            w.poll(),
+            vec![Event::Joined {
+                place_id: 17625359962,
+                universe_id: 6035872082,
+                user_id: 1826805362,
+            }],
+            "the join after the bad line must still be seen"
         );
 
         let _ = std::fs::remove_dir_all(&dir);

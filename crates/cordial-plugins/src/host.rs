@@ -17,7 +17,7 @@ use crate::protocol::{required_capability, Push, Request, Response};
 use crate::settings::{self, Store};
 use crate::{notify, urlopen};
 use std::collections::BTreeMap;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, ChildStdin, ChildStdout, Stdio};
 use std::sync::{Arc, Mutex};
@@ -38,6 +38,11 @@ use std::sync::{Arc, Mutex};
 /// descriptor.
 #[derive(Clone)]
 pub struct Writer(Arc<Mutex<ChildStdin>>);
+
+/// The longest single request line a plugin may send. Generous -- a whole
+/// flag document fits many times over -- because the point is a bound, not a
+/// budget.
+pub const MAX_REQUEST_BYTES: usize = 16 * 1024 * 1024;
 
 impl Writer {
     fn write_line(&self, line: &str) -> std::io::Result<()> {
@@ -304,11 +309,20 @@ impl Plugin {
     }
 
     /// Read one request from the plugin. `None` at end of stream.
+    ///
+    /// Capped at [`MAX_REQUEST_BYTES`]. A plain `read_line` grew its buffer for
+    /// as long as the plugin wrote without a newline, and plugins are
+    /// untrusted (ADR-003): one stuck in a loop printing could take the client
+    /// to the OOM killer. Over the cap is "unreadable", which ends the plugin.
     pub fn next_request(&mut self) -> Option<Result<Request, String>> {
-        let mut line = String::new();
-        match self.stdout.read_line(&mut line) {
+        let mut line = Vec::new();
+        let limit = MAX_REQUEST_BYTES as u64 + 1;
+        match (&mut self.stdout).take(limit).read_until(b'\n', &mut line) {
             Ok(0) => None,
-            Ok(_) => Some(serde_json::from_str(line.trim()).map_err(|e| e.to_string())),
+            Ok(n) if n > MAX_REQUEST_BYTES => {
+                Some(Err(format!("a request longer than {MAX_REQUEST_BYTES} bytes")))
+            }
+            Ok(_) => Some(serde_json::from_slice(line.trim_ascii()).map_err(|e| e.to_string())),
             Err(e) => Some(Err(e.to_string())),
         }
     }

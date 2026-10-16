@@ -15,6 +15,7 @@
 
 #include <cstdio>
 #include <sys/stat.h>
+#include <unistd.h>
 #include <atomic>
 #include <chrono>
 #include <cctype>
@@ -1551,6 +1552,7 @@ public:
         std::string out;
         for (char c : v) {
             if (c == '\n') { out += "\\n"; }
+            else if (c == '\t') { out += "\\t"; }
             else if (c == '\\') { out += "\\\\"; }
             else { out += c; }
         }
@@ -1560,7 +1562,8 @@ public:
         std::string out;
         for (size_t i = 0; i < v.size(); ++i) {
             if (v[i] == '\\' && i + 1 < v.size()) {
-                out += (v[++i] == 'n') ? '\n' : v[i];
+                char e = v[++i];
+                out += e == 'n' ? '\n' : e == 't' ? '\t' : e;
             } else {
                 out += v[i];
             }
@@ -1611,16 +1614,21 @@ public:
     void load() {
         FILE* f = fopen(path().c_str(), "re");
         if (!f) return;
-        char line[8192];
-        while (fgets(line, sizeof line, f)) {
-            std::string s(line);
+        // `getline`, not a fixed buffer: `fgets` into 8 KiB split any longer
+        // value, truncating it and reloading its tail as a junk record.
+        char* line = nullptr;
+        size_t cap = 0;
+        ssize_t n;
+        while ((n = getline(&line, &cap, f)) >= 0) {
+            std::string s(line, static_cast<size_t>(n));
             if (!s.empty() && s.back() == '\n') s.pop_back();
             auto a = s.find('\t');
             if (a == std::string::npos) continue;
             auto b = s.find('\t', a + 1);
             if (b == std::string::npos) continue;
-            values[s.substr(a + 1, b - a - 1)] = unescape(s.substr(b + 1));
+            values[unescape(s.substr(a + 1, b - a - 1))] = unescape(s.substr(b + 1));
         }
+        free(line);
         fclose(f);
     }
 
@@ -1632,9 +1640,17 @@ public:
         FILE* f = fopen(tmp.c_str(), "we");
         if (!f) return;
         for (auto& [k, v] : values) {
-            fprintf(f, "S\t%s\t%s\n", k.c_str(), escape(v).c_str());
+            fprintf(f, "S\t%s\t%s\n", escape(k).c_str(), escape(v).c_str());
         }
-        fclose(f);
+        // Only a temp file that was written completely replaces the store. A
+        // full disk used to rename a truncated file over the good one, which
+        // is the corruption the rename exists to prevent.
+        bool ok = fflush(f) == 0 && !ferror(f) && fsync(fileno(f)) == 0;
+        ok = (fclose(f) == 0) && ok;
+        if (!ok) {
+            ::unlink(tmp.c_str());
+            return;
+        }
         rename(tmp.c_str(), path().c_str());
     }
 };

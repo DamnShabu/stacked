@@ -1116,9 +1116,18 @@ fn dispatch(
             // and blocks nothing else in the process. Widening this to the
             // pump would make one plugin's publish lossy to buy a property
             // this path does not need. See `publish_core`.
-            let writers = shared.writers.lock().unwrap_or_else(|e| e.into_inner());
-            for subscriber in subscribers {
-                if let Some(writer) = writers.get(&subscriber) {
+            //
+            // The `Writer`s are cloned out and the map's lock dropped before
+            // any write. Writing under it meant one subscriber that stopped
+            // reading its stdin -- a full 64 KiB pipe -- held `writers` for as
+            // long as it stalled, and every spawn, stop and exit cleanup in
+            // the host waits on that lock, the reconciler's thread included.
+            let targets: Vec<Writer> = {
+                let writers = shared.writers.lock().unwrap_or_else(|e| e.into_inner());
+                subscribers.iter().filter_map(|s| writers.get(s).cloned()).collect()
+            };
+            for writer in targets {
+                {
                     // Best effort, the same as every other push in this
                     // project: a subscriber that has already died is not a
                     // reason to fail the publisher's call, and the write
@@ -1342,6 +1351,27 @@ pub fn undelivered_core_events() -> Vec<Undelivered> {
         })
         .filter(|u| u.events > 0)
         .collect()
+}
+
+/// Kill every plugin still running, for the client's exit path.
+///
+/// The client leaves by `_exit`, so no `Plugin` is ever dropped and nothing
+/// reaps its children. Under bwrap `--die-with-parent` covers that; without
+/// bwrap -- the documented fallback -- nothing did, and a plugin with a live
+/// timer (the presence plugin has one) stayed resident after every session.
+/// Called after `flush_core_events`, so plugins have already been told the
+/// client is shutting down.
+pub fn kill_all() {
+    let pids: Vec<u32> = shared()
+        .running
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .values()
+        .map(|r| r.pid)
+        .collect();
+    for pid in pids {
+        kill_process_group(pid);
+    }
 }
 
 /// Where plugins are installed, exposed so the loader can report it.

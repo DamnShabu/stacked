@@ -1452,6 +1452,18 @@ public:
                 "caching one nothing will ever fill.\n");
             return -1;
         }
+        // The same hazard `WebRtcAudioRecord::initRecording` refuses: while
+        // `playing`, the pump thread may be copying out of `playoutBuffer`, and
+        // reallocating it here hands that thread -- and the engine, which has
+        // the old address cached -- a freed buffer.
+        if (t->playing.load()) {
+            std::fprintf(stderr,
+                "E/Cordial-Audio           WebRtcAudioTrack.initPlayout(%d Hz, %d ch): called "
+                "while already playing; reallocating playoutBuffer now would free memory the "
+                "pump thread may be reading, so refusing.\n",
+                sample_rate, num_channels);
+            return -1;
+        }
         t->sampleRate = static_cast<uint32_t>(sample_rate);
         t->channels = static_cast<uint32_t>(num_channels);
         const double factor = buffer_size_factor > 0.0 ? buffer_size_factor : 1.0;
@@ -1976,6 +1988,11 @@ public:
         // ours. That path was never observed hanging, which is exactly why it
         // is worth closing now rather than after somebody catches it too.
         const uint32_t depth = buffer_count > 0 ? static_cast<uint32_t>(buffer_count) : 4;
+
+        // A re-`init` over a live stream goes through `close` first, so the
+        // old stream's teardown follows the ordering `close` documents and its
+        // `owned_` buffers are not dropped while it can still drain them.
+        close(nullptr);
 
         // S16 interleaved: what `write([BI)V` hands over as bytes, and what
         // every Android AudioTrack path FMOD has produces.

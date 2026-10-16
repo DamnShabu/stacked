@@ -971,11 +971,8 @@ struct AudioRecorderObject {
     uint64_t framesRecorded = 0;
 
     std::thread pump;
-    /// The pump's own id, kept separately from `pump` because `pump.detach()`
-    /// resets `pump.get_id()` to "not a thread" — so asking `pump` whether the
-    /// caller is it stops working precisely after the detach that
-    /// `stop_capture` performs, which is exactly when `Destroy` needs the
-    /// answer.
+    /// The pump's own id, recorded by the pump itself so a callback firing at
+    /// once still finds it; read by `on_pump_thread`.
     std::atomic<std::thread::id> pumpId{};
     std::atomic<bool> pumping{false};
     /// Set by `Destroy` when it was called from the pump thread itself and so
@@ -1032,8 +1029,13 @@ struct AudioRecorderObject {
         }
         // Must be the last statement: `Destroy` hands ownership over this way
         // when it could not free the object itself. Nothing may touch a member
-        // after it.
-        if (abandoned.load()) delete this;
+        // after it. Detached first, because deleting a joinable `std::thread`
+        // is `std::terminate`; only here, from the thread itself, once nobody
+        // else can be waiting to join it.
+        if (abandoned.load()) {
+            pump.detach();
+            delete this;
+        }
     }
 
     bool on_pump_thread() const { return pumpId.load() == std::this_thread::get_id(); }
@@ -1049,6 +1051,20 @@ struct AudioRecorderObject {
         if (!capture.open(rateHz, channels, std::string())) {
             return false;
         }
+        if (pump.joinable()) {
+            if (on_pump_thread()) {
+                // Stopped and restarted from inside its own callback. This
+                // thread is the pump and has not left its loop yet; setting
+                // `pumping` again keeps it going rather than starting a second
+                // pump beside it, which used to deliver callbacks from two
+                // threads at once.
+                pumping.store(true);
+                return true;
+            }
+            // A pump stopped from its own callback and not yet reaped: it has
+            // been told to stop and is on its way out.
+            pump.join();
+        }
         pumping.store(true);
         pump = std::thread([this] { run_pump(); });
         return true;
@@ -1062,18 +1078,19 @@ struct AudioRecorderObject {
     /// recorder from inside its own buffer-queue callback is a normal thing for
     /// an OpenSL caller to do — it is how you stop after N buffers — and it
     /// arrives here on the pump thread, where `join()` is a thread joining
-    /// itself, which is `std::terminate` rather than a deadlock you could at
-    /// least see in a backtrace. The thread has already been told to stop and
-    /// will return the moment the callback does, so detaching costs nothing;
-    /// what it costs `Destroy` is dealt with by `abandoned`.
+    /// itself, which is `std::terminate`. So that case only tells the pump to
+    /// stop and leaves the thread joinable: the next `Destroy` or restart from
+    /// another thread joins it, and one from the pump itself is handled by
+    /// `abandoned` and `start_capture`.
+    ///
+    /// It used to `detach()` here. A `Destroy` from another thread then found
+    /// nothing to join and freed the object while the pump was still returning
+    /// from the callback into it -- a use-after-free, and a double delete if
+    /// the freed `abandoned` read as set.
     void stop_capture() {
         pumping.store(false);
-        if (pump.joinable()) {
-            if (on_pump_thread()) {
-                pump.detach();
-            } else {
-                pump.join();
-            }
+        if (pump.joinable() && !on_pump_thread()) {
+            pump.join();
         }
         capture.close();
     }

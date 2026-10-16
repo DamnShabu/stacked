@@ -509,11 +509,19 @@ fn stream_to(
 /// A download runs for minutes, so it gets its own agent rather than
 /// [`crate::http`]'s, whose global timeout is sized for a metadata request and
 /// would abandon this one part way through a perfectly healthy transfer.
+///
+/// It still needs *some* ceiling. With only a connect timeout, a connection
+/// that stalled mid-body -- Wi-Fi dropped, a NAT entry expired -- blocked
+/// `body.read` forever and the install with it. Thirty minutes is far past
+/// any healthy transfer of what this fetches and short of forever; ureq has
+/// no idle-read timeout, so a whole-call one is the bound available.
 fn agent() -> ureq::Agent {
     let config = ureq::config::Config::builder()
         .http_status_as_error(false)
         .user_agent(_http::USER_AGENT)
         .timeout_connect(Some(std::time::Duration::from_secs(30)))
+        .timeout_recv_response(Some(std::time::Duration::from_secs(60)))
+        .timeout_global(Some(std::time::Duration::from_secs(30 * 60)))
         .build();
     ureq::Agent::new_with_config(config)
 }
