@@ -66,10 +66,15 @@ pub fn warnings(base: &Map<String, Value>, overrides: &Map<String, Value>) -> Ve
             .and_then(Value::as_str)
             .map(is_severity)
             .unwrap_or(false);
+        // The advice names the file and not `stacked flags set`, because the
+        // CLI checks every `FLog*` value as a whole number and refuses
+        // "Verbose": advice to run it would send the user into a refusal.
         if settings_names_a_severity || measured_to_need_a_name(key) {
             out.push(format!(
                 "{key}={given:?} is a bare number, and a channel like this one logs nothing for a number; \
-                 give it a severity name such as \"Verbose\" (docs/fastflags.md)"
+                 give it a severity name such as \"Verbose\" by editing flags.json by hand \
+                 (`stacked flags path` prints where it is; `stacked flags set` accepts only numbers \
+                 for FLog channels; docs/fastflags.md)"
             ));
         }
     }
