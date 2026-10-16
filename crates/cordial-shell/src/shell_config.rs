@@ -501,6 +501,10 @@ pub struct ShellConfig {
     /// costs the engine's present thread about three milliseconds a captured
     /// frame, neither of which somebody who did not ask for it should pay. The
     /// client reads it at launch only; there is no live toggle yet.
+    ///
+    /// This or `record_audio` is also what gives the client its F9 recording
+    /// key. With both off F9 is the game's, because a key taken from somebody
+    /// who never asked to record is a key their game has lost.
     pub record_session: bool,
     /// Record the game's own sound with it, copied from the buffers Cordial
     /// plays. Off by default, a switch of its own: a recording that included
@@ -914,7 +918,7 @@ mod tests {
     }
 
     /// Recording writes files and costs the present thread time, so nothing is
-    /// recorded for somebody who never opened the row, and an older config
+    /// recorded for somebody who never set either key, and an older config
     /// without the keys must not start recording on upgrade.
     #[test]
     fn recording_is_off_until_it_is_switched_on() {

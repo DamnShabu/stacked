@@ -38,7 +38,9 @@
 //! Why it is this and not a sink monitor: ADR-059.
 //!
 //! **A hotkey toggles it** ([`hotkey_event`]), consumed before the key reaches
-//! the engine, and the window title carries a marker while it records.
+//! the engine, and the window title carries a marker while it records. Only for
+//! somebody who switched recording on and has `ffmpeg` ([`hotkey_choice`]);
+//! for everybody else the key is the game's.
 
 use crate::android::capture::{self, Readback, Target};
 use std::ffi::c_void;
@@ -451,22 +453,59 @@ struct Encoding {
     tail: Arc<Mutex<Vec<String>>>,
 }
 
+/// An encoder being started on a thread of its own, after the one it replaces
+/// has been closed on the same thread. See [`encoder_ready`].
+struct Opening {
+    dims: (u32, u32),
+    path: PathBuf,
+    rx: std::sync::mpsc::Receiver<Result<Encoding, String>>,
+}
+
 struct Session {
     stem: PathBuf,
     fps: u32,
     ffmpeg: PathBuf,
     codec: Codec,
     segment: u32,
+    /// The size of the last frame offered. The encoder in hand, when there is
+    /// one, is always this size; one being opened may be for an older size.
     dims: (u32, u32),
     enc: Option<Encoding>,
+    /// Never `Some` at the same time as `enc`.
+    opening: Option<Opening>,
     readback: Option<Readback>,
     files: Vec<PathBuf>,
     started: Instant,
     taken: u64,
     dropped: u64,
+    /// Frames due while an encoder was starting, which are not recorded.
+    waiting: u64,
     read_ns: u64,
     /// The sound being recorded with the video, if any.
     audio: Option<AudioIn>,
+}
+
+impl Session {
+    fn new(stem: PathBuf, fps: u32, ffmpeg: PathBuf, codec: Codec, audio: Option<AudioIn>) -> Session {
+        Session {
+            stem,
+            fps,
+            ffmpeg,
+            codec,
+            segment: 0,
+            dims: (0, 0),
+            enc: None,
+            opening: None,
+            readback: None,
+            files: Vec::new(),
+            started: Instant::now(),
+            taken: 0,
+            dropped: 0,
+            waiting: 0,
+            read_ns: 0,
+            audio,
+        }
+    }
 }
 
 fn find_in_path(name: &str) -> Option<PathBuf> {
@@ -475,8 +514,46 @@ fn find_in_path(name: &str) -> Option<PathBuf> {
         .find(|p| p.is_file())
 }
 
+/// `LD_LIBRARY_PATH` with the AppImage's own entries taken out, `None` when
+/// nothing is left.
+///
+/// `packaging/appimage/AppRun` puts `$APPDIR/usr/lib` in front of whatever was
+/// there (and puts it there twice when it re-executes itself under `bwrap`),
+/// and records no copy of the old value, so the old value is what remains once
+/// every entry under `$APPDIR` is removed. The empty entry AppRun leaves when
+/// the variable was unset goes too: to the dynamic linker an empty entry is the
+/// current directory, which nobody asked for.
+pub fn host_library_path(current: &str, appdir: &str) -> Option<String> {
+    let appdir = Path::new(appdir);
+    let kept: Vec<&str> = current
+        .split(':')
+        .filter(|e| !e.is_empty() && !Path::new(e).starts_with(appdir))
+        .collect();
+    (!kept.is_empty()).then(|| kept.join(":"))
+}
+
+/// A command for a host program: `ffmpeg`, or `nice` in front of it.
+///
+/// **Inside the AppImage it must not inherit AppRun's `LD_LIBRARY_PATH`.** The
+/// host's `ffmpeg` would otherwise load the image's bundled copies of whatever
+/// libraries the two have in common -- built against a different system, and
+/// not the ones that `ffmpeg` was linked with. `INFERRED`: no failure of this
+/// kind has been observed; it is the ordinary hazard of a bundled library path
+/// leaking into a host binary.
+fn host_command(program: impl AsRef<std::ffi::OsStr>) -> Command {
+    let mut cmd = Command::new(program);
+    if let Some(appdir) = std::env::var_os("APPDIR").filter(|d| !d.is_empty()) {
+        let current = std::env::var("LD_LIBRARY_PATH").unwrap_or_default();
+        match host_library_path(&current, &appdir.to_string_lossy()) {
+            Some(v) => cmd.env("LD_LIBRARY_PATH", v),
+            None => cmd.env_remove("LD_LIBRARY_PATH"),
+        };
+    }
+    cmd
+}
+
 fn probe_encoders(ffmpeg: &Path) -> Result<String, String> {
-    let out = Command::new(ffmpeg)
+    let out = host_command(ffmpeg)
         .args(["-hide_banner", "-encoders"])
         .stdin(Stdio::null())
         .output()
@@ -499,7 +576,7 @@ pub const DESKTOP_SOURCE: &str = "@DEFAULT_MONITOR@";
 /// input device, listed by `-devices` and not by `-demuxers`). The Flatpak
 /// runtime's can; a distribution's build usually can; a Homebrew one does not.
 fn has_pulse_input(ffmpeg: &Path) -> bool {
-    Command::new(ffmpeg)
+    host_command(ffmpeg)
         .args(["-hide_banner", "-devices"])
         .stdin(Stdio::null())
         .output()
@@ -570,22 +647,7 @@ pub fn start(arg: &str) -> Result<String, String> {
         .unwrap_or(DEFAULT_FPS);
     let first = segment_path(&stem, 1, codec.ext);
     let desc = format!("{} ({} at {} fps, {})", first.display(), codec.name, fps, audio_note);
-    *slot = Some(Session {
-        stem,
-        fps,
-        ffmpeg,
-        codec,
-        segment: 0,
-        dims: (0, 0),
-        enc: None,
-        readback: None,
-        files: Vec::new(),
-        started: Instant::now(),
-        taken: 0,
-        dropped: 0,
-        read_ns: 0,
-        audio,
-    });
+    *slot = Some(Session::new(stem, fps, ffmpeg, codec, audio));
     NEXT_DUE_NS.store(0, Ordering::Relaxed);
     ACTIVE.store(true, Ordering::Release);
     INDICATOR_DIRTY.store(true, Ordering::Release);
@@ -673,28 +735,64 @@ pub fn parse_key(value: Option<&str>) -> Result<Option<i32>, String> {
 /// launcher or the compositors this is run under take for themselves.
 pub const DEFAULT_KEY: i32 = 67;
 
+/// Whether the user has switched recording on in any form: `CORDIAL_RECORD`
+/// (the `record_session` setting) or `CORDIAL_RECORD_AUDIO` (`record_audio`).
+/// The shell sends each only when its setting is on, so either one being set
+/// is somebody who asked to record.
+pub fn recording_opted_in(record: Option<&str>, audio: Option<&str>) -> bool {
+    let record = matches!(record.map(str::trim), Some(v) if !v.is_empty() && v != "0");
+    let audio = matches!(audio.map(str::trim), Some(v) if !matches!(v, "" | "0" | "off" | "none"));
+    record || audio
+}
+
+/// The hotkey in force and the log line that says why.
+///
+/// **F9 is taken by default only from somebody who switched recording on and
+/// has an `ffmpeg` to record with.** It used to be taken from everybody, which
+/// meant every game that binds F9 lost the key -- press and release both
+/// swallowed -- for a feature the player had never asked for and, without
+/// `ffmpeg`, could not even use. An explicit `CORDIAL_RECORD_KEY` is its own
+/// opt-in and keeps its meaning either way; a missing `ffmpeg` is then said
+/// when the key is pressed, which is what the person who set it wants to hear.
+pub fn hotkey_choice(
+    key_var: Option<&str>,
+    opted_in: bool,
+    have_ffmpeg: impl FnOnce() -> bool,
+) -> (Option<i32>, String) {
+    let named = |code: i32| {
+        KEY_NAMES.iter().find(|(_, c)| *c == code).map(|(n, _)| *n).unwrap_or("?").to_ascii_uppercase()
+    };
+    let explicit = key_var.map(str::trim).filter(|v| !v.is_empty());
+    if explicit.is_some() {
+        return match parse_key(explicit) {
+            Ok(Some(code)) => {
+                (Some(code), format!("{} starts and stops recording while the game window has focus", named(code)))
+            }
+            Ok(None) => (None, "off (CORDIAL_RECORD_KEY)".into()),
+            Err(e) => (None, format!("off, {e}")),
+        };
+    }
+    if !opted_in {
+        return (None, "off, recording is not switched on, so F9 goes to the game".into());
+    }
+    if !have_ffmpeg() {
+        return (None, "off, there is no ffmpeg on PATH to record with, so F9 goes to the game".into());
+    }
+    (Some(DEFAULT_KEY), format!("{} starts and stops recording while the game window has focus", named(DEFAULT_KEY)))
+}
+
 /// The hotkey in force, decided once. Said in the log the first time it is
-/// asked, which is the first key the window sees, so what was chosen is in the
+/// asked, which is at startup ([`arm_from_env`]), so what was chosen is in the
 /// same file as what it did.
 fn hotkey() -> Option<i32> {
     static KEY: OnceLock<Option<i32>> = OnceLock::new();
     *KEY.get_or_init(|| {
-        let var = std::env::var("CORDIAL_RECORD_KEY").ok();
-        match parse_key(var.as_deref()) {
-            Ok(Some(code)) => {
-                let name = KEY_NAMES.iter().find(|(_, c)| *c == code).map(|(n, _)| *n).unwrap_or("?");
-                println!("[record] hotkey: {} starts and stops recording while the game window has focus", name.to_ascii_uppercase());
-                Some(code)
-            }
-            Ok(None) => {
-                println!("[record] hotkey: off (CORDIAL_RECORD_KEY)");
-                None
-            }
-            Err(e) => {
-                println!("[record] hotkey: off, {e}");
-                None
-            }
-        }
+        let var = |n: &str| std::env::var(n).ok();
+        let opted_in = recording_opted_in(var("CORDIAL_RECORD").as_deref(), var("CORDIAL_RECORD_AUDIO").as_deref());
+        let (key, why) =
+            hotkey_choice(var("CORDIAL_RECORD_KEY").as_deref(), opted_in, || find_in_path("ffmpeg").is_some());
+        println!("[record] hotkey: {why}");
+        key
     })
 }
 
@@ -711,20 +809,29 @@ static TOGGLING: AtomicBool = AtomicBool::new(false);
 /// game, so that taking F9 does not take Ctrl+F9 or Alt+F9 with it. A repeat of
 /// a held key is consumed and does not toggle again.
 pub fn hotkey_event(evdev: i32, down: bool, modified: bool) -> bool {
-    let Some(code) = hotkey() else { return false };
+    let (consumed, toggle) = hotkey_decide(hotkey(), &HOTKEY_HELD, evdev, down, modified);
+    if toggle {
+        toggle_in_background();
+    }
+    consumed
+}
+
+/// [`hotkey_event`] without its effects: whether the event is consumed, and
+/// whether it toggles recording. With no hotkey in force nothing is consumed,
+/// so the key reaches the game whole.
+fn hotkey_decide(key: Option<i32>, held: &AtomicBool, evdev: i32, down: bool, modified: bool) -> (bool, bool) {
+    let Some(code) = key else { return (false, false) };
     if evdev != code {
-        return false;
+        return (false, false);
     }
     if down {
-        if modified && !HOTKEY_HELD.load(Ordering::Acquire) {
-            return false;
+        if modified && !held.load(Ordering::Acquire) {
+            return (false, false);
         }
-        if !HOTKEY_HELD.swap(true, Ordering::AcqRel) {
-            toggle_in_background();
-        }
-        true
+        let toggle = !held.swap(true, Ordering::AcqRel);
+        (true, toggle)
     } else {
-        HOTKEY_HELD.swap(false, Ordering::AcqRel)
+        (held.swap(false, Ordering::AcqRel), false)
     }
 }
 
@@ -820,13 +927,28 @@ fn finish(mut s: Session, at_exit: bool) -> Result<String, String> {
             problems.push(e);
         }
     }
+    if let Some(op) = s.opening.take() {
+        // Waited for: that thread holds the previous encoder while it closes,
+        // and the file is not finished until it has. The new encoder it opened
+        // never had a frame, so it is closed and its file removed.
+        match op.rx.recv() {
+            Ok(Ok(enc)) => {
+                let _ = close_encoding(enc);
+                let _ = std::fs::remove_file(&op.path);
+            }
+            Ok(Err(e)) => problems.push(e),
+            Err(_) => {}
+        }
+    }
     let secs = s.started.elapsed().as_secs_f32();
     let per = if s.taken > 0 { s.read_ns as f64 / s.taken as f64 / 1e6 } else { 0.0 };
     let mut out = format!(
-        "{} frames in {:.1}s, {} dropped, {:.2} ms per frame read on the present thread; ",
-        s.taken, secs, s.dropped, per
+        "{} frames in {:.1}s, {} dropped, {} skipped while an encoder started, {:.2} ms per frame read on the present thread; ",
+        s.taken, secs, s.dropped, s.waiting, per
     );
-    if s.files.is_empty() {
+    if s.files.is_empty() && s.waiting > 0 {
+        out.push_str("the encoder had not started when it stopped, so no file was written");
+    } else if s.files.is_empty() {
         out.push_str("no frame was presented, so no file was written");
     } else {
         let list: Vec<String> = s.files.iter().map(|p| p.display().to_string()).collect();
@@ -838,14 +960,58 @@ fn finish(mut s: Session, at_exit: bool) -> Result<String, String> {
     Ok(out)
 }
 
-fn close_encoding(mut enc: Encoding) -> Result<(), String> {
+/// How long an encoder is given to finish its file before it is killed.
+const CLOSE_BOUND: Duration = Duration::from_secs(20);
+
+fn close_encoding(enc: Encoding) -> Result<(), String> {
+    close_encoding_within(enc, CLOSE_BOUND)
+}
+
+/// Poll `done` until it is true or `deadline` passes; whether it came true.
+fn wait_until(deadline: Instant, done: impl Fn() -> bool) -> bool {
+    loop {
+        if done() {
+            return true;
+        }
+        if Instant::now() >= deadline {
+            return false;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+fn close_encoding_within(mut enc: Encoding, bound: Duration) -> Result<(), String> {
     drop(enc.tx.take());
     let mut problems = Vec::new();
+    // **The bound starts here, before the writer is joined.** It used to start
+    // after, and the writer is blocked in a write for as long as `ffmpeg` is
+    // not reading its stdin: an encoder that stopped reading without exiting
+    // hung this forever, and `finish_at_exit` with it, so the client could not
+    // leave. Killing the encoder closes the pipe's read end, which fails the
+    // write and lets the writer return.
+    let deadline = Instant::now() + bound;
+    let mut killed = false;
     if let Some(w) = enc.writer.take() {
-        match w.join() {
-            Ok(Ok(())) => {}
-            Ok(Err(e)) => problems.push(e),
-            Err(_) => problems.push("the writer thread panicked".into()),
+        if !wait_until(deadline, || w.is_finished()) {
+            let _ = enc.child.kill();
+            let _ = enc.child.wait();
+            killed = true;
+            problems.push(format!(
+                "the encoder stopped reading and did not finish within {:?}, and was killed",
+                bound
+            ));
+        }
+        // After a kill, a process the encoder started may still hold the read
+        // end, and then the writer never returns. It is left behind rather than
+        // joined: a thread blocked on a pipe costs nothing, and joining it would
+        // hang the very exit the kill was for.
+        if w.is_finished() || wait_until(Instant::now() + Duration::from_secs(2), || w.is_finished()) {
+            match w.join() {
+                Ok(Ok(())) => {}
+                Ok(Err(e)) if !killed => problems.push(e),
+                Ok(Err(_)) => {}
+                Err(_) => problems.push("the writer thread panicked".into()),
+            }
         }
     }
     // After the writer, so the audio ends with the last frame. Told to stop now
@@ -856,18 +1022,21 @@ fn close_encoding(mut enc: Encoding) -> Result<(), String> {
         pump.stop.store(true, Ordering::Release);
     }
     // The encoder finishes its output once stdin and the audio pipe close.
-    // Bounded, because a client that exits must not hang on an encoder that has
-    // wedged.
-    let deadline = Instant::now() + Duration::from_secs(20);
-    let status = loop {
-        match enc.child.try_wait() {
-            Ok(Some(st)) => break Some(st),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = enc.child.kill();
-                let _ = enc.child.wait();
-                problems.push("the encoder did not finish within 20 s and was killed".into());
-                break None;
+    // Bounded by the same deadline, because a client that exits must not hang
+    // on an encoder that has wedged.
+    let status = if killed {
+        None
+    } else {
+        loop {
+            match enc.child.try_wait() {
+                Ok(Some(st)) => break Some(st),
+                Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
+                _ => {
+                    let _ = enc.child.kill();
+                    let _ = enc.child.wait();
+                    problems.push(format!("the encoder did not finish within {bound:?} and was killed"));
+                    break None;
+                }
             }
         }
     };
@@ -1039,11 +1208,11 @@ fn open_audio_pipe() -> Result<(std::fs::File, RawFd), String> {
 fn spawn_encoder(ffmpeg: &Path, spec: &EncodeSpec, audio_rfd: Option<RawFd>) -> std::io::Result<Child> {
     let build = |nice: bool| {
         let mut cmd = if nice {
-            let mut c = Command::new("nice");
+            let mut c = host_command("nice");
             c.args(["-n", "10"]).arg(ffmpeg);
             c
         } else {
-            Command::new(ffmpeg)
+            host_command(ffmpeg)
         };
         cmd.args(ffmpeg_args(spec)).stdin(Stdio::piped()).stdout(Stdio::null()).stderr(Stdio::piped());
         if let Some(rfd) = audio_rfd {
@@ -1197,6 +1366,96 @@ pub fn on_frame(
     }
 }
 
+/// Whether there is an encoder for a frame of `dims`, starting one if not.
+///
+/// **This runs inside the engine's `vkQueuePresentKHR` with the session lock
+/// held, so it never waits on an encoder.** Closing one waits for `ffmpeg` to
+/// finish its file (up to [`CLOSE_BOUND`]) and opening one forks a process, and
+/// both used to happen right here on every resize: the game froze for as long
+/// as the old encoder took to flush. Both now happen on a thread of their own
+/// -- the old encoder closed first, then the new one started, in that order so
+/// the game-audio tap's timeline is handed from one to the next as before --
+/// and this collects the result on a later frame.
+///
+/// Frames due while an encoder starts are not recorded and are counted as
+/// `waiting`: each file begins that much later, by one `fork` and `exec` plus,
+/// after a resize, the old file's flush. A size that changes again before the new encoder is ready is caught
+/// when it lands: that encoder has had no frame, so it is closed, its file
+/// removed, and the current size started at the same path, so a drag through
+/// many sizes leaves one file, not one per size.
+fn encoder_ready(s: &mut Session, dims: (u32, u32), bgra: bool) -> Result<bool, String> {
+    if s.dims != dims {
+        s.dims = dims;
+        if let Some(old) = s.enc.take() {
+            s.segment += 1;
+            start_opening(s, Some(old), None, bgra);
+            return Ok(false);
+        }
+    }
+    let landed = match s.opening.as_ref().map(|op| op.rx.try_recv()) {
+        None | Some(Err(std::sync::mpsc::TryRecvError::Empty)) => None,
+        Some(Ok(r)) => Some(r),
+        Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) => {
+            Some(Err("the thread starting the encoder ended without one".to_string()))
+        }
+    };
+    if let Some(result) = landed {
+        let Some(op) = s.opening.take() else { return Ok(false) };
+        let enc = result?;
+        if op.dims != s.dims {
+            start_opening(s, Some(enc), Some(op.path), bgra);
+            return Ok(false);
+        }
+        println!("[record] {}x{} -> {}", op.dims.0, op.dims.1, op.path.display());
+        s.files.push(op.path);
+        s.enc = Some(enc);
+    }
+    if s.enc.is_none() && s.opening.is_none() {
+        // The first frame of the recording: nothing to close.
+        s.segment += 1;
+        start_opening(s, None, None, bgra);
+    }
+    Ok(s.enc.is_some())
+}
+
+/// Close `old` and then start an encoder for `s.dims`, on a thread of its own.
+/// `unused` is the file `old` was writing when it never had a frame; it is
+/// removed once `old` is closed, and the new encoder writes to the same path.
+fn start_opening(s: &mut Session, old: Option<Encoding>, unused: Option<PathBuf>, bgra: bool) {
+    let dims = s.dims;
+    let path = unused.clone().unwrap_or_else(|| segment_path(&s.stem, s.segment, s.codec.ext));
+    let spec = EncodeSpec {
+        width: dims.0,
+        height: dims.1,
+        bgra,
+        fps: s.fps,
+        codec: s.codec.clone(),
+        out: path.clone(),
+        audio: s.audio.clone(),
+    };
+    let ffmpeg = s.ffmpeg.clone();
+    let (tx, rx) = sync_channel(1);
+    // A thread that cannot be started drops the sender with the closure, and
+    // the next frame reads that as the encoder failing to start.
+    let _ = std::thread::Builder::new().name("cordial-rec-open".into()).spawn(move || {
+        if let Some(old) = old {
+            let closed = close_encoding(old);
+            match &unused {
+                Some(p) => {
+                    let _ = std::fs::remove_file(p);
+                }
+                None => {
+                    if let Err(e) = closed {
+                        println!("[record] {e}");
+                    }
+                }
+            }
+        }
+        let _ = tx.send(open_encoding(&ffmpeg, &spec));
+    });
+    s.opening = Some(Opening { dims, path, rx });
+}
+
 fn take_frame(
     s: &mut Session,
     queue: u64,
@@ -1207,31 +1466,13 @@ fn take_frame(
 ) -> Result<(), String> {
     let dims = (target.rect.2, target.rect.3);
     let bgra = capture::is_bgra(target.format)?;
-
-    if s.dims != dims || s.enc.is_none() {
-        // A new size needs a new encoder and a new buffer. The first frame is
-        // this path too, with nothing to close.
-        if let Some(old) = s.enc.take() {
-            if let Err(e) = close_encoding(old) {
-                println!("[record] {e}");
-            }
-        }
+    if s.dims != dims {
+        // A new size needs a new buffer as well as a new encoder.
         s.readback = None;
-        s.segment += 1;
-        s.dims = dims;
-        let path = segment_path(&s.stem, s.segment, s.codec.ext);
-        let spec = EncodeSpec {
-            width: dims.0,
-            height: dims.1,
-            bgra,
-            fps: s.fps,
-            codec: s.codec.clone(),
-            out: path.clone(),
-            audio: s.audio.clone(),
-        };
-        s.enc = Some(open_encoding(&s.ffmpeg, &spec)?);
-        s.files.push(path.clone());
-        println!("[record] {}x{} -> {}", dims.0, dims.1, path.display());
+    }
+    if !encoder_ready(s, dims, bgra)? {
+        s.waiting += 1;
+        return Ok(());
     }
     if s.readback.is_none() {
         s.readback = Some(Readback::new(target, gdpa, gpdmp, physical_device)?);
@@ -1339,7 +1580,7 @@ mod tests {
     fn audio_is_off_unless_asked_and_the_game_is_what_on_means() {
         assert_eq!(audio_choice(None, || panic!("not asked")).0, None);
         assert_eq!(audio_choice(Some("off"), || panic!("not asked")).0, None);
-        // The Settings switch sends `game`, and a bare `1` means the same.
+        // The shell sends `game` when `record_audio` is on, and a bare `1` means the same.
         assert_eq!(audio_choice(Some("game"), || panic!("not asked")).0, Some(AudioIn::Game));
         assert_eq!(audio_choice(Some("1"), || panic!("not asked")).0, Some(AudioIn::Game));
         // The old behaviour is kept under the name that says what it is.
@@ -1384,6 +1625,67 @@ mod tests {
         assert_eq!(parse_key(Some("off")), Ok(None));
         let e = parse_key(Some("F13")).unwrap_err();
         assert!(e.contains("F13") && e.contains("f9"), "{e}");
+    }
+
+    #[test]
+    fn f9_is_taken_only_from_somebody_who_switched_recording_on_and_has_ffmpeg() {
+        let no_probe = || -> bool { panic!("ffmpeg need not be looked for") };
+        // Nobody asked: the key is the game's, and PATH is not even searched.
+        assert_eq!(hotkey_choice(None, false, no_probe).0, None);
+        assert_eq!(hotkey_choice(Some(""), false, no_probe).0, None);
+        // Asked, but nothing to record with.
+        let (key, why) = hotkey_choice(None, true, || false);
+        assert!(key.is_none() && why.contains("ffmpeg"), "{why}");
+        // Asked, and able.
+        assert_eq!(hotkey_choice(None, true, || true).0, Some(DEFAULT_KEY));
+        // An explicit key is its own opt-in, ffmpeg or not, and `off` is off.
+        assert_eq!(hotkey_choice(Some("F10"), false, no_probe).0, Some(68));
+        assert_eq!(hotkey_choice(Some("f9"), false, no_probe).0, Some(67));
+        assert_eq!(hotkey_choice(Some("off"), true, no_probe).0, None);
+        let (key, why) = hotkey_choice(Some("F13"), true, no_probe);
+        assert!(key.is_none() && why.contains("F13"), "{why}");
+    }
+
+    #[test]
+    fn either_record_setting_is_an_opt_in_and_off_values_are_not() {
+        assert!(!recording_opted_in(None, None));
+        assert!(!recording_opted_in(Some("0"), Some("off")));
+        assert!(!recording_opted_in(Some(""), Some("")));
+        assert!(!recording_opted_in(None, Some("none")));
+        // What the shell sends for `record_session` and `record_audio`.
+        assert!(recording_opted_in(Some("1"), None));
+        assert!(recording_opted_in(None, Some("game")));
+        assert!(recording_opted_in(Some("/x/clip.mp4"), None));
+    }
+
+    #[test]
+    fn with_no_hotkey_f9_reaches_the_game_press_and_release() {
+        let held = AtomicBool::new(false);
+        assert_eq!(hotkey_decide(None, &held, 67, true, false), (false, false));
+        assert_eq!(hotkey_decide(None, &held, 67, true, false), (false, false), "a repeat");
+        assert_eq!(hotkey_decide(None, &held, 67, false, false), (false, false));
+        // The control: with the key in force the same events are taken, and
+        // only the first press toggles.
+        assert_eq!(hotkey_decide(Some(67), &held, 67, true, false), (true, true));
+        assert_eq!(hotkey_decide(Some(67), &held, 67, true, false), (true, false));
+        assert_eq!(hotkey_decide(Some(67), &held, 67, false, false), (true, false));
+        assert_eq!(hotkey_decide(Some(67), &held, 67, true, true), (false, false), "Ctrl+F9 is the game's");
+        assert_eq!(hotkey_decide(Some(67), &held, 68, true, false), (false, false));
+    }
+
+    #[test]
+    fn the_appimage_library_path_is_taken_out_and_the_host_one_kept() {
+        let a = "/tmp/.mount_StackXy";
+        // AppRun with nothing set before it leaves a trailing empty entry.
+        assert_eq!(host_library_path(&format!("{a}/usr/lib:"), a), None);
+        assert_eq!(host_library_path(&format!("{a}/usr/lib:/opt/x/lib"), a), Some("/opt/x/lib".into()));
+        // Twice over, after the re-exec under bwrap.
+        assert_eq!(
+            host_library_path(&format!("{a}/usr/lib:{a}/usr/lib:/opt/x/lib:/opt/y"), a),
+            Some("/opt/x/lib:/opt/y".into())
+        );
+        // A sibling whose name merely starts the same is not the image's.
+        assert_eq!(host_library_path(&format!("{a}2/lib"), a), Some(format!("{a}2/lib")));
     }
 
     #[test]
@@ -1507,6 +1809,69 @@ mod tests {
         let _ = enc.child.kill();
         let _ = enc.child.wait();
         drop(tx);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// An encoder that stops reading its stdin and never exits: the writer is
+    /// blocked in a write, and closing must still come back inside its bound.
+    /// It used to join the writer before the bound started, and hung.
+    #[test]
+    fn an_encoder_that_stops_reading_cannot_hang_the_close() {
+        let dir = scratch("wedge");
+        let enc_bin = fake_encoder(&dir, "exec sleep 30");
+        let enc = open_encoding(&enc_bin, &spec(dir.join("o.mp4"))).unwrap();
+        // More than the pipe holds, so the writer is left inside `write_all`.
+        enc.tx.as_ref().unwrap().send(vec![0u8; 1 << 20]).unwrap();
+        std::thread::sleep(Duration::from_millis(100));
+        assert!(!enc.writer.as_ref().unwrap().is_finished(), "the writer should be blocked");
+        let started = Instant::now();
+        let err = close_encoding_within(enc, Duration::from_millis(500)).unwrap_err();
+        let took = started.elapsed();
+        assert!(took < Duration::from_secs(4), "close took {took:?}");
+        assert!(err.contains("stopped reading") && err.contains("killed"), "{err}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The resize path, without Vulkan: frames of one size, then another,
+    /// against a fake encoder that takes a second to finish its file.
+    ///
+    /// The control is the last step: closing that encoder really does take
+    /// the second, so `encoder_ready` coming back at once on the resize means
+    /// the present thread did not wait for it.
+    #[test]
+    fn a_resize_does_not_wait_for_the_old_encoder() {
+        let dir = scratch("resize");
+        let enc_bin = fake_encoder(&dir, "cat > \"$last\"; sleep 1");
+        let mut s = Session::new(dir.join("clip"), 30, enc_bin, choose_codec(None, &["libx264"]).unwrap(), None);
+        let wait_ready = |s: &mut Session, dims| {
+            let t = Instant::now();
+            while !encoder_ready(s, dims, true).unwrap() {
+                assert!(t.elapsed() < Duration::from_secs(10), "no encoder for {dims:?}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        };
+
+        let t = Instant::now();
+        assert!(!encoder_ready(&mut s, (4, 2), true).unwrap(), "the first frame starts it and waits");
+        assert!(t.elapsed() < Duration::from_millis(200), "starting took {:?}", t.elapsed());
+        wait_ready(&mut s, (4, 2));
+        s.enc.as_ref().unwrap().tx.as_ref().unwrap().send(vec![7; 32]).unwrap();
+
+        let t = Instant::now();
+        assert!(!encoder_ready(&mut s, (8, 4), true).unwrap());
+        assert!(t.elapsed() < Duration::from_millis(200), "the resize waited {:?}", t.elapsed());
+        // A third size before the second is ready: one file for it, not two.
+        assert!(!encoder_ready(&mut s, (6, 4), true).unwrap());
+        wait_ready(&mut s, (6, 4));
+        s.enc.as_ref().unwrap().tx.as_ref().unwrap().send(vec![9; 48]).unwrap();
+        assert_eq!(s.files, vec![dir.join("clip.mp4"), dir.join("clip-2.mp4")]);
+
+        let t = Instant::now();
+        finish(s, false).unwrap();
+        assert!(t.elapsed() >= Duration::from_millis(900), "the control: closing takes {:?}", t.elapsed());
+        assert_eq!(std::fs::read(dir.join("clip.mp4")).unwrap(), vec![7; 32]);
+        assert_eq!(std::fs::read(dir.join("clip-2.mp4")).unwrap(), vec![9; 48]);
+        assert!(!dir.join("clip-3.mp4").exists());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
