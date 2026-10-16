@@ -87,6 +87,15 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.12" date="2026-10-16">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.12</url>
+      <description>
+        <p>
+          When Roblox crashes, Stacked now saves a crash report in the profile.
+          stacked logs --crash shows the newest one.
+        </p>
+      </description>
+    </release>
     <release version="0.21.11" date="2026-10-16">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.11</url>
       <description>
