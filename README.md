@@ -95,8 +95,8 @@ main target; X11 works but gets less attention.
 **Something went wrong.** Run `stacked doctor` first. If Play in the browser
 does nothing, run `stacked` in a terminal to see why. "Profile is already
 open" means another client has it — close that one or use `--profile`. For a
-crash, attach the terminal output, `stacked logs` and `stacked diagnostics` to
-[an issue](https://github.com/DamnShabu/stacked/issues).
+crash, attach the terminal output and the `.zip` from `stacked logs --zip`
+(redacted diagnostics and engine logs) to [an issue](https://github.com/DamnShabu/stacked/issues).
 
 **Is it faster than Sober?** Nobody has measured them side by side. It uses the
 same defaults Sober does, and targets your screen's refresh rate rather than 60.

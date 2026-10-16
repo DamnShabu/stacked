@@ -40,6 +40,7 @@
 
 pub mod branding;
 pub mod host_window;
+pub mod log_export;
 pub mod network;
 pub mod profile;
 pub mod theme;

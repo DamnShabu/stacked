@@ -39,6 +39,7 @@ complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l path
 complete -c stacked -n '__fish_seen_subcommand_from logs' -l lines
+complete -c stacked -n '__fish_seen_subcommand_from logs' -l zip
 complete -c stacked -n '__fish_seen_subcommand_from desktop; and test (count (commandline -opc)) -eq 2' -a 'install remove status'
 complete -c stacked -n '__fish_seen_subcommand_from completions; and test (count (commandline -opc)) -eq 2' -a 'bash zsh fish'
 complete -c stacked -n '__fish_seen_subcommand_from config; and __fish_seen_subcommand_from get set unset' -a '(stacked __complete config-keys 2>/dev/null)'

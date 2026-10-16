@@ -24,7 +24,7 @@ _stacked() {
         flags) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list get set unset import edit clear path --profile --from --replace"; fi ;;
         plugins) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="list install remove enable disable grant revoke prefs deno --profile"; fi ;;
         doctor) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="--offline"; fi ;;
-        logs) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="--profile --path --lines"; fi ;;
+        logs) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="--profile --path --lines --zip"; fi ;;
         desktop) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="install remove status"; fi ;;
         completions) if (( COMP_CWORD == 2 )) || [[ $cur == -* ]]; then words="bash zsh fish"; fi ;;
         esac

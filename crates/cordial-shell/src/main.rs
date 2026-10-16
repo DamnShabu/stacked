@@ -135,6 +135,8 @@ Setting up
 Other
   logs [--path] [--lines N] [--profile NAME]
                           Show the end of Roblox's own newest log.
+  logs --zip [FILE]       Save a redacted .zip of the diagnostics, the newest
+                          engine logs and any core dump note, for an issue.
   diagnostics             Print the build, distribution and install method,
                           for a bug report. Also --diagnostics.
   help                    This. Also -h, --help.
@@ -681,11 +683,16 @@ fn logs(args: &[String]) -> u8 {
         }
     };
     let mut path_only = false;
+    let mut zip: Option<std::path::PathBuf> = None;
     let mut lines = 50usize;
-    let mut it = rest.iter();
+    let mut it = rest.iter().peekable();
     while let Some(arg) = it.next() {
         match arg.as_str() {
             "--path" => path_only = true,
+            "--zip" => {
+                let named = it.next_if(|next| !next.starts_with("--"));
+                zip = Some(named.map_or_else(|| "stacked-logs.zip".into(), std::path::PathBuf::from));
+            }
             "--lines" | "-n" => match it.next().and_then(|n| n.parse().ok()) {
                 Some(n) => lines = n,
                 None => {
@@ -694,7 +701,7 @@ fn logs(args: &[String]) -> u8 {
                 }
             },
             other => {
-                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path and --lines");
+                eprintln!("stacked: unexpected argument {other:?}; logs takes --profile, --path, --lines and --zip");
                 return 2;
             }
         }
@@ -706,8 +713,11 @@ fn logs(args: &[String]) -> u8 {
             return 1;
         }
     };
+    if let Some(out) = zip {
+        return save_log_archive(&name, &out);
+    }
     let dir = match profile::dir(&name) {
-        Ok(d) => d.join("data/files/appData/logs"),
+        Ok(d) => cordial_shell::log_export::engine_logs_dir(&d),
         Err(e) => {
             eprintln!("stacked: {e}");
             return 1;
@@ -734,6 +744,44 @@ fn logs(args: &[String]) -> u8 {
     }
     eprintln!("\n({} lines of {}; --lines N for more)", all.len().min(lines), newest.display());
     0
+}
+
+/// `stacked logs --zip`: one redacted archive to attach to an issue, in place
+/// of being asked for the diagnostics, the engine log and whether it dumped
+/// core one round trip at a time. Refuses to overwrite, because the default
+/// name is the same every time and the last archive may be one somebody meant
+/// to keep.
+fn save_log_archive(profile_name: &str, out: &std::path::Path) -> u8 {
+    let bytes = match cordial_shell::log_export::export(profile_name, diagnostics::report()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("stacked: could not build the log archive: {e}");
+            return 1;
+        }
+    };
+    let written = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(out)
+        .and_then(|mut f| std::io::Write::write_all(&mut f, &bytes));
+    match written {
+        Ok(()) => {
+            println!("saved {} ({} KiB)", out.display(), bytes.len().div_ceil(1024));
+            println!(
+                "Cookies, tickets, link queries, user ids, usernames, chat and typed text were removed. \
+                 That is pattern matching, so look inside before posting it if the account matters to you."
+            );
+            0
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
+            eprintln!("stacked: {} already exists; name another: `stacked logs --zip FILE.zip`", out.display());
+            1
+        }
+        Err(e) => {
+            eprintln!("stacked: {}: {e}", out.display());
+            1
+        }
+    }
 }
 
 /// The most recently modified `.log` in `dir`.
