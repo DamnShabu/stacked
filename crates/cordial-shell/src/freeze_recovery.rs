@@ -167,6 +167,11 @@ pub fn status_line(attempt: u32, of: u32) -> String {
 
 pub const GIVE_UP_HEADING: &str = "Roblox keeps getting stuck starting";
 
+/// Said instead of [`status_line`] when the user pressed Ctrl-C while the
+/// client was stuck.
+pub const INTERRUPTED_WHILE_STUCK: &str =
+    "Roblox got stuck starting and has been stopped. Not starting it again, because Ctrl-C was pressed.";
+
 /// What the user is told when every attempt froze.
 pub fn give_up_body() -> String {
     format!(
@@ -182,6 +187,56 @@ pub fn give_up_body() -> String {
 /// measured as a freeze rather than recovered from.
 pub fn enabled(no_restart: Option<&str>) -> bool {
     !matches!(no_restart, Some("1") | Some("true") | Some("yes"))
+}
+
+/// Set by [`note_interrupt`] and never cleared: once the user has pressed
+/// Ctrl-C, nothing this `stacked play` does afterwards should start a client.
+static INTERRUPTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn note_interrupt(_: libc::c_int) {
+    // A store to an atomic is all a signal handler may safely do here.
+    INTERRUPTED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Take Ctrl-C for the rest of this process: note it rather than die of it.
+///
+/// Ctrl-C reaches the whole foreground process group, so the client hears it
+/// and shuts down in order on its own, and this process must outlive it: it
+/// holds the read end of the client's output, and a client that loses its
+/// stdout mid-shutdown fails there instead of exiting cleanly. That used to be
+/// `SIG_IGN`, which threw away the one thing the restart needs to know. A
+/// client frozen at startup does not act on Ctrl-C, so the watch is what
+/// stops it, and without the note the launcher then started again what the
+/// user had just asked to quit, up to [`MAX_RESTARTS`] times.
+///
+/// A handler rather than `SIG_IGN` also fixes the order of operations that
+/// used to need care. An ignored signal survives `exec`, so `SIG_IGN` could
+/// only be set after a spawn and had to be put back to `SIG_DFL` before the
+/// next one; a caught signal is reset to the default by `exec` itself, so
+/// every client, first or restarted, starts able to hear Ctrl-C however many
+/// times this is called. A `SIGINT` this process inherited as ignored, from a
+/// shell that started it in the background, is left ignored: no Ctrl-C can
+/// come from the user then, and the clients inherit it as they always did.
+/// `SA_RESTART` so the wait and the output readers carry on through one.
+pub fn catch_interrupt() {
+    // SAFETY: querying and installing a disposition with a zeroed `sigaction`
+    // whose handler only stores to an atomic.
+    unsafe {
+        let mut old: libc::sigaction = std::mem::zeroed();
+        if libc::sigaction(libc::SIGINT, std::ptr::null(), &mut old) != 0 || old.sa_sigaction == libc::SIG_IGN {
+            return;
+        }
+        let mut new: libc::sigaction = std::mem::zeroed();
+        new.sa_sigaction = note_interrupt as extern "C" fn(libc::c_int) as libc::sighandler_t;
+        new.sa_flags = libc::SA_RESTART;
+        libc::sigemptyset(&mut new.sa_mask);
+        libc::sigaction(libc::SIGINT, &new, std::ptr::null_mut());
+    }
+}
+
+/// Whether Ctrl-C has been pressed since [`catch_interrupt`].
+pub fn interrupted() -> bool {
+    INTERRUPTED.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 /// Where the engine writes its logs for this profile.
@@ -251,6 +306,13 @@ pub struct Supervisor {
 impl Supervisor {
     /// Begin watching a client that is being started now. Take it *before* the
     /// spawn so a log the new client writes cannot predate `since`.
+    ///
+    /// Within a millisecond or so it can: a file's mtime comes from the
+    /// kernel's coarse clock, and a file written straight after
+    /// `SystemTime::now()` was stamped earlier than it in 2,000 writes of
+    /// 2,000 here, by up to 0.8 ms. The engine writes its log only once its
+    /// library has loaded, far later than that (`INFERRED`: not timed), so it
+    /// matters only to a test that writes the log itself.
     pub fn new(dir: PathBuf) -> Self {
         Self { dir, since: SystemTime::now(), began: Instant::now(), watch: Watch::default() }
     }

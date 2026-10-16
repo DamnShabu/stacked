@@ -4612,8 +4612,11 @@ fn main() -> ExitCode {
                                                 // a client stuck for good in `vkAcquireNextImageKHR` after four
                                                 // presents, waiting for the compositor to release a swapchain
                                                 // image (docs/NEXT.md). The post is made from this thread on
-                                                // Android's behalf anyway; that it may be made from another is
-                                                // `INFERRED` until a launch shows it.
+                                                // Android's behalf anyway, and making it from another has been
+                                                // run: the seven gate-on launches ADR-065 cites all posted from
+                                                // the thread below, and none froze. Those were
+                                                // upstream's launches, carried here with the ADR and not re-run
+                                                // on this fork.
                                                 let own_thread = post_async() || post_gate;
                                                 if let (true, Some(ms)) = (own_thread, late_post) {
                                                     let post_f = lib
