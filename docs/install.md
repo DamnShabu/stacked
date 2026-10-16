@@ -7,9 +7,12 @@ of packaging.
 ## What you need
 
 - x86-64 Linux
-- A Wayland session. X11 still starts, but
-  [ADR-011](adr/ADR-011-wayland-and-libadwaita.md) makes Wayland the
-  backend this targets and says X11 is not developed further
+- A Wayland session. X11 works too
+  ([ADR-024](adr/ADR-024-x11-is-supported-again.md)) and is the rougher one:
+  what you type into a text box is drawn by a small window laid over the box
+  ([ADR-062](adr/ADR-062-the-x11-editor-is-an-override-redirect-window.md)),
+  tried upstream under openbox, xfwm4, icewm and Xwayland, and not under KWin,
+  Mutter's X11 mode or a tiling window manager
 - Roblox's official Android client, which **you supply** — Stacked ships no
   Roblox code, APK or assets and never will
 

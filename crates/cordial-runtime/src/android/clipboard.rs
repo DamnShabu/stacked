@@ -482,11 +482,20 @@ fn replace_focused_text(handle: i64, text: &str, replace_all: bool) -> Result<us
         let flattened = super::input::flatten_for_field(text);
         return Ok(w.devctl_replace_editor_text(&flattened, replace_all));
     }
-    // X11, which has no editor widget (ADR-024) and so has `TEXT_BUFFER` as
-    // the only place the text lives -- the same shape `paste_into_engine`
-    // already uses for X11's own Ctrl+V. Also Wayland before a window exists,
-    // which should not be reachable given the focus check above, but is a
-    // safe fallback rather than a panic if it ever is.
+    // X11 with its editor window up: the widget owns the text there too, so a
+    // write goes into it and its change signal does the rest, exactly as on
+    // Wayland above (ADR-062).
+    if super::x11_text::available() {
+        let flattened = super::input::flatten_for_field(text);
+        if let Some(n) = super::x11_text::replace_text(&flattened, replace_all) {
+            return Ok(n);
+        }
+    }
+    // X11 without an editor (it failed to start, or `CORDIAL_X11_EDITOR=off`)
+    // has `TEXT_BUFFER` as the only place the text lives -- the same shape
+    // `paste_into_engine` already uses for X11's own Ctrl+V. Also Wayland
+    // before a window exists, which should not be reachable given the focus
+    // check above, but is a safe fallback rather than a panic if it ever is.
     match super::input::devctl_replace_text(text, replace_all, MAX_BYTES)? {
         None => Ok(0),
         Some((which, contents, caret)) => {

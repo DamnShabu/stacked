@@ -4009,6 +4009,22 @@ fn main() -> ExitCode {
                                                     "resolved"
                                                 }
                                             );
+                                            // Enter on a single-line box: what
+                                            // Android's IME action listener
+                                            // calls once the final text is
+                                            // synced. See `input::return_pressed`.
+                                            let rp = lib.symbol(
+                                                "Java_com_roblox_engine_jni_NativeGLInterface_nativeReturnPressedFromOnScreenKeyboard",
+                                            ).unwrap_or(std::ptr::null_mut());
+                                            cordial_runtime::android::input::set_return_pressed_native(rp);
+                                            println!(
+                                                "  input: nativeReturnPressedFromOnScreenKeyboard {}",
+                                                if rp.is_null() {
+                                                    "NOT exported; Enter on a single-line box reaches the engine as a raw key"
+                                                } else {
+                                                    "resolved"
+                                                }
+                                            );
                                             println!(
                                                 "  input: nativeGetMainWindowIsMouseLockedCenter {}",
                                                 if ml.is_null() {

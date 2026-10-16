@@ -2251,6 +2251,9 @@ pub mod game_activity {
             f: *mut c_void, which: i64, text: *const c_char, flag: c_int, cursor: c_int,
             err: *mut c_char, n: usize,
         ) -> c_int;
+        fn cordial_input_return_pressed(
+            f: *mut c_void, which: i64, err: *mut c_char, n: usize,
+        ) -> c_int;
         fn cordial_input_mouse_move(
             f: *mut c_void, x: f32, y: f32, dx: f32, dy: f32,
             err: *mut c_char, n: usize,
@@ -2296,6 +2299,11 @@ pub mod game_activity {
         fn cordial_textbox_generation() -> c_int;
         fn cordial_textbox_property_generation() -> c_int;
         fn cordial_textbox_text(buf: *mut c_char, n: c_int) -> c_int;
+        fn cordial_textbox_engine_text_generation() -> c_int;
+        fn cordial_textbox_engine_text(
+            buf: *mut c_char, n: c_int, focus_generation: *mut u32,
+        ) -> c_int;
+        fn cordial_textbox_engine_text_changed(utf8: *const c_char);
         fn cordial_registered_natives(
             class_name: *const c_char, out: *mut c_char, n: usize,
         ) -> c_int;
@@ -2654,6 +2662,57 @@ pub mod game_activity {
         String::from_utf8_lossy(&buf[..n as usize]).into_owned()
     }
 
+    /// Moves each time `onLuaTextBoxChangedCallback` delivers text. A third
+    /// counter beside [`textbox_generation`] (focus changed) and
+    /// [`textbox_property_generation`] (geometry or style changed): this one
+    /// means "the engine has said what the box now contains".
+    pub fn engine_text_generation() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_textbox_engine_text_generation() as u32 }
+    }
+
+    /// What the engine last pushed through `onLuaTextBoxChangedCallback`, and
+    /// the [`textbox_generation`] that was current when it arrived. A caller
+    /// that finds the second no longer equals the first is holding text meant
+    /// for a box that has since lost focus.
+    pub fn engine_text() -> (String, u32) {
+        let mut buf = vec![0u8; 4096];
+        let mut focus_generation: u32 = 0;
+        loop {
+            // SAFETY: `buf` is writable for its full length and
+            // `focus_generation` is a live out-parameter.
+            let full = unsafe {
+                cordial_textbox_engine_text(
+                    buf.as_mut_ptr() as *mut c_char,
+                    buf.len() as c_int,
+                    &mut focus_generation,
+                )
+            };
+            if full < 0 {
+                return (String::new(), focus_generation);
+            }
+            if (full as usize) < buf.len() {
+                let text = String::from_utf8_lossy(&buf[..full as usize]).into_owned();
+                return (text, focus_generation);
+            }
+            buf = vec![0u8; full as usize + 1];
+        }
+    }
+
+    /// Deliver `text` exactly as `onLuaTextBoxChangedCallback` does -- for
+    /// devctl's `enginetext` verb.
+    ///
+    /// **Test-only, and the engine never calls this.** A real engine-side
+    /// clear (a chat box emptied by sending) needs a signed-in session to
+    /// produce; this is the same entry point the callback uses, so the pump
+    /// side can be exercised without one. Anything measured through it is
+    /// synthetic and must be reported as such.
+    pub fn test_engine_text(text: &str) {
+        let text = CString::new(text.replace('\0', "")).unwrap_or_default();
+        // SAFETY: `text` outlives the call, which copies it.
+        unsafe { cordial_textbox_engine_text_changed(text.as_ptr()) }
+    }
+
     /// Re-drive `onSurfaceChangedNative` after the host window is resized.
     pub fn surface_resized(handle: i64, format: i32, width: i32, height: i32) -> Result<(), String> {
         let mut err = vec![0u8; 512];
@@ -2714,6 +2773,28 @@ pub mod game_activity {
                 native, t.as_ptr(), cursor,
                 err.as_mut_ptr() as *mut c_char, err.len(),
             )
+        };
+        if rc == 0 { Ok(()) } else { Err(take_err(err)) }
+    }
+
+    /// `NativeGLInterface.nativeReturnPressedFromOnScreenKeyboard` -- Enter on
+    /// a single-line box, after the final text has been synced. Takes the
+    /// `showKeyboard` handle, like `nativePassText`.
+    ///
+    /// # Safety
+    ///
+    /// `native` must be a live pointer to the exported JNI native this call
+    /// names, obtained via [`Library::symbol`] (or the module-level dlsym
+    /// equivalent) against a `libroblox.so` Cordial has `dlopen`'d and never
+    /// `dlclose`s. The C shim supplies the `JNIEnv`/`jobject` from the
+    /// process's own `JavaVM`. `which` is handed to the engine unchecked, so
+    /// it must be a handle `showKeyboard` issued, never
+    /// [`SYNTHETIC_TEXTBOX_HANDLE`].
+    pub unsafe fn return_pressed(native: *mut c_void, which: i64) -> Result<(), String> {
+        let mut err = vec![0u8; 512];
+        // SAFETY: `err` outlives the call.
+        let rc = unsafe {
+            cordial_input_return_pressed(native, which, err.as_mut_ptr() as *mut c_char, err.len())
         };
         if rc == 0 { Ok(()) } else { Err(take_err(err)) }
     }
@@ -3144,6 +3225,12 @@ pub mod game_activity {
         );
         fn cordial_textbox_blurred();
     }
+
+    /// The handle devctl's `fakefocus` gives its synthetic box. No real engine
+    /// build has issued it, so nothing that takes a box handle may pass it on
+    /// to the engine: a native that looks the handle up would be handed a
+    /// number it never made.
+    pub const SYNTHETIC_TEXTBOX_HANDLE: i64 = 0x0063_6f72_6469_616c; // "cordial" in hex
 
     /// Synthesise a focused `NativeTextBoxInfo` exactly as the engine's own
     /// `showKeyboard`/`<init>` hook would -- for devctl's `fakefocus` verb,

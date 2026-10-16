@@ -2308,16 +2308,61 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
   `"one\ntwo"` read back as `"one two"`, 7 characters, zero newlines --
   the single-line flattening path, exercised on the real Wayland widget for
   the first time.
-- Enter inserting a newline in a multi-line box, and Escape/an outside click
-  releasing focus, need no code here at all: `dispatch_key` already returns
-  before editing anything once `editor_owns_text()` is true, whichever widget
-  that is, so GDK's own keyboard object drives `gtk::TextView`'s default
-  Enter-inserts-a-newline binding the same way it drives `gtk::Text`'s lack of
-  one -- see the comment above `editor_owns_text()`'s call in
-  `crates/cordial-runtime/src/android/wayland.rs`'s `dispatch_key`.
-  `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12) are
-  still read nowhere in this codebase; that comment explains why that is
-  consistent rather than an oversight.
+- **RETRACTED, 2026-10-04: "Enter inserting a newline in a multi-line box
+  needs no code here at all."** That was written from `fakefocus`, which has
+  no engine behind it. A real chat box ("Say something") reports
+  `multiline=1`; Enter reached the engine as a raw key, which sends the
+  message and empties its TextBox, while GDK's own keyboard object also drove
+  `gtk::TextView`'s newline binding, and the widget's change signal reported
+  `"ok\n"` back over the engine's clear.
+- **RETRACTED again, 2026-10-04: the first fix for that (swallow Return in the
+  multi-line editor, send the engine the raw key, `CORDIAL_EDITOR_GTK_ENTER`)
+  was the wrong owner.** It decided in the host that no multi-line box keeps
+  its newline, which is the engine's call per box, and it left single-line
+  boxes with a key Android never sends them. What replaced it is Android's
+  contract: the focused box is an `EditText` and consumes Enter.
+  - Multi-line: GTK inserts the newline, the text is synced like any edit, and
+    the raw key is withheld from the engine
+    (`input::editor_consumes_enter`, Wayland path only -- X11 has no editor).
+    What the engine does next arrives through `onLuaTextBoxChangedCallback`.
+  - Single-line: `gtk::Text`'s `activate` syncs the final text and calls
+    `nativeReturnPressedFromOnScreenKeyboard(handle)` (`input::return_pressed`;
+    dex prototype `(J)V`, `tools/dex_method.py` on classes2.dex), and the raw
+    key is withheld. If a build does not export the native, the raw key is left
+    alone, because it is then the only way Enter can arrive.
+  - Cordial neither blurs a box nor clears the editor on Enter. Focus and
+    clearing are the engine's, through `hideKeyboard` and the text callback.
+  - Measured, nested sway, signed out. Synthetic boxes, `tools/text-input-e2e.py
+    --only-engine-text`: 40 assertions pass; the same 40 against the old routing
+    (`--client-env` switch, since removed) fail 11, all of them the Enter ones.
+    A synthetic single-line box counts the ReturnPressed call but does not send
+    it (its handle was never issued by the engine). On the real sign-in screen,
+    Enter in the empty username field (`returnKeyType=3 manualFocusRelease=1`)
+    called the native once with the real handle (`-> Ok(())`) and the engine
+    answered by blurring that box and focusing the password field. With the old
+    raw key the same press blurred the username box and focused nothing.
+    Nothing was typed or submitted: the Sign In button is disabled while the
+    fields are empty.
+  - `INFERRED`: what a real multi-line box (a chat box) does with the newline,
+    and what a single-line box that is not the sign-in form does after
+    ReturnPressed. No capture holds either; a signed-in run is the check, with
+    `CORDIAL_TRACE_TEXT=1` and `CORDIAL_TRACE_KEYS=1` (look for `return pressed`
+    and `withheld`, then whether `textbox blurred` follows and whether
+    `engine text arrived` carries the clear). mocktail's `FinishLocked`
+    (Apache-2.0, `src/runtime/roblox_text_editor.cc`) additionally drives
+    `nativePassText(handle, text, finished=true)` and closes its own editor
+    unless `manualFocusRelease` is set, and says that mirrors `RbxKeyboard`'s
+    action listener. **Cordial now does the same** (`input::return_pressed`,
+    after the return call, for a real box whose `manualFocusRelease` is 0;
+    `CORDIAL_RETURN_PASSTEXT=0` is the control): a game's phone chat box
+    stopped sending on Enter after this commit, which the sign-in fields
+    (`manualFocusRelease=1`) could not show. `INFERRED` that it restores the
+    send -- no signed-in run has held it; look for the
+    `nativePassText(.., finished=true)` line under `CORDIAL_TRACE_TEXT=1`.
+  - Escape and an outside click still need no code here: both reach the engine
+    as ordinary input and it decides whether the box blurs.
+    `returnKeyType`/`manualFocusRelease` (slots 11/12) are read only to be
+    traced, in `input::return_pressed`.
 
 **UNVERIFIED**: everything about a real multi-line `TextBox`'s own spec --
 whether Roblox ever actually sends `multiline=1` with a masked
@@ -2387,11 +2432,12 @@ an `i6` of 0 would resolve to no font file. And 3, 4 and 5 are `SourceSans`,
 unstyled TextLabel -- so Roblox's own Android mapping does not cover Roblox's
 own default font, even though `SourceSansPro-Regular.ttf` ships in the same
 archive. That is the strongest available evidence that a fallback is mandatory
-rather than a nicety. Cordial does not paper over it with a hand-written row:
-`3 => SourceSansPro-Regular` is knowledge about Roblox's enum rather than
-something the archive says, nothing would tell us when it stopped being true,
-and it is exactly the hand-maintained table this section already said must not
-be written.
+rather than a nicety. **Superseded:** Cordial now answers 3, 4 and 5 with the
+Source Sans Pro Regular, Bold and Light files (`SOURCE_SANS_FALLBACKS` in
+`editor_font.rs`). The earlier refusal to write the ids down left a box set to
+`SourceSans` drawing in Builder Sans while `SourceSansItalic` beside it drew in
+Source Sans Pro. The family, weight and slant are still read from the file by
+fontconfig and checked against what the id means, and only id 6 may draw slanted.
 
 **"`families/BuilderSans.json` gives the family string Pango needs" is right
 for that one file and wrong in general.** Pango asks fontconfig, and fontconfig
@@ -4040,8 +4086,10 @@ IME. And the engine pushes text *out* during editing —
 `onLuaTextBoxChangedCallback(String)` and the no-argument
 `onLuaTextBoxPropertyChangedCallback()`, whose only sensible response is to
 re-read that geometry. A "properties changed" callback is only needed if Java is
-displaying the box. **Both are unimplemented in Cordial**
-(`docs/analysis/unresolved-java.md` §2c).
+displaying the box. **Both were unimplemented in Cordial** when this was written
+(`docs/analysis/unresolved-java.md` §2c); the property callback now bumps a
+counter the pump re-reads geometry on, and the text callback now carries the
+engine's text to the editor (`input::apply_engine_text`, 2026-10-04).
 
 So the shadow buffer was never the problem, and deleting it was never going to
 help: **the missing piece is a widget, not a message.** Cordial has to draw the

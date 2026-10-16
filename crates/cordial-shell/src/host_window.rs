@@ -284,6 +284,10 @@ pub struct HostWindow {
     /// What to tell when the user edits. Installed by the runtime, which owns
     /// the push to `syncTextboxTextAndCursorPosition2`.
     editor_changed: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>>,
+    /// Called when Enter is pressed in the single-line editor, GTK's
+    /// `activate`. Absent on the multi-line one on purpose: Enter there is a
+    /// newline in the text, not an action. See [`Self::connect_editor_activate`].
+    editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>>,
     /// The font family the engine draws with, once the runtime has found it in
     /// the APK. `None` until then, and `None` for ever if it is not there --
     /// see [`HostWindow::set_editor_font_family`].
@@ -619,6 +623,26 @@ fn multiline_placement(box_y: i32, box_h: i32) -> (i32, i32) {
     (box_y, box_h)
 }
 
+/// The stylesheet that gives the focused box's colour to both editors.
+///
+/// **A `GtkTextView` takes its text colour from its own node, not from the
+/// `text` child inside it**, and the rule used to name only the child. The
+/// single-line editor drew in the engine's colour and the multi-line one in the
+/// theme's: white under a dark theme, near-black under a light one. A light
+/// theme over a dark game is black text on black, in a box that holds every
+/// character typed into it -- the shape of #86 ("the text I type doesn't show
+/// up, but it's still there"). Measured on a nested sway with a photograph of
+/// the output (`tools/text-input-e2e.py --visibility`): typing 12 characters
+/// added 56 pixels of the engine's #d5d5dd to the single-line editor and none
+/// to the multi-line one, in both themes, and the multi-line text came out
+/// near-black under the light one.
+fn editor_colour_sheet(rgb: &str) -> String {
+    format!(
+        ".cordial-editor, .cordial-editor-multiline, .cordial-editor-multiline text \
+         {{ color: {rgb}; caret-color: {rgb}; }}"
+    )
+}
+
 /// Pango's `Weight` from an OpenType weight number.
 ///
 /// A match rather than `Weight::__Unknown`, which is `doc(hidden)` and would be
@@ -928,6 +952,16 @@ impl HostWindow {
         let editor_changed: std::rc::Rc<
             std::cell::RefCell<Option<Box<dyn Fn(&str, i32)>>>,
         > = std::rc::Rc::new(std::cell::RefCell::new(None));
+        let editor_activated: std::rc::Rc<std::cell::RefCell<Option<Box<dyn Fn()>>>> =
+            std::rc::Rc::new(std::cell::RefCell::new(None));
+        {
+            let sink = editor_activated.clone();
+            editor.connect_activate(move |_| {
+                if let Some(cb) = sink.borrow().as_ref() {
+                    cb();
+                }
+            });
+        }
         {
             // One closure behind an `Rc`, shared by both signals: the text and
             // the caret are one fact as far as the engine is concerned --
@@ -1058,6 +1092,7 @@ impl HostWindow {
             present_probe: std::cell::RefCell::new(None),
             editor_seeding,
             editor_changed,
+            editor_activated,
             editor_font_family: std::cell::RefCell::new(None),
         }
     }
@@ -1101,6 +1136,18 @@ impl HostWindow {
     /// seen yet is a caret past the end of the string it holds.
     pub fn connect_editor_changed<F: Fn(&str, i32) + 'static>(&self, f: F) {
         *self.editor_changed.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Install a callback for Enter in the single-line editor.
+    ///
+    /// This is the editor action Android's IME sends a single-line `EditText`;
+    /// the runtime owns what it means (sync the final text, tell the engine),
+    /// because the engine, not this window, decides whether the box then loses
+    /// focus or clears. The multi-line editor has no equivalent: GTK inserts
+    /// the newline into its buffer, `connect_editor_changed` reports it like
+    /// any other edit, and what the engine does with a newline is its own.
+    pub fn connect_editor_activate<F: Fn() + 'static>(&self, f: F) {
+        *self.editor_activated.borrow_mut() = Some(Box::new(f));
     }
 
     /// The development control surface's `paste`: insert `text` at the
@@ -1236,9 +1283,7 @@ impl HostWindow {
             (overlay.text_color >> 8) & 0xff,
             overlay.text_color & 0xff
         );
-        self.editor_css.load_from_string(&format!(
-            ".cordial-editor, .cordial-editor-multiline text {{ color: {rgb}; caret-color: {rgb}; }}"
-        ));
+        self.editor_css.load_from_string(&editor_colour_sheet(&rgb));
 
         self.editor_active_multiline.set(overlay.multiline);
         // Each branch may adjust `y`/`h` for its own vertical placement rule
@@ -1500,6 +1545,12 @@ impl HostWindow {
         if buffer.text(&start, &end, true).as_str() != overlay.text {
             self.editor_multiline_seeding.set(true);
             buffer.set_text(overlay.text);
+            // Inside the guard, as `gtk::Text`'s `set_position` is. Placed
+            // after it, the move from where `set_text` left the cursor to
+            // `overlay.caret_chars` fired the cursor signal unguarded and sent
+            // the text the engine had just pushed straight back to it.
+            let at = buffer.iter_at_offset(overlay.caret_chars.max(0));
+            buffer.place_cursor(&at);
             self.editor_multiline_seeding.set(false);
         }
         // The tag is reapplied on every text change too (see the
@@ -2680,6 +2731,20 @@ mod tests {
         let region = input_region(surface, content, Some(editor), false);
         let (cx, cy, cw, ch) = content;
         assert!(!region.contains_point(cx + cw / 2, cy + ch / 2));
+    }
+
+    #[test]
+    fn the_box_colour_reaches_the_multiline_widget_itself() {
+        // A `GtkTextView` draws its text in its own node's colour, so a rule
+        // that names only the `text` child leaves the theme's colour on it --
+        // near-black under a light theme, on a dark game.
+        let sheet = editor_colour_sheet("#d5d5dd");
+        let selectors = sheet.split('{').next().unwrap();
+        let named: Vec<&str> = selectors.split(',').map(str::trim).collect();
+        for want in [".cordial-editor", ".cordial-editor-multiline", ".cordial-editor-multiline text"] {
+            assert!(named.contains(&want), "{want} must be coloured, selectors were {named:?}");
+        }
+        assert!(sheet.contains("color: #d5d5dd;") && sheet.contains("caret-color: #d5d5dd;"));
     }
 
     #[test]

@@ -39,7 +39,9 @@
 #![allow(unsafe_code)]
 
 pub mod branding;
+pub mod editor;
 pub mod host_window;
+pub mod x11_editor;
 pub mod network;
 // What Cordial does only when the GPU is NVIDIA's, and the parsing the shell and
 // the runtime both need for it. In the library half for the reason `network`
