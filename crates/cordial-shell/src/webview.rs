@@ -253,6 +253,32 @@ unsafe impl Send for CurrentDialogCell {}
 unsafe impl Sync for CurrentDialogCell {}
 static CURRENT_DIALOG: CurrentDialogCell = CurrentDialogCell(std::cell::RefCell::new(None));
 
+thread_local! {
+    /// Whether the dialog whose `closed` signal is being emitted right now is
+    /// a security check, set by the handler [`open`] connects and taken by
+    /// [`closing_is_security_check`].
+    ///
+    /// This is what keys the close report to the dialog itself. It used to be
+    /// one process-wide flag in the runtime, set when a check opened and
+    /// cleared when an engine window opened, so a check and the engine's own
+    /// sign-in window open together had their closes swapped: whichever opened
+    /// last decided how *both* closes were reported.
+    static CLOSING_SECURITY_CHECK: std::cell::Cell<Option<bool>> = const { std::cell::Cell::new(None) };
+}
+
+/// Whether the web window now closing was opened as a security check
+/// ([`WindowRequest::security_check`]). Meant to be called from a `closed`
+/// handler connected to the dialog [`open`] returned, which is how `load.rs`
+/// reaches `cordial_runtime::webview::report_window_closed`.
+///
+/// That works because GObject runs a signal's handlers in the order they were
+/// connected, and [`open`] connects its own before handing the dialog to
+/// anybody. `None` when there is no record: called outside such a handler, or
+/// a second time for the same close.
+pub fn closing_is_security_check() -> Option<bool> {
+    CLOSING_SECURITY_CHECK.with(|c| c.take())
+}
+
 /// Close the currently-open web window, the same way a user dismissing it
 /// would, so everything already wired to `AdwDialog`'s own `closed` signal --
 /// `load.rs`'s canvas-raise and its `report_window_closed` call to the engine
@@ -421,6 +447,7 @@ fn acknowledge_captcha_event(view: &webkit6::WebView, command: &str) {
         return;
     };
     let kind = event.kind;
+    let page = view.downgrade();
     view.evaluate_javascript(&script, None, None, gtk4::gio::Cancellable::NONE, move |result| {
         let answered = matches!(&result, Ok(value) if value.is_boolean() && value.to_boolean());
         match &result {
@@ -428,9 +455,30 @@ fn acknowledge_captcha_event(view: &webkit6::WebView, command: &str) {
             Err(e) => eprintln!("[webview] {name} could not be answered: {e}"),
         }
         if answered && kind == webview_captcha::CaptchaEventKind::Success {
-            close_current();
+            match page.upgrade() {
+                Some(view) => close_dialog_of(&view),
+                None => eprintln!("[webview] {name}: the page was gone before its window could be closed"),
+            }
         }
     });
+}
+
+/// Close the web window that holds `view`: the security check just passed.
+/// Not [`close_current`], which is whichever dialog opened last, so an engine
+/// window opened over the check would have been closed in its place. A page
+/// with no dialog above it (a popup is a window of its own) falls back to
+/// that, as before.
+fn close_dialog_of(view: &webkit6::WebView) {
+    match view.ancestor(adw::Dialog::static_type()).and_downcast::<adw::Dialog>() {
+        Some(dialog) => {
+            if !dialog.close() {
+                eprintln!("[webview] the security check's window did not accept the close request");
+            }
+        }
+        None => {
+            close_current();
+        }
+    }
 }
 
 /// Install the sink [`open`]'s bridge handler forwards an approved message
@@ -485,6 +533,12 @@ pub struct WindowRequest {
     /// change expects but a maintainer with a live window needs to confirm —
     /// see this crate's caller for what was and was not run.
     pub user_agent: Option<String>,
+    /// Whether this window is a security check opened for `OPEN_CAPTCHA_VIEW`
+    /// rather than a window the engine asked for with `openWindow`. The two
+    /// are reported closed differently, and the dialog carries which it is so
+    /// that two of them open at once are not mistaken for each other; see
+    /// [`closing_is_security_check`].
+    pub security_check: bool,
 }
 
 /// Open a web window for `request`, attached to `parent`.
@@ -915,9 +969,15 @@ pub fn open(parent: &(impl IsA<gtk4::Widget> + Clone), request: &WindowRequest) 
     // second `open()` call that presented a newer dialog before this one
     // got around to closing must not have its entry erased by the older
     // dialog's own belated signal.
+    //
+    // This must stay the first `closed` handler on the dialog: it also records
+    // what kind of window is closing for the caller's own handler, which runs
+    // after it ([`closing_is_security_check`]).
     *CURRENT_DIALOG.0.borrow_mut() = Some(dialog.clone());
     let tracked = dialog.clone();
+    let security_check = request.security_check;
     dialog.connect_closed(move |_| {
+        CLOSING_SECURITY_CHECK.with(|c| c.set(Some(security_check)));
         let mut slot = CURRENT_DIALOG.0.borrow_mut();
         if slot.as_ref() == Some(&tracked) {
             *slot = None;
@@ -1972,6 +2032,21 @@ mod tests {
         // Same reasoning: no invented User-Agent, only one actually computed
         // and threaded through by the caller.
         assert!(r.user_agent.is_none());
+        // And no window is a security check unless the runtime says so.
+        assert!(!r.security_check);
+    }
+
+    /// One close, one answer: the record [`open`]'s `closed` handler leaves is
+    /// taken by the first reader, so a second reader for the same close (or a
+    /// reader outside any close) gets `None` instead of an earlier dialog's kind.
+    #[test]
+    fn a_closing_dialogs_kind_is_read_once() {
+        assert_eq!(closing_is_security_check(), None);
+        CLOSING_SECURITY_CHECK.with(|c| c.set(Some(true)));
+        assert_eq!(closing_is_security_check(), Some(true));
+        assert_eq!(closing_is_security_check(), None);
+        CLOSING_SECURITY_CHECK.with(|c| c.set(Some(false)));
+        assert_eq!(closing_is_security_check(), Some(false));
     }
 
     /// `open()` itself needs a live GTK/Wayland display to construct a
