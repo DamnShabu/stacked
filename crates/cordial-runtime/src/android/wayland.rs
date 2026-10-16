@@ -5859,6 +5859,16 @@ impl WaylandWindow {
             return;
         }
 
+        // The recording hotkey (ADR-059) is taken the same way, before the
+        // engine hears it. Control or Alt held leaves the chord to the game.
+        if crate::recording::hotkey_event(
+            evdev_key as i32,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
+
         let handle = self.active_handle.load(Ordering::Relaxed);
         let now = self.now_ms();
 
@@ -6640,6 +6650,15 @@ impl WaylandWindow {
         if super::input::keyboard_report_enabled() {
             let (gw, gh, _) = self.geometry();
             super::input::report_keyboard_state((gw, gh));
+        }
+
+        // The recording marker in the title (ADR-059), set here because
+        // this is the GTK thread, and recording starts and stops on others.
+        if let Some(on) = crate::recording::take_indicator_change() {
+            const MARK: &str = " \u{25cf} REC";
+            let window = self.host.0.window();
+            let base = window.title().map(|t| t.trim_end_matches(MARK).to_string()).unwrap_or_default();
+            window.set_title(Some(&if on { format!("{base}{MARK}") } else { base }));
         }
 
         // GTK's main loop does not get a thread of its own. It is iterated

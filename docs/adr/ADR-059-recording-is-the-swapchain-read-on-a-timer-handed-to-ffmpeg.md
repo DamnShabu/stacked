@@ -1,0 +1,78 @@
+# ADR-059: Recording is the swapchain read on a timer, handed to ffmpeg
+
+**Status:** accepted
+**Date:** 2026-10-15
+**Extends:** [ADR-019](ADR-019-development-control-surface.md)
+**Related:** [ADR-001](ADR-001-in-process-hooking.md), [ADR-003](ADR-003-plugin-isolation.md), [ADR-007](ADR-007-host-resources-are-brokered.md), [ADR-023](ADR-023-host-audio-backends.md), [ADR-044](ADR-044-settings-reach-a-running-game.md)
+**User page:** [`docs/recording.md`](../recording.md)
+**Issue:** #33
+
+## Context
+
+Roblox's Record Video button does nothing on the Android client (Sober #1092). Cordial already reads the frame the engine just presented out of its own Vulkan swapchain for `cordial_screenshot` (ADR-019), at the moment inside `vkQueuePresentKHR` when the image is complete and in `PRESENT_SRC_KHR`. The issue left four things open: what the read costs at a stream's rate, where the encoding happens, whether audio is possible, and whether it belongs in a plugin capability. The maintainer's answer to the last was already shell-native (ADR-007: a continuous stream plus an encoder plus a user's file is not a payload).
+
+Reading our own swapchain is not hooking the engine. It is the same read ADR-019 records, and nothing here executes in, or patches, the Roblox process (ADR-001).
+
+## Decision
+
+**The recorder is the screenshot read on a timer, and its encoder is a child process.** `recording.rs` asks, once per present, whether a frame is due (one atomic load when recording is off). If so, the present thread copies the image into a persistent host buffer (`capture::Readback`, the screenshot code split into allocate-once and read-per-frame), copies the bytes into a pooled buffer and offers it to a bounded channel (four frames). A writer thread drains the channel into the stdin of `ffmpeg -f rawvideo`. A full channel drops the frame and counts it: the engine never waits for an encoder.
+
+**`ffmpeg` is spawned, never linked.** No codec library enters a Cordial binary, so no codec licence does either, and no build gains a dependency for a feature most sessions do not use. The Flatpak runtime ships `ffmpeg` 7.1.3 (with libvpx, libaom, SVT-AV1, libopus, PulseAudio input, and no libx264), and most distributions' builds have libx264. The recorder asks the binary what it can encode (`ffmpeg -encoders`) and picks a container to match: MP4/H.264 where libx264 or libopenh264 exist, WebM/VP9 or VP8 where they do not, Matroska otherwise. A container the binary cannot fill is an error naming it, not a different container under the same extension. Encoders run under `nice -n 10`.
+
+**Timestamps are the wall clock at the encoder's end of the pipe, with `-vf fps=N` filling gaps.** The engine presents at the display rate with input flowing and at one frame a second when idle (AGENTS.md), so assuming a fixed period would play quiet stretches back at speed.
+
+**A size change starts a new file** (`stem-2.ext`), because a raw frame cannot change size under a running encoder. **MP4 is fragmented**, so a file cut short still plays.
+
+**Where it is driven from.** `CORDIAL_RECORD` (a folder, a file, or `1` for the default) arms it at the first presented frame, and the launcher's **Record gameplay** switch sets it at launch. **F9 toggles it while the game window has focus**, `CORDIAL_RECORD_KEY` choosing another function key (`F1` to `F10`, `F12`, `Pause`, `ScrollLock`; F11 is fullscreen) or `off`. devctl gets `record start|stop|status` and the MCP gets `cordial_record`. There is still no live toggle on the `cordial.runtime/1` control socket: a new `settings.set` key is a protocol change (ADR-052, ADR-055) that deserves its own decision, and the hotkey covers the reason it was wanted.
+
+**The hotkey is taken in the three places a key enters the client** -- the Wayland and X11 key paths and devctl's `key` -- by one function (`recording::hotkey_event`) keyed on the evdev code, which all three already have and which does not depend on the keyboard layout. It consumes the press and the release, so the game never sees half a key, and leaves Control+F9 and Alt+F9 to the game. A start or stop runs on its own thread, because stopping waits for the encoder to finish its file. While recording the Wayland window's title ends in `REC` (set by the pump, the only thread GTK belongs to). **F9 is Roblox's developer-console key on desktop**; whether the Android client's engine acts on it was not checked, which is why the key is configurable and can be turned off.
+
+**Where it lands.** `CORDIAL_RECORD_DIR`, else `Videos/Cordial` (from `user-dirs.dirs`), else `<profile>/recordings`. **Inside a Flatpak it is always the profile**, because the sandbox has no grant on `~/Videos` and a write there succeeds into the sandbox's own temporary home and is gone at exit.
+
+**Audio is off, and what "on" means is the game's own sound.** This section replaces the first version, which could only read the default sink's monitor (`ffmpeg -f pulse -i @DEFAULT_MONITOR@`) and so recorded every program's sound.
+
+*The tap.* Cordial writes every byte the engine plays: AAudio's pull callback and OpenSL ES' buffer queue both end in a buffer this process fills for a host backend. `native/record_tap.h` copies those buffers, after the engine has filled them and before the backend sees them, into a lock-free single-producer ring per stream. For AAudio the copy is a decorator around the `OutputStream` that `make_output_stream()` returns, so PipeWire, PulseAudio, ALSA and OSS are recorded identically; for OpenSL ES it is one call in `PlaybackStream::process`. The audio thread takes one relaxed load when nothing is being recorded, and a few atomic operations and a copy when something is. It never waits, locks, allocates or logs; a full ring drops the chunk and counts it. A tap is a copy of what Cordial owns and plays: it executes nothing in the engine and changes nothing it sees (ADR-001).
+
+*The pump.* `recording.rs` runs a thread per encoder that reads the tap as 48 kHz stereo float (each stream converted for channel count, sample format and rate, then summed and clipped) and writes it to descriptor 3 of the same `ffmpeg`, `-f f32le -ar 48000 -ac 2 -i pipe:3`. A pipe of our own rather than a named FIFO, so a leaked end cannot outlive the encoder and a crashed `ffmpeg` cannot leave one blocking an open.
+
+*Placement and sync.* Both inputs start at the instant the video writer's first frame has gone into the encoder: that write is megabytes into a 64 KiB pipe, so it cannot return before `ffmpeg` is reading, and starting the sound then keeps the encoder's own start-up out of the offset between picture and sound. `ffmpeg` stamps the video by the wall clock when it reads it and the audio by counting samples; the pump writes exactly as many samples as the wall clock says have elapsed, silence where the game was quiet, so the two stay the same length. The tap *places* each stream's sound on the recording's timeline by when the engine produced it (the first push after recording starts, then contiguously; a gap of more than 40 ms between pushes is filled with silence), and the pump reads 80 ms behind the clock. That lag is invisible in the file and necessary: backends deliver in bursts, and a reader that took what had arrived when it asked left holes (below).
+
+*Choosing it.* `CORDIAL_RECORD_AUDIO` is `game` (also `1`, `on`), `desktop` (the old behaviour, still the way to include another program) or off. The launcher's **Record sound too** switch sends `game`, and sends it whether or not **Record gameplay** is on, because F9 recordings want it too. An unrecognised value is off and says so in the log, never "the desktop": a typo that recorded everything the machine was playing would be a privacy surprise in a file about to be shared.
+
+## Measured
+
+On 2026-10-15, one Intel GPU, a signed-out client on the landing page in a nested headless sway at 1280x754, the engine presenting at about 60 Hz because pointer motion was being driven. Single runs, not repeated.
+
+- Per captured frame, time on the present thread (copy and queue wait): **3.14 ms** (x264, 30 fps asked), **2.50 ms** (x264, 30 fps, a second run with a resize), **3.36 ms** (VP9 and Opus, 60 fps asked). The screenshot's per-call cost, which allocates and destroys four objects, was not measured here and is not the number to extrapolate from.
+- Frames dropped by a full encoder queue: 0 of 185 (x264, 30 fps) and 4 of 745 (VP9 with audio, 60 fps).
+- A 60 fps VP9 recording of 724 captured frames covered 12.4 s, 58 frames a second, with none dropped over that stretch.
+- Engine frame times with and without: control run median 16.7 ms, p95 17.3, p99 24.5, max 98.6; the 60 fps VP9 and audio run median 16.7, p95 17.3, p99 32.5, max 329.7. One run each; the tail is not shown to be the recorder's.
+- `ffprobe` of the 18.1 s x264 recording reported h264 1280x754, 30 fps, duration 18.03 s, and the process had counted 185 captured frames over 18.1 s of wall clock: the file is as long as the session was, not as long as 185 frames at 30 fps would be.
+
+## Measured: game audio and the hotkey
+
+On 2026-10-15, PipeWire, ffmpeg 8.1.2 with libx264, a signed-out client on the landing page in a nested headless sway. The levels played were 0.03 amplitude.
+
+- **The first reader lost 30% of the sound.** Reading whatever had arrived, every time the pump asked, against a PipeWire stream that hands over 2048 frames every 43 ms: 43,166 of 144,329 output frames were silence in three seconds, with all 143,360 frames the engine produced sitting in the ring, and the recording's 440 Hz tone read 324 Hz by zero crossings. Placing sound by when it was produced and reading 80 ms behind the clock (above) left one run of silence, the 2048 frames before the stream's first buffer, and the largest sample-to-sample step equal to the sine's own (0.001728 against 0.001728 expected). `native/record_tap_test.cpp` has the case (bursts with up to 4 ms of lateness, 0 silent frames, largest step 0.0290 against 0.0288) and fails with the old thresholds; it runs at build time.
+- **Only Cordial's sound is in the file.** The tone came from `devctl tone`, which opens the stream AAudio opens and plays 440 Hz at 0.03 through the PipeWire backend; `pw-play` played 880 Hz at the same time. A `pw-record` of the default sink's monitor shows both (440 Hz band 509, 880 Hz band 45; a band reads 0.0 to 0.3 where a tone is absent). Recording with `CORDIAL_RECORD_AUDIO=game` from F9 produced a file whose 2 to 5 s window is the 440 Hz tone (rms 0.030) and whose 880 Hz band is 0.0 to 0.3 throughout; the second file, with no tone, is silent (mean volume -91 dB). The same run with `CORDIAL_RECORD_AUDIO=desktop` has 880 Hz in both files (band 45) and the tone.
+- **Picture and sound line up to a frame.** A synthetic encode through the real pump and a real ffmpeg, a white flash and a 1 kHz beep fed at the same instant: the beep onset was 29 to 30 ms before the first white frame in five runs, with the frame period 33 ms. With x264's default B-frames the same test read 107 ms, because the MP4 muxer put the first picture at 0.067 s and the sound at 0; `-bf 0` removes it. This is an encode of generated frames, not of a game.
+- **`-shortest` stops ffmpeg reading a real-time pipe.** With it on the audio pipe, the pump's writes blocked from 0.4 s to the end of a 4.5 s recording and the sound only reached the file when the pump flushed everything at the close. Measured in isolation with the same arguments: the audio write blocked for 5.6 s of 6 with `-shortest`, 0.3 s without, and the file was 5.95 s of video and 5.63 s of audio. Only the desktop source, which never ends, keeps it.
+- **The hotkey** pressed through `cordial_key` (evdev 67) four times started and stopped two recordings, with `Cordial 0.29.0 (…-dirty) ● REC` in the sway tree's window name while one ran and without it before and after. Two files, 7.0 s and 4.9 s of audio written, 0 frames dropped, 3.5 to 4.6 ms per captured frame on the present thread (2.5 to 3.4 ms in the first version's measurement above; this machine was busy with other builds, and the audio pump is a separate thread).
+
+## Not done, and why
+
+- **The engine's own sound.** The engine opens no output stream on the signed-out landing page, so what the tap would record from a real game is not measured. The checks above use a stream of Cordial's own through the same wrapper and backend; that the engine's AAudio streams reach it the same way is `INFERRED` from there being one `make_output_stream()` call site.
+- **The OpenSL ES copy and the other backends.** `PlaybackStream::process` and the PulseAudio, ALSA and OSS backends share the code that was tested but were not themselves exercised. Surround output is folded to stereo by a plain mix that was only tested against synthetic data.
+- **The X11 hotkey and title.** The key is taken in `window.rs` by the same function; it was not run. The title marker is Wayland only.
+- **A live toggle from Settings.** `record_session` and `record_audio` stay `NextLaunch` in `live.rs`: switching them live is a new `settings.set` key and a protocol change (ADR-052, ADR-055). F9 covers the use.
+- **A microphone track.**
+- **A hardware encoder.** `h264_vaapi` and the NVENC encoders are listed by the Flatpak's `ffmpeg` and not used.
+- **Recording under VR.** The OpenXR path has a different capture entry point (`capture_image`) and was not touched.
+
+## Consequences
+
+`capture.rs` changes shape: `copy_to_png` now builds a `Readback`, reads once and drops it, which is what it did before; `frame_target` is shared. **Destroying a `Readback` after the engine has torn its Vulkan device down crashed the process** (a segfault in `vkDestroyCommandPool`, every time, found with gdb), so the exit path leaks it on purpose.
+
+Someone about to change this should know that the first frame starts the encoder because only then is its input size known, and that `finish_at_exit` in `bin/load.rs` is what finishes a recording before `_exit`, which runs nothing.
+
+The audio tap adds `native/record_tap.h`, a small C surface (`cordial_record_tap_*`, `cordial_audio_dev_tone`) in `pipewire_backend.cpp`, and one `devctl` verb. `cordial_record_tap_inject` and `cordial_audio_dev_tone` exist for tests and the control surface and are called by nothing in the engine's own path. Someone changing the tap should know that its reader and its producer disagree about the time unless both use the steady clock, and that the pump's 80 ms lag is what makes burst delivery gapless: shortening it reintroduces holes that no unit test of the ring alone will show.

@@ -495,6 +495,17 @@ pub struct ShellConfig {
     /// and the test below caught it, which is why both the attribute's absence
     /// and the reason are written down.
     pub gamepad: bool,
+    /// Record every session to a video file (ADR-059).
+    ///
+    /// Off by default: a recording writes a few hundred megabytes an hour and
+    /// costs the engine's present thread about three milliseconds a captured
+    /// frame, neither of which somebody who did not ask for it should pay. The
+    /// client reads it at launch only; there is no live toggle yet.
+    pub record_session: bool,
+    /// Record the game's own sound with it, copied from the buffers Cordial
+    /// plays. Off by default, a switch of its own: a recording that included
+    /// sound nobody asked for is a surprise in a file about to be shared.
+    pub record_audio: bool,
     /// Quit the client when the user leaves a game and returns to the home
     /// screen.
     ///
@@ -605,6 +616,8 @@ impl Default for ShellConfig {
             graphics_optimization_mode: GraphicsOptimization::default(),
             present_mode: PresentMode::default(),
             gamepad: true,
+            record_session: false,
+            record_audio: false,
             close_on_leave: false,
             unpacked_plugins: Vec::new(),
             carry_launch_ticket: false,
@@ -898,6 +911,19 @@ mod tests {
         assert!(parsed.gamepad, "a config predating the key must not read as controllers off");
         let off: ShellConfig = serde_json::from_str(r#"{"gamepad":false}"#).unwrap();
         assert!(!off.gamepad, "an explicit false must survive");
+    }
+
+    /// Recording writes files and costs the present thread time, so nothing is
+    /// recorded for somebody who never opened the row, and an older config
+    /// without the keys must not start recording on upgrade.
+    #[test]
+    fn recording_is_off_until_it_is_switched_on() {
+        let d = ShellConfig::default();
+        assert!(!d.record_session && !d.record_audio);
+        let older: ShellConfig = serde_json::from_str(r#"{"gamemode":true}"#).unwrap();
+        assert!(!older.record_session && !older.record_audio);
+        let on: ShellConfig = serde_json::from_str(r#"{"record_session":true,"record_audio":true}"#).unwrap();
+        assert!(on.record_session && on.record_audio);
     }
 
     /// **A fresh install is responsive, and pays power for it.**

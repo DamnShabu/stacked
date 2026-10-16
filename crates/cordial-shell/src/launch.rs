@@ -468,6 +468,17 @@ pub fn spawn(
         command.env("CORDIAL_GAMEPAD", "0");
     }
 
+    // Recording, and **only when it is on**: the client records nothing unless
+    // `CORDIAL_RECORD` says so, and `1` means the default folder (ADR-059).
+    if config.record_session {
+        command.env("CORDIAL_RECORD", "1");
+    }
+    // Sound is the game's own, and it applies to a hotkey recording as much as to
+    // a whole-session one, so it is set whether or not the session switch is on.
+    if config.record_audio {
+        command.env("CORDIAL_RECORD_AUDIO", "game");
+    }
+
     // Close on leave, and **only when it is on**. The client's own gate wants
     // one of "1", "true" or "yes" and reads everything else as off, so the
     // absent case and the off case agree without this having to spell either.

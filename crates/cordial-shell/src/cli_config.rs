@@ -28,6 +28,8 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("throttle", "visible | unfocused | off", "When to let the engine slow down: once hidden, once unfocused, or never held awake."),
     ("pointer_acceleration", "unlockedcursor | always", "Whether the desktop's pointer acceleration also moves the camera."),
     ("gamepad", "true | false", "Controllers."),
+    ("record_session", "true | false", "Record every session to a video file, with ffmpeg. See docs/recording.md."),
+    ("record_audio", "true | false", "Record sound with it: everything the default output plays, not the game alone."),
     ("audio_output", "SINK", "An output from `stacked audio-outputs`. Empty follows the system."),
     ("audio_input", "SOURCE", "A microphone from `stacked audio-inputs`. Empty follows the system."),
     ("close_on_leave", "true | false", "Close Roblox when you leave an experience."),

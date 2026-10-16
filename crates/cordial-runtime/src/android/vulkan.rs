@@ -747,7 +747,10 @@ extern "C" fn vk_queue_present_khr(queue: *mut c_void, info: *const c_void) -> i
     // finished rendering it and left it in `VK_IMAGE_LAYOUT_PRESENT_SRC_KHR`.
     // Once the present has been forwarded the image belongs to the driver and
     // reading it is a race.
-    if super::capture::pending() {
+    //
+    // A recording asks the same question every frame it wants one, and for the
+    // same reason this is the place to ask it (`recording`, ADR-059).
+    if super::capture::pending() || crate::recording::frame_due() {
         take_capture(queue, info);
     }
     // SAFETY: resolved from the host loader for exactly this name.
@@ -826,18 +829,30 @@ fn take_capture(queue: *mut c_void, info: *const c_void) {
     }
     // SAFETY: both were resolved from the loader for exactly these names, and
     // are called with the signatures the specification gives them.
-    unsafe {
-        super::capture::capture(
-            queue as u64,
-            swapchain,
-            image_index,
+    let (gdpa, gpdmp) = unsafe {
+        (
             std::mem::transmute::<usize, extern "C" fn(u64, *const c_char) -> *mut c_void>(gdpa),
             std::mem::transmute::<
                 *mut c_void,
                 extern "C" fn(*mut c_void, *mut super::capture::PhysicalDeviceMemoryProperties),
             >(gpdmp),
-            phys,
-        );
+        )
+    };
+    // The screenshot and the recording both read this present's image, so one
+    // present can serve a harness that asks for a still while recording.
+    super::capture::capture(queue as u64, swapchain, image_index, gdpa, gpdmp, phys);
+    if crate::recording::frame_due() {
+        match super::capture::frame_target(queue as u64, swapchain, image_index, gdpa) {
+            Ok(target) => crate::recording::on_frame(queue as u64, target, gdpa, gpdmp, phys),
+            Err(e) => {
+                // Once: this is the engine's present, and a complaint per
+                // frame would bury the run at sixty lines a second.
+                static SAID: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+                if !SAID.swap(true, std::sync::atomic::Ordering::Relaxed) {
+                    println!("[record] cannot read the presented frame: {e}");
+                }
+            }
+        }
     }
 }
 

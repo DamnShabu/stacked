@@ -428,6 +428,8 @@ fn enter_run_dir(opt: &mut Options) {
     // because `profile::active()` has latched by now, and the socket belongs
     // inside the profile so ADR-012's one-instance lock already covers it.
     cordial_runtime::devctl::start();
+    // `CORDIAL_RECORD` (ADR-059): record from the first presented frame.
+    cordial_runtime::recording::arm_from_env();
 
     let root = cordial_runtime::profile::active().join("run");
     if let Err(e) = std::fs::create_dir_all(root.join("exe")) {
@@ -5067,6 +5069,11 @@ fn main() -> ExitCode {
     // is a poll, so leaving it implicit means the governor stays raised for
     // however long the sweep takes after a session ends.
     gamemode::unregister();
+
+    // The encoder is a child process and `_exit` below runs nothing: without
+    // this a recording ends with its index unwritten and its last seconds in a
+    // pipe nobody drains.
+    cordial_runtime::recording::finish_at_exit();
 
     // Leave via _exit rather than returning.
     //

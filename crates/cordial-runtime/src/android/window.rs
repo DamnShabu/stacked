@@ -1852,6 +1852,16 @@ impl HostWindow {
             return;
         }
 
+        // The recording hotkey (ADR-059), taken before the engine hears it.
+        // `detail` is an X keycode; evdev's is eight lower.
+        if crate::recording::hotkey_event(
+            ev.detail as i32 - 8,
+            down,
+            meta & (super::input::META_CTRL_ON | super::input::META_ALT_ON) != 0,
+        ) {
+            return;
+        }
+
         if super::input::trace_text() {
             // `text=` is a length unless `CORDIAL_TRACE_TEXT_SHOW_PASSWORDS=1`:
             // one character at a time is still a password, printed slowly.
