@@ -187,6 +187,13 @@ pub fn withhold_vulkan() -> bool {
         let offers = compositor_offers_dmabuf();
         let withhold = withholds_vulkan(wayland, automatic, offers, forced);
         if withhold {
+            // GTK's Vulkan renderer presents through the same WSI and is no
+            // better off, and the shell's probe cannot see that: it finds the
+            // device, which needs no surface. Told here so GTK goes to cairo
+            // rather than to GL beside the engine's GLES (#53). This runs at
+            // `symtab::build`, before the window `gtk_renderer::settle` is
+            // collected for.
+            cordial_shell::gtk_renderer::vulkan_withheld("the compositor advertises no zwp_linux_dmabuf_v1");
             eprintln!(
                 "[android] vulkan: withheld: the compositor advertises no zwp_linux_dmabuf_v1, so a \
                  hardware Vulkan device cannot present to it (Mesa answers VK_ERROR_SURFACE_LOST_KHR) \

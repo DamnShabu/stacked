@@ -629,12 +629,16 @@ fn performance_layer() -> Layer {
     Layer { source: Source::Performance, values }
 }
 
-/// Physical cores, counted from the kernel's own topology.
+/// Physical cores, counted from the kernel's own topology, and capped by the
+/// threads this process may actually run on.
 ///
-/// `available_parallelism` reports threads, which is the wrong number here. Each
-/// CPU's `topology/core_id` is unique per physical core within a package, so the
-/// distinct (package, core) pairs are the count. Falls back to the thread count
-/// when `sysfs` is unreadable, which is the only honest answer available then.
+/// `available_parallelism` counts threads, not cores, so it is not the count;
+/// it is the ceiling. Each CPU's `topology/core_id` is unique per physical core
+/// within a package, so the distinct (package, core) pairs are the host's
+/// cores, but sysfs lists the whole host, and a cgroup quota or an affinity
+/// mask can leave this process fewer threads than that. The answer is the
+/// smaller of the two. Falls back to the thread count when `sysfs` is
+/// unreadable, which is the only honest answer available then.
 pub fn physical_cores() -> usize {
     let mut seen = std::collections::BTreeSet::new();
     if let Ok(dir) = std::fs::read_dir("/sys/devices/system/cpu") {

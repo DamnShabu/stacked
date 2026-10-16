@@ -363,6 +363,11 @@ pub struct OpenWindowRequest {
     /// knows what the window is for. See [`native_bridge_user_agent`] for what
     /// it changes and why (#83).
     pub native_bridge: bool,
+    /// Whether this is a security check for `OPEN_CAPTCHA_VIEW` rather than a
+    /// window the engine opened. Set only by [`dispatch_app_bridge`]; it
+    /// travels with the window so that its close is reported as a check's
+    /// (see [`report_window_closed`]).
+    pub security_check: bool,
 }
 
 /// Parse one `openWindow` payload against this build's own key names.
@@ -390,6 +395,7 @@ pub fn parse_open_window(json: &str, keys: &OpenWindowKeys) -> Result<OpenWindow
         back_button_visible: flag(&keys.back_button_visible),
         show_domain_as_title: flag(&keys.show_domain_as_title),
         native_bridge: false,
+        security_check: false,
     })
 }
 
@@ -632,6 +638,7 @@ fn synthetic_open_window_request(url: String) -> OpenWindowRequest {
         back_button_visible: true,
         show_domain_as_title: true,
         native_bridge,
+        security_check: false,
     }
 }
 
@@ -722,10 +729,6 @@ const CAPTCHA_TITLE: &str = "Roblox verification";
 const CAPTCHA_RETURN_QUERY: &str = "hybrid-return-token=1";
 const MAX_CAPTCHA_PAYLOAD_BYTES: usize = 64 * 1024;
 const MAX_CAPTCHA_CREDENTIAL_BYTES: usize = 4096;
-
-/// Set while a security check is the window on screen, so its close is
-/// reported as focus returning rather than as an `openWindow` window closing.
-static CAPTCHA_OPEN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 const BROADCAST_EVENT_SYMBOL: &str =
     "Java_com_roblox_engine_jni_NativeGLInterface_nativeBroadcastEventWithNamespace";
@@ -823,6 +826,7 @@ pub fn dispatch_app_bridge(
                 show_domain_as_title: false,
                 // The check's whole job is to tell the app it was passed.
                 native_bridge: true,
+                security_check: true,
             });
             AppBridgeOutcome::Presented
         }
@@ -848,7 +852,6 @@ extern "C" fn on_app_bridge(kind: *const c_char, data: *const c_char) {
     };
     let outcome = dispatch_app_bridge(kind, data, |request| match PRESENTER.get() {
         Some(present) => {
-            CAPTCHA_OPEN.store(true, Ordering::Release);
             println!("[webview] OPEN_CAPTCHA_VIEW: opening the security check");
             present(request);
         }
@@ -989,9 +992,6 @@ extern "C" fn on_open_window(json: *const c_char) {
     };
     match parse_open_window(json, keys) {
         Ok(request) => {
-            // The engine's own window takes over: whatever closes next is
-            // answered on the message bus, not as a security check.
-            CAPTCHA_OPEN.store(false, Ordering::Release);
             let mut request = request;
             let screen = cordial_linker_sys::game_activity::last_app_ready();
             request.native_bridge = screen_needs_native_bridge(screen.as_deref());
@@ -1352,8 +1352,11 @@ pub fn arm(mut symbol: impl FnMut(&str) -> Option<*mut c_void>) {
 pub fn report_window_closed() {
     // A security check was not opened by the engine's `openWindow`, so the
     // engine is not waiting for `handleWindowClose` -- it is told app focus is
-    // back, which is what mocktail does for the same window.
-    if CAPTCHA_OPEN.swap(false, Ordering::AcqRel) {
+    // back, which is what mocktail does for the same window. Which kind of
+    // window closed is asked of the dialog itself, not of a flag set by
+    // whichever opened last: the engine's sign-in window and a check can be
+    // open together, and a shared flag swapped their closes.
+    if closing_window_is_security_check() {
         return_focus_to_engine();
         return;
     }
@@ -1372,6 +1375,31 @@ pub fn report_window_closed() {
         Ok(()) => println!("[webview] reported window closed on {bus_id}"),
         Err(e) => println!("[webview] reporting window closed on {bus_id} failed: {e}"),
     }
+}
+
+/// Whether the dialog now closing is a security check, as recorded on the
+/// dialog by `cordial_shell::webview::open`. With no record -- which only
+/// happens if this is called from somewhere other than that dialog's `closed`
+/// handler -- the window is treated as the engine's, and the line says so.
+#[cfg(feature = "webview")]
+fn closing_window_is_security_check() -> bool {
+    match cordial_shell::webview::closing_is_security_check() {
+        Some(check) => check,
+        None => {
+            println!(
+                "[webview] a window closed with no record of what it was; reporting it as the \
+                 engine's own"
+            );
+            false
+        }
+    }
+}
+
+/// Without the `webview` feature there are no dialogs: a window is handed to
+/// the system browser, and nothing reports its close.
+#[cfg(not(feature = "webview"))]
+fn closing_window_is_security_check() -> bool {
+    false
 }
 
 /// The runtime half of the default fix for issue #40/#34, on unless
@@ -1604,6 +1632,7 @@ pub fn to_shell_request(
         // The one exception is a window that has to run with the native
         // bridge, which gets the Android hybrid shape of the same identity.
         user_agent: window_user_agent(request.native_bridge, user_agent()),
+        security_check: request.security_check,
     }
 }
 
@@ -1863,6 +1892,7 @@ mod tests {
                 back_button_visible: false,
                 show_domain_as_title: false,
                 native_bridge: false,
+                security_check: false,
             });
         }
         assert_eq!(CALLS.load(O::SeqCst), 1, "the second presenter must never run");
@@ -1890,12 +1920,6 @@ mod tests {
         assert_eq!(CALLS.load(O::SeqCst), 1, "the second close handler must never run");
     }
 
-    /// `CORDIAL_WEBVIEW_TEST`'s request must carry chrome that marks it as a
-    /// synthesised one -- a plain header with the domain hidden would be
-    /// indistinguishable from a real request that happened to ask for the
-    /// same thing, defeating the reason this diagnostic sets them at all (see
-    /// `dev_trigger_open_window`'s own doc). Deliberately does not touch
-    /// `PRESENTER`, so it cannot race with `set_presenter_keeps_the_first_installation`.
     #[test]
     fn a_login_check_carries_the_credential_escaped() {
         let url = captcha_url(
@@ -1963,6 +1987,7 @@ mod tests {
         assert_eq!(request.title.as_deref(), Some("Roblox verification"));
         assert!(!request.hide_header);
         assert!(request.native_bridge, "the check reports its result through the app's bridge");
+        assert!(request.security_check, "its close is reported as a check's, not as an engine window's");
 
         let mut called = false;
         for kind in ["APP_READY", "PURCHASE_ROBUX", ""] {
@@ -2038,6 +2063,7 @@ mod tests {
         let request =
             parse_open_window(r#"{"url":"https://www.roblox.com/x"}"#, &stand_in_keys()).unwrap();
         assert!(!request.native_bridge);
+        assert!(!request.security_check, "an engine window is never taken for a security check");
     }
 
     #[test]
@@ -2048,6 +2074,12 @@ mod tests {
         assert!(!called);
     }
 
+    /// `CORDIAL_WEBVIEW_TEST`'s request must carry chrome that marks it as a
+    /// synthesised one -- a plain header with the domain hidden would be
+    /// indistinguishable from a real request that happened to ask for the
+    /// same thing, defeating the reason this diagnostic sets them at all (see
+    /// `dev_trigger_open_window`'s own doc). Deliberately does not touch
+    /// `PRESENTER`, so it cannot race with `set_presenter_keeps_the_first_installation`.
     #[test]
     fn the_synthetic_request_is_visibly_a_diagnostic() {
         let request = synthetic_open_window_request("https://www.roblox.com/home".to_string());
