@@ -159,18 +159,19 @@ stacked flags                                   # list them
 stacked flags set DFIntTaskSchedulerTargetFps 144
 stacked flags set FFlagDebugDisplayFPS true     # written as True
 stacked flags unset FFlagDebugDisplayFPS
-stacked flags import bloxstrap.json             # merge a Bloxstrap export; --replace to start over
-stacked flags import --sober                    # copy the fflags from Sober's config.json
+stacked flags import ClientAppSettings.json     # merge a Bloxstrap or Fishstrap list; --replace to start over
+stacked flags import --from sober               # copy the fflags from Sober's config.json
 stacked flags edit                              # open it in $EDITOR
 stacked flags path                              # where the file is
 ```
 
 `set` checks the value against the type in the flag's name. `FFlag…` takes
-`true` or `false`, `FInt…` and `FLog…` take a whole number, and `FString…`
-takes any text. A `D` or `S` in front doesn't change the type. A name without
+`true` or `false`, `FInt…` takes a whole number, and `FString…` and `FLog…`
+take any text (a log channel can be `7` or `Info`). A `D` or `S` in front doesn't change the type. A name without
 one of those prefixes is saved with a warning.
 
-`import` and `edit` save nothing if any value is invalid, and say which one.
+`edit` saves nothing if any value is invalid, and says which one. `import`
+skips an invalid entry, names it, and imports the rest.
 `edit` works on a copy, so a half-finished edit never reaches the game. More on
 what flags do, and which ones Stacked sets itself, is in
 [fastflags.md](fastflags.md).

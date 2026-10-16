@@ -105,9 +105,10 @@ FastFlags (each takes --profile NAME; changes apply at the next start)
   flags set NAME VALUE    Set one. The value is checked against the name's type.
   flags get NAME          Show one.
   flags unset NAME        Remove one.
-  flags import FILE       Merge a Bloxstrap-style JSON export; - reads stdin.
-                          --sober takes Sober's instead of a FILE.
-                          --replace drops the flags that were there.
+  flags import FILE       Merge a Bloxstrap or Fishstrap list; - reads stdin.
+                          --from sober takes Sober's instead of a FILE.
+                          --replace drops the flags that were there. A bad
+                          entry is skipped and named; the rest are imported.
   flags edit              Edit the file in $EDITOR; saved only if it is valid.
   flags clear             Remove every flag.
   flags path              Where the file is.

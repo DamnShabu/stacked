@@ -20,7 +20,7 @@ pub const COMMANDS: &[(&str, &[&str], &[&str])] = &[
     ("unpin", &[], &["--profile"]),
     ("profiles", &["list", "new", "use", "remove"], &[]),
     ("config", &["list", "get", "set", "unset", "path"], &[]),
-    ("flags", &["list", "get", "set", "unset", "import", "edit", "clear", "path"], &["--profile"]),
+    ("flags", &["list", "get", "set", "unset", "import", "edit", "clear", "path"], &["--profile", "--from", "--replace"]),
     ("audio-outputs", &[], &[]),
     ("plugins", &["list", "install", "remove", "enable", "disable", "grant", "revoke", "prefs", "deno"], &["--profile"]),
     ("doctor", &[], &["--offline"]),

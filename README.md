@@ -67,7 +67,7 @@ launches install a newer build first when there is one.
 | | |
 |---|---|
 | `stacked play --profile alt` | Play as another account. Each profile is its own sign-in. |
-| `stacked flags set NAME VALUE` | Set a FastFlag. `flags import --sober` copies Sober's. |
+| `stacked flags set NAME VALUE` | Set a FastFlag. `flags import --from sober` copies Sober's. |
 | `stacked config` | List every setting. `config set fps_cap 90` fixes the frame rate. |
 | `stacked plugins install x.tar.zst` | Add a plugin ([`docs/plugins.md`](docs/plugins.md)). |
 | `stacked diagnostics` | What to paste into a bug report. |
@@ -102,7 +102,7 @@ crash, attach the terminal output, `stacked logs` and `stacked diagnostics` to
 same defaults Sober does, and targets your screen's refresh rate rather than 60.
 
 **I use Sober. How do I switch?** Stacked reuses the Roblox build Sober already
-downloaded, `stacked flags import --sober` copies your FastFlags, and
+downloaded, `stacked flags import --from sober` copies your FastFlags, and
 `stacked desktop install` points the Play button at Stacked. You sign in again
 once. Sober keeps working alongside it.
 

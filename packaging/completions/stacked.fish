@@ -31,6 +31,8 @@ complete -c stacked -n '__fish_seen_subcommand_from profiles; and test (count (c
 complete -c stacked -n '__fish_seen_subcommand_from config; and test (count (commandline -opc)) -eq 2' -a 'list get set unset path'
 complete -c stacked -n '__fish_seen_subcommand_from flags; and test (count (commandline -opc)) -eq 2' -a 'list get set unset import edit clear path'
 complete -c stacked -n '__fish_seen_subcommand_from flags' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
+complete -c stacked -n '__fish_seen_subcommand_from flags' -l from
+complete -c stacked -n '__fish_seen_subcommand_from flags' -l replace
 complete -c stacked -n '__fish_seen_subcommand_from plugins; and test (count (commandline -opc)) -eq 2' -a 'list install remove enable disable grant revoke prefs deno'
 complete -c stacked -n '__fish_seen_subcommand_from plugins' -l profile -r -a '(stacked __complete profiles 2>/dev/null)'
 complete -c stacked -n '__fish_seen_subcommand_from doctor' -l offline
