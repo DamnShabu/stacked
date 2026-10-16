@@ -53,6 +53,7 @@ const LAYOUT_TRANSFER_SRC_OPTIMAL: i32 = 6;
 const ACCESS_TRANSFER_READ: u32 = 0x0000_0800;
 const ACCESS_MEMORY_READ: u32 = 0x0000_8000;
 const STAGE_TRANSFER: u32 = 0x0000_1000;
+const STAGE_ALL_COMMANDS: u32 = 0x0001_0000;
 const ASPECT_COLOR: u32 = 0x0000_0001;
 const QUEUE_FAMILY_IGNORED: u32 = u32::MAX;
 
@@ -277,13 +278,13 @@ pub fn pending() -> bool {
 /// Device-level entry points, resolved through the host's
 /// `vkGetDeviceProcAddr` once per capture.
 struct DeviceFns {
-    get_swapchain_images: extern "C" fn(u64, u64, *mut u32, *mut u64) -> i32,
     create_buffer: extern "C" fn(u64, *const BufferCreateInfo, *const c_void, *mut u64) -> i32,
     get_buffer_memory_requirements: extern "C" fn(u64, u64, *mut MemoryRequirements),
     allocate_memory: extern "C" fn(u64, *const MemoryAllocateInfo, *const c_void, *mut u64) -> i32,
     bind_buffer_memory: extern "C" fn(u64, u64, u64, u64) -> i32,
     create_command_pool:
         extern "C" fn(u64, *const CommandPoolCreateInfo, *const c_void, *mut u64) -> i32,
+    reset_command_pool: extern "C" fn(u64, u64, u32) -> i32,
     allocate_command_buffers:
         extern "C" fn(u64, *const CommandBufferAllocateInfo, *mut u64) -> i32,
     begin_command_buffer: extern "C" fn(u64, *const CommandBufferBeginInfo) -> i32,
@@ -365,249 +366,414 @@ fn do_capture(
     physical_device: *mut c_void,
     path: &str,
 ) -> Result<String, String> {
+    let target = frame_target(queue, swapchain, image_index, gdpa)?;
+    copy_to_png(&target, gdpa, gpdmp, physical_device, path)
+}
+
+/// The image the engine is presenting, as a [`Target`]: the swapchain's own
+/// list of images indexed by the present's `pImageIndices`, in the layout the
+/// engine leaves it in. Shared by the screenshot and the recorder, which both
+/// read the same frame at the same moment.
+pub fn frame_target(
+    queue: u64,
+    swapchain: u64,
+    image_index: u32,
+    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+) -> Result<Target, String> {
     let device = DEVICE.load(Ordering::Relaxed) as u64;
     let (width, height) = extent();
     if device == 0 || swapchain == 0 || width == 0 || height == 0 {
         return Err("no swapchain has been created yet".into());
     }
 
-    let f = DeviceFns {
-        get_swapchain_images: load!(gdpa, device, "vkGetSwapchainImagesKHR"),
-        create_buffer: load!(gdpa, device, "vkCreateBuffer"),
-        get_buffer_memory_requirements: load!(gdpa, device, "vkGetBufferMemoryRequirements"),
-        allocate_memory: load!(gdpa, device, "vkAllocateMemory"),
-        bind_buffer_memory: load!(gdpa, device, "vkBindBufferMemory"),
-        create_command_pool: load!(gdpa, device, "vkCreateCommandPool"),
-        allocate_command_buffers: load!(gdpa, device, "vkAllocateCommandBuffers"),
-        begin_command_buffer: load!(gdpa, device, "vkBeginCommandBuffer"),
-        cmd_pipeline_barrier: load!(gdpa, device, "vkCmdPipelineBarrier"),
-        cmd_copy_image_to_buffer: load!(gdpa, device, "vkCmdCopyImageToBuffer"),
-        end_command_buffer: load!(gdpa, device, "vkEndCommandBuffer"),
-        queue_submit: load!(gdpa, device, "vkQueueSubmit"),
-        queue_wait_idle: load!(gdpa, device, "vkQueueWaitIdle"),
-        map_memory: load!(gdpa, device, "vkMapMemory"),
-        unmap_memory: load!(gdpa, device, "vkUnmapMemory"),
-        destroy_buffer: load!(gdpa, device, "vkDestroyBuffer"),
-        free_memory: load!(gdpa, device, "vkFreeMemory"),
-        destroy_command_pool: load!(gdpa, device, "vkDestroyCommandPool"),
-    };
+    let get_swapchain_images: extern "C" fn(u64, u64, *mut u32, *mut u64) -> i32 =
+        load!(gdpa, device, "vkGetSwapchainImagesKHR");
 
     // The image being presented, by index into the swapchain's own list.
     let mut count = 0u32;
-    if (f.get_swapchain_images)(device, swapchain, &mut count, std::ptr::null_mut()) != VK_SUCCESS {
+    if get_swapchain_images(device, swapchain, &mut count, std::ptr::null_mut()) != VK_SUCCESS {
         return Err("vkGetSwapchainImagesKHR failed to count".into());
     }
     let mut images = vec![0u64; count as usize];
-    if (f.get_swapchain_images)(device, swapchain, &mut count, images.as_mut_ptr()) != VK_SUCCESS {
+    if get_swapchain_images(device, swapchain, &mut count, images.as_mut_ptr()) != VK_SUCCESS {
         return Err("vkGetSwapchainImagesKHR failed".into());
     }
     let image = *images
         .get(image_index as usize)
         .ok_or_else(|| format!("image index {image_index} is outside {count} swapchain images"))?;
-
-    // Four bytes a pixel: every format a swapchain is created with on this
-    // path is a 32-bit BGRA or RGBA, and `FORMAT` records which so the channel
-    // order can be fixed up on the way out rather than guessed.
-    let size = width as u64 * height as u64 * 4;
-    let bci = BufferCreateInfo {
-        s_type: ST_BUFFER_CREATE_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        flags: 0,
-        _pad2: 0,
-        size,
-        usage: BUFFER_USAGE_TRANSFER_DST,
-        sharing_mode: 0,
-        queue_family_index_count: 0,
-        _pad3: 0,
-        queue_family_indices: std::ptr::null(),
-    };
-    let mut buffer = 0u64;
-    if (f.create_buffer)(device, &bci, std::ptr::null(), &mut buffer) != VK_SUCCESS {
-        return Err("vkCreateBuffer failed".into());
-    }
-
-    let mut req = MemoryRequirements { size: 0, alignment: 0, memory_type_bits: 0, _pad: 0 };
-    (f.get_buffer_memory_requirements)(device, buffer, &mut req);
-
-    // SAFETY: the driver fills this out entirely; it is read-only afterwards.
-    let mut props: PhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
-    (gpdmp)(physical_device, &mut props);
-    let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
-    let type_index = (0..props.memory_type_count)
-        .find(|i| {
-            req.memory_type_bits & (1 << i) != 0
-                && props.memory_types[*i as usize].property_flags & wanted == wanted
-        })
-        .ok_or("no host-visible coherent memory type accepts this buffer")?;
-
-    let mai = MemoryAllocateInfo {
-        s_type: ST_MEMORY_ALLOCATE_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        allocation_size: req.size,
-        memory_type_index: type_index,
-        _pad2: 0,
-    };
-    let mut memory = 0u64;
-    if (f.allocate_memory)(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
-        (f.destroy_buffer)(device, buffer, std::ptr::null());
-        return Err("vkAllocateMemory failed".into());
-    }
-    (f.bind_buffer_memory)(device, buffer, memory, 0);
-
-    let pool_ci = CommandPoolCreateInfo {
-        s_type: ST_COMMAND_POOL_CREATE_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        flags: POOL_TRANSIENT,
-        queue_family_index: QUEUE_FAMILY.load(Ordering::Relaxed) as u32,
-    };
-    let mut pool = 0u64;
-    if (f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) != VK_SUCCESS {
-        (f.free_memory)(device, memory, std::ptr::null());
-        (f.destroy_buffer)(device, buffer, std::ptr::null());
-        return Err("vkCreateCommandPool failed".into());
-    }
-
-    let cb_ai = CommandBufferAllocateInfo {
-        s_type: ST_COMMAND_BUFFER_ALLOCATE_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        command_pool: pool,
-        level: 0,
-        command_buffer_count: 1,
-    };
-    let mut cb = 0u64;
-    if (f.allocate_command_buffers)(device, &cb_ai, &mut cb) != VK_SUCCESS {
-        (f.destroy_command_pool)(device, pool, std::ptr::null());
-        (f.free_memory)(device, memory, std::ptr::null());
-        (f.destroy_buffer)(device, buffer, std::ptr::null());
-        return Err("vkAllocateCommandBuffers failed".into());
-    }
-
-    let begin = CommandBufferBeginInfo {
-        s_type: ST_COMMAND_BUFFER_BEGIN_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        flags: CMD_BUFFER_ONE_TIME_SUBMIT,
-        _pad2: 0,
-        inheritance_info: std::ptr::null(),
-    };
-    (f.begin_command_buffer)(cb, &begin);
-
-    // The image arrives in PRESENT_SRC because the engine has just finished
-    // with it, and it must go back in PRESENT_SRC because the present that
-    // this capture is sitting inside is about to use it. Both barriers are
-    // therefore mandatory, and the second one is the easier to forget.
-    let to_src = ImageMemoryBarrier {
-        s_type: ST_IMAGE_MEMORY_BARRIER,
-        _pad: 0,
-        next: std::ptr::null(),
-        src_access_mask: ACCESS_MEMORY_READ,
-        dst_access_mask: ACCESS_TRANSFER_READ,
-        old_layout: LAYOUT_PRESENT_SRC_KHR,
-        new_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
-        src_queue_family_index: QUEUE_FAMILY_IGNORED,
-        dst_queue_family_index: QUEUE_FAMILY_IGNORED,
+    Ok(Target {
+        device,
+        queue,
+        queue_family: QUEUE_FAMILY.load(Ordering::Relaxed) as u32,
         image,
-        subresource: ImageSubresourceRange {
-            aspect_mask: ASPECT_COLOR,
-            base_mip_level: 0,
-            level_count: 1,
-            base_array_layer: 0,
-            layer_count: 1,
-        },
-        _pad2: 0,
-    };
-    (f.cmd_pipeline_barrier)(
-        cb,
-        STAGE_TRANSFER,
-        STAGE_TRANSFER,
-        0,
-        0,
-        std::ptr::null(),
-        0,
-        std::ptr::null(),
-        1,
-        &to_src,
-    );
+        layout: LAYOUT_PRESENT_SRC_KHR,
+        src_access: ACCESS_MEMORY_READ,
+        layer: 0,
+        rect: (0, 0, width, height),
+        format: FORMAT.load(Ordering::Relaxed) as u32,
+    })
+}
 
-    let region = BufferImageCopy {
-        buffer_offset: 0,
-        buffer_row_length: 0,
-        buffer_image_height: 0,
-        image_subresource: ImageSubresourceLayers {
-            aspect_mask: ASPECT_COLOR,
-            mip_level: 0,
-            base_array_layer: 0,
-            layer_count: 1,
-        },
-        image_offset: [0, 0, 0],
-        image_extent: [width, height, 1],
-    };
-    (f.cmd_copy_image_to_buffer)(cb, image, LAYOUT_TRANSFER_SRC_OPTIMAL, buffer, 1, &region);
+/// One image to read back: where it is, the layout it is in and must be
+/// left in, and which layer and rectangle of it.
+pub struct Target {
+    pub device: u64,
+    pub queue: u64,
+    pub queue_family: u32,
+    pub image: u64,
+    /// The layout the image is in now, and is put back into after the copy.
+    pub layout: i32,
+    /// What last touched it, for the barrier into the copy.
+    pub src_access: u32,
+    pub layer: u32,
+    /// x, y, width, height.
+    pub rect: (i32, i32, u32, u32),
+    pub format: u32,
+}
 
-    let back = ImageMemoryBarrier {
-        src_access_mask: ACCESS_TRANSFER_READ,
-        dst_access_mask: ACCESS_MEMORY_READ,
-        old_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
-        new_layout: LAYOUT_PRESENT_SRC_KHR,
-        ..to_src
-    };
-    (f.cmd_pipeline_barrier)(
-        cb,
-        STAGE_TRANSFER,
-        STAGE_TRANSFER,
-        0,
-        0,
-        std::ptr::null(),
-        0,
-        std::ptr::null(),
-        1,
-        &back,
-    );
-    (f.end_command_buffer)(cb);
+/// Reads one image back into host memory, and keeps what it allocated to do it.
+///
+/// `copy_to_png` used to create a buffer, a memory allocation, a command pool
+/// and a command buffer, use them once and destroy them -- deliberately, for a
+/// screenshot taken a handful of times a run. A recording takes thirty a
+/// second, and paying four allocations for each of them is the cost the
+/// screenshot design explicitly declined to carry all session. So the same copy
+/// is split in two: [`Readback::new`] allocates, and [`Readback::read`] records
+/// and submits. The screenshot path still builds one, reads once and drops it,
+/// which is the old behaviour exactly.
+///
+/// Sized for one extent. A swapchain that is recreated at another size needs a
+/// new `Readback`; reading a different rectangle into this one is refused
+/// rather than overrun.
+pub struct Readback {
+    f: DeviceFns,
+    device: u64,
+    buffer: u64,
+    memory: u64,
+    pool: u64,
+    cb: u64,
+    mapped: *const u8,
+    size: usize,
+    width: u32,
+    height: u32,
+}
 
-    let submit = SubmitInfo {
-        s_type: ST_SUBMIT_INFO,
-        _pad: 0,
-        next: std::ptr::null(),
-        wait_semaphore_count: 0,
-        _pad2: 0,
-        wait_semaphores: std::ptr::null(),
-        wait_dst_stage_mask: std::ptr::null(),
-        command_buffer_count: 1,
-        _pad3: 0,
-        command_buffers: &cb,
-        signal_semaphore_count: 0,
-        _pad4: 0,
-        signal_semaphores: std::ptr::null(),
-    };
-    let submitted = (f.queue_submit)(queue, 1, &submit, 0) == VK_SUCCESS;
-    if submitted {
-        (f.queue_wait_idle)(queue);
-    }
+// SAFETY: `mapped` points into device memory this value owns for its whole
+// life and is only ever read through `&mut self`, so moving the value to
+// another thread moves the only handle to it.
+unsafe impl Send for Readback {}
 
-    let mut out = Err("vkQueueSubmit failed".to_string());
-    if submitted {
-        let mut ptr: *mut c_void = std::ptr::null_mut();
-        if (f.map_memory)(device, memory, 0, size, 0, &mut ptr) == VK_SUCCESS && !ptr.is_null() {
-            // SAFETY: the driver mapped exactly `size` bytes at `ptr`, and the
-            // copy above has completed because the queue was waited on.
-            let pixels = unsafe { std::slice::from_raw_parts(ptr as *const u8, size as usize) };
-            out = write_png(path, width, height, pixels, FORMAT.load(Ordering::Relaxed) as u32)
-                .map(|_| format!("{path} {width}x{height}"));
-            (f.unmap_memory)(device, memory);
-        } else {
-            out = Err("vkMapMemory failed".into());
+impl Drop for Readback {
+    fn drop(&mut self) {
+        // Frees whatever `new` got as far as creating, in reverse. Handles are
+        // zero until made, so a failure half way through allocation cleans up
+        // exactly what exists and nothing else.
+        if !self.mapped.is_null() {
+            (self.f.unmap_memory)(self.device, self.memory);
+        }
+        if self.pool != 0 {
+            (self.f.destroy_command_pool)(self.device, self.pool, std::ptr::null());
+        }
+        if self.memory != 0 {
+            (self.f.free_memory)(self.device, self.memory, std::ptr::null());
+        }
+        if self.buffer != 0 {
+            (self.f.destroy_buffer)(self.device, self.buffer, std::ptr::null());
         }
     }
+}
 
-    (f.destroy_command_pool)(device, pool, std::ptr::null());
-    (f.free_memory)(device, memory, std::ptr::null());
-    (f.destroy_buffer)(device, buffer, std::ptr::null());
-    out
+impl Readback {
+    pub fn new(
+        t: &Target,
+        gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+        gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+        physical_device: *mut c_void,
+    ) -> Result<Self, String> {
+        let device = t.device;
+        let (_, _, width, height) = t.rect;
+        if device == 0 || t.image == 0 || width == 0 || height == 0 {
+            return Err("no image to read".into());
+        }
+        let f = DeviceFns {
+            create_buffer: load!(gdpa, device, "vkCreateBuffer"),
+            get_buffer_memory_requirements: load!(gdpa, device, "vkGetBufferMemoryRequirements"),
+            allocate_memory: load!(gdpa, device, "vkAllocateMemory"),
+            bind_buffer_memory: load!(gdpa, device, "vkBindBufferMemory"),
+            create_command_pool: load!(gdpa, device, "vkCreateCommandPool"),
+            reset_command_pool: load!(gdpa, device, "vkResetCommandPool"),
+            allocate_command_buffers: load!(gdpa, device, "vkAllocateCommandBuffers"),
+            begin_command_buffer: load!(gdpa, device, "vkBeginCommandBuffer"),
+            cmd_pipeline_barrier: load!(gdpa, device, "vkCmdPipelineBarrier"),
+            cmd_copy_image_to_buffer: load!(gdpa, device, "vkCmdCopyImageToBuffer"),
+            end_command_buffer: load!(gdpa, device, "vkEndCommandBuffer"),
+            queue_submit: load!(gdpa, device, "vkQueueSubmit"),
+            queue_wait_idle: load!(gdpa, device, "vkQueueWaitIdle"),
+            map_memory: load!(gdpa, device, "vkMapMemory"),
+            unmap_memory: load!(gdpa, device, "vkUnmapMemory"),
+            destroy_buffer: load!(gdpa, device, "vkDestroyBuffer"),
+            free_memory: load!(gdpa, device, "vkFreeMemory"),
+            destroy_command_pool: load!(gdpa, device, "vkDestroyCommandPool"),
+        };
+        let mut rb = Readback {
+            f,
+            device,
+            buffer: 0,
+            memory: 0,
+            pool: 0,
+            cb: 0,
+            mapped: std::ptr::null(),
+            // Four bytes a pixel: every format a swapchain is created with on
+            // this path is a 32-bit BGRA or RGBA, and `FORMAT` records which
+            // so the channel order can be fixed up on the way out rather than
+            // guessed.
+            size: width as usize * height as usize * 4,
+            width,
+            height,
+        };
+        let bci = BufferCreateInfo {
+            s_type: ST_BUFFER_CREATE_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            flags: 0,
+            _pad2: 0,
+            size: rb.size as u64,
+            usage: BUFFER_USAGE_TRANSFER_DST,
+            sharing_mode: 0,
+            queue_family_index_count: 0,
+            _pad3: 0,
+            queue_family_indices: std::ptr::null(),
+        };
+        let mut buffer = 0u64;
+        if (rb.f.create_buffer)(device, &bci, std::ptr::null(), &mut buffer) != VK_SUCCESS {
+            return Err("vkCreateBuffer failed".into());
+        }
+        rb.buffer = buffer;
+
+        let mut req = MemoryRequirements { size: 0, alignment: 0, memory_type_bits: 0, _pad: 0 };
+        (rb.f.get_buffer_memory_requirements)(device, buffer, &mut req);
+
+        // SAFETY: the driver fills this out entirely; it is read-only afterwards.
+        let mut props: PhysicalDeviceMemoryProperties = unsafe { std::mem::zeroed() };
+        (gpdmp)(physical_device, &mut props);
+        let wanted = MEMORY_HOST_VISIBLE | MEMORY_HOST_COHERENT;
+        let type_index = (0..props.memory_type_count)
+            .find(|i| {
+                req.memory_type_bits & (1 << i) != 0
+                    && props.memory_types[*i as usize].property_flags & wanted == wanted
+            })
+            .ok_or("no host-visible coherent memory type accepts this buffer")?;
+
+        let mai = MemoryAllocateInfo {
+            s_type: ST_MEMORY_ALLOCATE_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            allocation_size: req.size,
+            memory_type_index: type_index,
+            _pad2: 0,
+        };
+        let mut memory = 0u64;
+        if (rb.f.allocate_memory)(device, &mai, std::ptr::null(), &mut memory) != VK_SUCCESS {
+            return Err("vkAllocateMemory failed".into());
+        }
+        rb.memory = memory;
+        (rb.f.bind_buffer_memory)(device, buffer, memory, 0);
+
+        let pool_ci = CommandPoolCreateInfo {
+            s_type: ST_COMMAND_POOL_CREATE_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            flags: POOL_TRANSIENT,
+            queue_family_index: t.queue_family,
+        };
+        let mut pool = 0u64;
+        if (rb.f.create_command_pool)(device, &pool_ci, std::ptr::null(), &mut pool) != VK_SUCCESS {
+            return Err("vkCreateCommandPool failed".into());
+        }
+        rb.pool = pool;
+
+        let cb_ai = CommandBufferAllocateInfo {
+            s_type: ST_COMMAND_BUFFER_ALLOCATE_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            command_pool: pool,
+            level: 0,
+            command_buffer_count: 1,
+        };
+        let mut cb = 0u64;
+        if (rb.f.allocate_command_buffers)(device, &cb_ai, &mut cb) != VK_SUCCESS {
+            return Err("vkAllocateCommandBuffers failed".into());
+        }
+        rb.cb = cb;
+
+        // Mapped once and left mapped. The memory is host-coherent, so nothing
+        // needs invalidating between reads.
+        let mut ptr: *mut c_void = std::ptr::null_mut();
+        if (rb.f.map_memory)(device, memory, 0, rb.size as u64, 0, &mut ptr) != VK_SUCCESS
+            || ptr.is_null()
+        {
+            return Err("vkMapMemory failed".into());
+        }
+        rb.mapped = ptr as *const u8;
+        Ok(rb)
+    }
+
+    /// Copy `t` into the mapped buffer and return the pixels, which are valid
+    /// until the next call.
+    pub fn read(&mut self, queue: u64, t: &Target) -> Result<&[u8], String> {
+        let (x, y, width, height) = t.rect;
+        if (width, height) != (self.width, self.height) {
+            return Err(format!(
+                "readback was sized {}x{} and was asked for {width}x{height}",
+                self.width, self.height
+            ));
+        }
+        let (image, cb) = (t.image, self.cb);
+        let f = &self.f;
+        // The pool is transient and the buffer one-time-submit, so recording
+        // again means resetting first. Without it the second frame's
+        // `vkBeginCommandBuffer` is a use of a buffer the specification says is
+        // invalid, which a driver is free to tolerate on the first run only.
+        (f.reset_command_pool)(self.device, self.pool, 0);
+
+        let begin = CommandBufferBeginInfo {
+            s_type: ST_COMMAND_BUFFER_BEGIN_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            flags: CMD_BUFFER_ONE_TIME_SUBMIT,
+            _pad2: 0,
+            inheritance_info: std::ptr::null(),
+        };
+        (f.begin_command_buffer)(cb, &begin);
+
+        // The image arrives in PRESENT_SRC because the engine has just finished
+        // with it, and it must go back in PRESENT_SRC because the present that
+        // this capture is sitting inside is about to use it. Both barriers are
+        // therefore mandatory, and the second one is the easier to forget.
+        let to_src = ImageMemoryBarrier {
+            s_type: ST_IMAGE_MEMORY_BARRIER,
+            _pad: 0,
+            next: std::ptr::null(),
+            src_access_mask: t.src_access,
+            dst_access_mask: ACCESS_TRANSFER_READ,
+            old_layout: t.layout,
+            new_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+            src_queue_family_index: QUEUE_FAMILY_IGNORED,
+            dst_queue_family_index: QUEUE_FAMILY_IGNORED,
+            image,
+            subresource: ImageSubresourceRange {
+                aspect_mask: ASPECT_COLOR,
+                base_mip_level: 0,
+                level_count: 1,
+                base_array_layer: t.layer,
+                layer_count: 1,
+            },
+            _pad2: 0,
+        };
+        (f.cmd_pipeline_barrier)(
+            cb,
+            // All commands rather than transfer: the last writer of the image
+            // is the engine's rendering, not a transfer, and a transfer-only
+            // source stage does not order the copy after it.
+            STAGE_ALL_COMMANDS,
+            STAGE_TRANSFER,
+            0,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            1,
+            &to_src,
+        );
+
+        let region = BufferImageCopy {
+            buffer_offset: 0,
+            buffer_row_length: 0,
+            buffer_image_height: 0,
+            image_subresource: ImageSubresourceLayers {
+                aspect_mask: ASPECT_COLOR,
+                mip_level: 0,
+                base_array_layer: t.layer,
+                layer_count: 1,
+            },
+            image_offset: [x, y, 0],
+            image_extent: [width, height, 1],
+        };
+        (f.cmd_copy_image_to_buffer)(cb, image, LAYOUT_TRANSFER_SRC_OPTIMAL, self.buffer, 1, &region);
+
+        let back = ImageMemoryBarrier {
+            src_access_mask: ACCESS_TRANSFER_READ,
+            dst_access_mask: ACCESS_MEMORY_READ,
+            old_layout: LAYOUT_TRANSFER_SRC_OPTIMAL,
+            new_layout: t.layout,
+            ..to_src
+        };
+        (f.cmd_pipeline_barrier)(
+            cb,
+            STAGE_TRANSFER,
+            STAGE_TRANSFER,
+            0,
+            0,
+            std::ptr::null(),
+            0,
+            std::ptr::null(),
+            1,
+            &back,
+        );
+        (f.end_command_buffer)(cb);
+
+        let submit = SubmitInfo {
+            s_type: ST_SUBMIT_INFO,
+            _pad: 0,
+            next: std::ptr::null(),
+            wait_semaphore_count: 0,
+            _pad2: 0,
+            wait_semaphores: std::ptr::null(),
+            wait_dst_stage_mask: std::ptr::null(),
+            command_buffer_count: 1,
+            _pad3: 0,
+            command_buffers: &cb,
+            signal_semaphore_count: 0,
+            _pad4: 0,
+            signal_semaphores: std::ptr::null(),
+        };
+        if (f.queue_submit)(queue, 1, &submit, 0) != VK_SUCCESS {
+            return Err("vkQueueSubmit failed".into());
+        }
+        (f.queue_wait_idle)(queue);
+        // SAFETY: `mapped` is `size` bytes of host-coherent memory that this
+        // value keeps mapped, and the copy above has completed because the
+        // queue was waited on.
+        Ok(unsafe { std::slice::from_raw_parts(self.mapped, self.size) })
+    }
+}
+
+fn copy_to_png(
+    t: &Target,
+    gdpa: extern "C" fn(u64, *const std::ffi::c_char) -> *mut c_void,
+    gpdmp: extern "C" fn(*mut c_void, *mut PhysicalDeviceMemoryProperties),
+    physical_device: *mut c_void,
+    path: &str,
+) -> Result<String, String> {
+    let (_, _, width, height) = t.rect;
+    let mut rb = Readback::new(t, gdpa, gpdmp, physical_device)?;
+    let pixels = rb.read(t.queue, t)?;
+    write_png(path, width, height, pixels, t.format).map(|_| format!("{path} {width}x{height}"))
+}
+
+/// Whether a swapchain format stores blue first.
+///
+/// 44/50 are B8G8R8A8_UNORM/SRGB, 37/43 are R8G8B8A8_UNORM/SRGB. Anything else
+/// is reported rather than guessed at, because a silently swapped red and blue
+/// channel is exactly the kind of wrong-but-plausible output this project keeps
+/// having to retract. The recorder asks too, so a video and a screenshot of the
+/// same frame cannot disagree about which channel is which.
+pub fn is_bgra(format: u32) -> Result<bool, String> {
+    match format {
+        44 | 50 => Ok(true),
+        37 | 43 => Ok(false),
+        other => Err(format!("unhandled swapchain format {other}")),
+    }
 }
 
 /// Write the pixels out as a PNG, with no encoder dependency.
@@ -617,15 +783,7 @@ fn do_capture(
 /// harness looks at and deletes; pulling in a deflate implementation to make it
 /// smaller would add a dependency to the runtime crate for a development aid.
 fn write_png(path: &str, width: u32, height: u32, pixels: &[u8], format: u32) -> Result<(), String> {
-    // 44/50 are B8G8R8A8_UNORM/SRGB, 37/43 are R8G8B8A8_UNORM/SRGB. Anything
-    // else is reported rather than guessed at, because a silently swapped red
-    // and blue channel is exactly the kind of wrong-but-plausible output this
-    // project keeps having to retract.
-    let bgra = match format {
-        44 | 50 => true,
-        37 | 43 => false,
-        other => return Err(format!("unhandled swapchain format {other}")),
-    };
+    let bgra = is_bgra(format)?;
 
     let mut raw = Vec::with_capacity((width as usize * 3 + 1) * height as usize);
     for y in 0..height as usize {

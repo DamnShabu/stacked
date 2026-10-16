@@ -17,6 +17,7 @@
 #include "pipewire_backend.h"
 
 #include <cassert>
+#include <chrono>
 #include <cstdlib>
 #include <cstdio>
 #include <cstring>
@@ -289,9 +290,155 @@ void an_unknown_host_backend_falls_back_to_pipewire() {
     std::printf("ok: an_unknown_host_backend_falls_back_to_pipewire\n");
 }
 
+/// A PipeWire that is still starting when sound is first wanted must not cost
+/// the whole run its audio. The first attempt fails, the daemon comes up, and a
+/// later caller has to get the connection.
+void a_connection_that_failed_is_retried_once_the_wait_has_passed() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    int session = 0;
+    bool daemon_up = false;
+    int connects = 0;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    auto connect = [&](bool) -> int* {
+        ++connects;
+        return daemon_up ? &session : nullptr;
+    };
+
+    RetryingSlot<int> slot(std::chrono::seconds(5));
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+
+    // Inside the wait nobody is asked again, even though the daemon is now up:
+    // a wedged one costs three seconds a try.
+    daemon_up = true;
+    t += std::chrono::seconds(2);
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+
+    t += std::chrono::seconds(4);
+    assert(slot.get(connect, now) == &session);
+    assert(connects == 2);
+
+    // A success is kept: no further connects, however long it has been.
+    t += std::chrono::hours(1);
+    assert(slot.get(connect, now) == &session);
+    assert(connects == 2);
+    std::printf("ok: a_connection_that_failed_is_retried_once_the_wait_has_passed\n");
+}
+
+/// The connector is told which attempt it is, so the repeated failures of a
+/// daemon that never comes up are logged once rather than on every retry.
+void only_the_first_attempt_is_marked_first() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    std::vector<bool> seen;
+    auto connect = [&](bool first) -> int* {
+        seen.push_back(first);
+        return nullptr;
+    };
+    RetryingSlot<int> slot(std::chrono::seconds(5));
+    for (int i = 0; i < 3; ++i) {
+        slot.get(connect, now);
+        t += std::chrono::seconds(6);
+    }
+    assert((seen == std::vector<bool>{true, false, false}));
+    assert(slot.attempts() == 3);
+    std::printf("ok: only_the_first_attempt_is_marked_first\n");
+}
+
+/// The control: the old behaviour was a retry wait of forever, and it is what a
+/// slot configured that way still does. Without the retry above, the previous
+/// test fails here.
+void a_slot_that_never_retries_keeps_its_first_failure() {
+    using cordial::audio::testing::RetryingSlot;
+    using Clock = std::chrono::steady_clock;
+    Clock::time_point t{};
+    auto now = [&] { return t; };
+    int session = 0;
+    int connects = 0;
+    bool daemon_up = false;
+    auto connect = [&](bool) -> int* {
+        ++connects;
+        return daemon_up ? &session : nullptr;
+    };
+    RetryingSlot<int> slot(Clock::duration::max());
+    assert(slot.get(connect, now) == nullptr);
+    daemon_up = true;
+    t += std::chrono::hours(24);
+    assert(slot.get(connect, now) == nullptr);
+    assert(connects == 1);
+    std::printf("ok: a_slot_that_never_retries_keeps_its_first_failure\n");
+}
+
+// ------------------------------------------------------ input device choice
+//
+// The microphone picker's three answers, which need no session, and the one
+// property of it that has a privacy cost: choosing or changing a microphone must
+// not open one.
+
+void a_chosen_source_is_the_target_a_missing_one_falls_back_and_none_is_not_a_fallback() {
+    using cordial::audio::testing::choose_input_target;
+    const std::vector<std::string> sources = {
+        "alsa_input.usb-Headset-00.mono-fallback",
+        "alsa_input.pci-0000_00_1f.3.analog-stereo",
+    };
+    bool fell_back = true;
+    assert(choose_input_target("alsa_input.usb-Headset-00.mono-fallback", sources, &fell_back) ==
+           "alsa_input.usb-Headset-00.mono-fallback");
+    assert(!fell_back);
+
+    // Unplugged since it was chosen: the default, said out loud.
+    assert(choose_input_target("alsa_input.usb-Gone", sources, &fell_back).empty());
+    assert(fell_back);
+
+    // Never chosen is the ordinary case and is not a fallback from anything.
+    assert(choose_input_target("", sources, &fell_back).empty());
+    assert(!fell_back);
+
+    // A sink's name is not a source's, and must not match one.
+    assert(choose_input_target("alsa_output.pci-0000_00_1f.3.analog-stereo", sources, &fell_back)
+               .empty());
+    assert(fell_back);
+    std::printf("ok: a_chosen_source_is_the_target_a_missing_one_falls_back_and_none_is_not_a_fallback\n");
+}
+
+/// **The microphone rule, for the choice.** Reading the choice from the
+/// environment, reading it back and asking the shell's C ABI for the source list
+/// with a null out-pointer must all leave the process with no capture stream.
+/// `cordial_audio_sources` with a real session is held to the same count from
+/// the shell's side in `audio_devices.rs`.
+void choosing_a_microphone_opens_no_microphone() {
+    assert(cordial::audio::active_capture_streams() == 0);
+    ::setenv("CORDIAL_AUDIO_SOURCE", "source-from-the-environment", 1);
+    assert(cordial::audio::configured_input_device() == "source-from-the-environment");
+    assert(cordial::audio::active_capture_streams() == 0);
+
+    // Read once, at the first use: the choice is a launch-time one, and a later
+    // change to the environment is not a change of microphone. The sink's
+    // choice is a separate thing and stays unset.
+    ::unsetenv("CORDIAL_AUDIO_SOURCE");
+    assert(cordial::audio::configured_input_device() == "source-from-the-environment");
+    assert(cordial::audio::configured_output_device().empty());
+
+    assert(cordial_audio_sources(nullptr) == 0);
+    assert(cordial_audio_capture_streams() == 0);
+    // Resolving "no choice" walks no registry and opens nothing.
+    assert(cordial::audio::resolve_input_target("").empty());
+    assert(cordial::audio::active_capture_streams() == 0);
+    std::printf("ok: choosing_a_microphone_opens_no_microphone\n");
+}
+
 } // namespace
 
 int main() {
+    // Both are read once and cached, so a developer who builds with either set
+    // in the shell would otherwise fail a check that is about the code.
+    ::unsetenv("CORDIAL_AUDIO_SINK");
+    ::unsetenv("CORDIAL_AUDIO_SOURCE");
     a_full_queue_fills_the_buffer_exactly();
     an_empty_queue_produces_silence_not_stale_bytes();
     a_short_queue_fills_what_it_has_and_pads_the_rest_with_silence();
@@ -299,6 +446,7 @@ int main() {
     multiple_buffers_are_drained_in_order_within_one_fill();
     a_capture_stream_holds_nothing_until_it_is_opened();
     a_chosen_sink_that_is_present_is_the_target();
+    a_chosen_source_is_the_target_a_missing_one_falls_back_and_none_is_not_a_fallback();
     a_chosen_sink_that_has_gone_falls_back_to_the_default_and_says_so();
     no_choice_follows_the_default_and_is_not_a_fallback();
     an_empty_session_still_falls_back_rather_than_targeting_nothing();
@@ -307,6 +455,10 @@ int main() {
     the_shells_device_list_survives_being_asked_for_nothing();
     the_factory_always_returns_a_stream();
     an_unknown_host_backend_falls_back_to_pipewire();
+    a_connection_that_failed_is_retried_once_the_wait_has_passed();
+    only_the_first_attempt_is_marked_first();
+    a_slot_that_never_retries_keeps_its_first_failure();
+    choosing_a_microphone_opens_no_microphone();
     std::printf("all pipewire_backend checks passed\n");
     return 0;
 }

@@ -65,10 +65,27 @@ fn icon_path() -> PathBuf {
 /// shadow with one of its own.
 fn packaged_entry() -> Option<PathBuf> {
     let dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".into());
+    packaged_entry_in(&dirs, std::env::var_os("APPDIR").as_deref().map(Path::new))
+}
+
+/// `packaged_entry` over `dirs`, skipping any inside `appdir`.
+///
+/// AppRun puts the AppImage's own `usr/share` first on `XDG_DATA_DIRS`, so the
+/// entry inside the image was found and taken for a system package's: from
+/// the v0.21.10 AppImage this wrote no menu entry and pointed the browser at a
+/// desktop file that exists only while the image is mounted.
+fn packaged_entry_in(dirs: &str, appdir: Option<&Path>) -> Option<PathBuf> {
     dirs.split(':')
         .filter(|d| !d.is_empty())
+        .filter(|d| appdir.is_none_or(|a| !Path::new(d).starts_with(a)))
         .map(|d| Path::new(d).join("applications").join(format!("{APP_ID}.desktop")))
         .find(|p| p.is_file())
+}
+
+/// What the entry should run: the `.AppImage` file when this is one, since
+/// `current_exe` is then a path inside a mount that goes away on exit.
+fn launcher(current_exe: PathBuf, appimage: Option<PathBuf>) -> PathBuf {
+    appimage.filter(|p| p.is_file()).unwrap_or(current_exe)
 }
 
 /// The packaged entry with `Exec` and `TryExec` pointing at `exe`.
@@ -97,7 +114,7 @@ fn install() -> u8 {
         return 0;
     }
     let exe = match std::env::current_exe() {
-        Ok(p) => p,
+        Ok(p) => launcher(p, std::env::var_os("APPIMAGE").map(PathBuf::from)),
         Err(e) => {
             eprintln!("stacked: cannot tell where this binary is: {e}");
             return 1;
@@ -349,6 +366,37 @@ mod tests {
         write(&link, b"new\n").unwrap();
         assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink(), "the link must survive");
         assert_eq!(std::fs::read_to_string(&real).unwrap(), "new\n");
+    }
+
+    #[test]
+    fn the_appimages_own_entry_is_not_a_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let appdir = dir.path().join("mount");
+        let system = dir.path().join("usr/share");
+        for share in [appdir.join("usr/share"), system.clone()] {
+            std::fs::create_dir_all(share.join("applications")).unwrap();
+        }
+        let inside = appdir.join("usr/share/applications").join(format!("{APP_ID}.desktop"));
+        std::fs::write(&inside, ENTRY).unwrap();
+        let dirs = format!("{}:{}", appdir.join("usr/share").display(), system.display());
+
+        assert_eq!(packaged_entry_in(&dirs, Some(&appdir)), None);
+        assert_eq!(packaged_entry_in(&dirs, None), Some(inside), "outside an AppImage nothing is skipped");
+
+        let packaged = system.join("applications").join(format!("{APP_ID}.desktop"));
+        std::fs::write(&packaged, ENTRY).unwrap();
+        assert_eq!(packaged_entry_in(&dirs, Some(&appdir)), Some(packaged));
+    }
+
+    #[test]
+    fn an_appimage_entry_runs_the_image_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let image = dir.path().join("Stacked.AppImage");
+        std::fs::write(&image, b"").unwrap();
+        let mounted = PathBuf::from("/tmp/.mount_StackXY/usr/bin/stacked");
+        assert_eq!(launcher(mounted.clone(), Some(image.clone())), image);
+        assert_eq!(launcher(mounted.clone(), None), mounted);
+        assert_eq!(launcher(mounted.clone(), Some(dir.path().join("gone"))), mounted);
     }
 
     #[test]

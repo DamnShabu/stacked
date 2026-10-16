@@ -1,0 +1,47 @@
+# A Claude review on each pull request, posted as one sticky comment.
+#
+# Needs the ANTHROPIC_API_KEY repository secret; without it the job fails and
+# nothing else is affected. Pull requests from forks get no secrets, so they get
+# no review either -- this covers branches pushed to this repository.
+name: Claude PR review
+
+on:
+  pull_request:
+    types: [opened, synchronize, ready_for_review, reopened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-review-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  review:
+    if: github.event.pull_request.draft == false && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          fetch-depth: 1
+      - uses: anthropics/claude-code-action@374f254f5efaf968abfe15d399fd90972e8138b9 # v1.0.251
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          use_sticky_comment: true
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Review this pull request for Stacked. Read AGENTS.md first; it is the
+            project's contract. Report only real problems, most severe first:
+            correctness bugs, security issues, missing tests for changed behaviour,
+            a stub that reports success it did not achieve, anything that adds
+            in-process code execution against the Roblox process (ADR-001), and
+            documentation the change makes wrong. Use inline comments on specific
+            lines and keep the summary short. If the PR looks good, say so in one line.
+          claude_args: |
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr comment:*),Bash(gh pr diff:*),Bash(gh pr view:*)"

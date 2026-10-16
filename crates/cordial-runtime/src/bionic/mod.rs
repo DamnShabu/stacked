@@ -34,9 +34,11 @@ pub fn function_overrides() -> Vec<(&'static str, *mut c_void)> {
         f!("__assert", bionic_assert),
         f!("__assert2", bionic_assert2),
         f!("__gnu_strerror_r", gnu_strerror_r),
+        f!("strerror_r", bionic_strerror_r),
         // FORTIFY wrappers.
         f!("__strlen_chk", strlen_chk),
         f!("__strchr_chk", strchr_chk),
+        f!("__strrchr_chk", strrchr_chk),
         f!("__strncpy_chk2", strncpy_chk2),
         f!("__write_chk", write_chk),
         f!("__umask_chk", umask_chk),
@@ -201,8 +203,12 @@ extern "C" {
     fn __errno_location() -> *mut c_int;
     fn strlen(s: *const c_char) -> usize;
     fn strchr(s: *const c_char, c: c_int) -> *mut c_char;
+    fn strrchr(s: *const c_char, c: c_int) -> *mut c_char;
     fn strncpy(dst: *mut c_char, src: *const c_char, n: usize) -> *mut c_char;
-    fn strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int;
+    // glibc's `strerror_r` is the GNU one: it returns `char*` and may leave
+    // `buf` untouched. The XSI one, which always fills `buf` and is what both
+    // of bionic's flavours are built on, is exported under this other name.
+    fn __xpg_strerror_r(errnum: c_int, buf: *mut u8, buflen: usize) -> c_int;
     fn write(fd: c_int, buf: *const c_void, count: usize) -> isize;
     fn umask(mode: u32) -> u32;
     fn poll(fds: *mut c_void, nfds: u64, timeout: c_int) -> c_int;
@@ -347,12 +353,41 @@ extern "C" fn bionic_assert2(
 }
 
 /// bionic's GNU-flavoured `strerror_r`, which returns `char*` rather than int.
+///
+/// bionic's own is the XSI call into `buf`, then `return buf`, with errno left
+/// as it was, so a caller compiled against it may ignore the return and read
+/// `buf`. glibc's GNU `strerror_r` cannot stand in for it either way round: for
+/// a known errno it returns a pointer to a static string and never writes
+/// `buf`. Handing back `buf` after calling it (the first version) gave the
+/// engine an uninitialised buffer; returning glibc's pointer (the second)
+/// fixed callers that use the return and left those that read `buf` with the
+/// same uninitialised bytes. Doing what bionic does satisfies both.
 extern "C" fn gnu_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> *mut c_char {
-    // SAFETY: caller-supplied buffer of at least `buflen` bytes.
+    // SAFETY: `__errno_location` is always valid for the calling thread, and
+    // the buffer is the caller's, of at least `buflen` bytes. An unknown errno
+    // still writes "Unknown error N" (glibc returns EINVAL for it), and a
+    // short buffer is filled with what fits, as bionic's is.
     unsafe {
-        strerror_r(errnum, buf, buflen);
+        let saved = *__errno_location();
+        __xpg_strerror_r(errnum, buf.cast(), buflen);
+        *__errno_location() = saved;
     }
     buf
+}
+
+/// bionic's plain `strerror_r`, which is POSIX's: fills `buf`, returns 0, or
+/// an error number (`EINVAL` for an unknown errno, `ERANGE` if truncated).
+///
+/// Left to the host this resolved to glibc's GNU `strerror_r`, which returns
+/// a pointer. libc++'s `system_category().message()` reads that return as an
+/// int, sees the low half of an address, and calls `abort()` while the
+/// `std::system_error` is still being built, so a `catch` never sees it.
+/// INFERRED for a caught exception: the abort was read off the 2.738.1397
+/// arm64 and x86-64 builds' `message()`, and observed only through a
+/// coredump of an uncaught one.
+extern "C" fn bionic_strerror_r(errnum: c_int, buf: *mut c_char, buflen: usize) -> c_int {
+    // SAFETY: caller-supplied buffer of at least `buflen` bytes.
+    unsafe { __xpg_strerror_r(errnum, buf.cast(), buflen) }
 }
 
 extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
@@ -361,6 +396,13 @@ extern "C" fn strlen_chk(s: *const c_char, _bound: usize) -> usize {
 
 extern "C" fn strchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
     unsafe { strchr(s, c) }
+}
+
+/// Absent until Roblox 2.702.0.622, whose `libroblox.so` imports it: glibc has
+/// no `__strrchr_chk`, so the load stopped at "cannot locate symbol" before a
+/// single engine instruction ran. Same contract as `__strchr_chk`.
+extern "C" fn strrchr_chk(s: *const c_char, c: c_int, _bound: usize) -> *mut c_char {
+    unsafe { strrchr(s, c) }
 }
 
 extern "C" fn strncpy_chk2(
@@ -533,6 +575,25 @@ extern "C" fn bionic_sysconf(name: c_int) -> i64 {
 
     eprintln!("[bionic] sysconf({name}) is not a selector bionic defines; returning -1");
     -1
+}
+
+#[cfg(test)]
+mod fortify_tests {
+    use super::*;
+
+    #[test]
+    fn strrchr_chk_is_provided_and_finds_the_last_match() {
+        let overrides = function_overrides();
+        assert!(
+            overrides.iter().any(|(name, _)| *name == "__strrchr_chk"),
+            "2.702.0.622 imports __strrchr_chk and glibc does not define it"
+        );
+        let path = c"/a/b/c.txt";
+        let got = strrchr_chk(path.as_ptr(), b'/' as c_int, path.to_bytes_with_nul().len());
+        // SAFETY: `got` points into `path`.
+        assert_eq!(unsafe { CStr::from_ptr(got) }, c"/c.txt");
+        assert!(strrchr_chk(path.as_ptr(), b'z' as c_int, 11).is_null());
+    }
 }
 
 // ----------------------------------------------------------------------- liblog
@@ -938,6 +999,74 @@ mod foreign_alloc_tests {
     #[test]
     fn vasprintf_is_overridden() {
         assert!(!find("vasprintf").is_null());
+    }
+}
+
+#[cfg(test)]
+mod strerror_tests {
+    use super::*;
+
+    fn find(name: &str) -> *mut c_void {
+        function_overrides()
+            .into_iter()
+            .find(|(n, _)| *n == name)
+            .unwrap_or_else(|| panic!("{name} is not overridden"))
+            .1
+    }
+
+    type Xsi = unsafe extern "C" fn(c_int, *mut c_char, usize) -> c_int;
+    type Gnu = unsafe extern "C" fn(c_int, *mut c_char, usize) -> *mut c_char;
+
+    /// The engine's int-returning import must land on the POSIX contract:
+    /// zero, and the text in the caller's buffer. Reads the table the loader
+    /// consults, so an entry that was dropped fails here rather than aborting
+    /// the engine the first time a `std::system_error` is built.
+    #[test]
+    fn plain_strerror_r_is_the_posix_one() {
+        // SAFETY: the address is `bionic_strerror_r`, which has this signature.
+        let f: Xsi = unsafe { std::mem::transmute(find("strerror_r")) };
+        let mut buf = [0 as c_char; 256];
+        // SAFETY: `buf` is 256 bytes and the length passed says so.
+        unsafe {
+            assert_eq!(f(22, buf.as_mut_ptr(), buf.len()), 0);
+            assert_eq!(CStr::from_ptr(buf.as_ptr()).to_str().unwrap(), "Invalid argument");
+
+            // An errno glibc has no text for is EINVAL, and libc++ handles
+            // exactly that answer by writing its own "Unknown error N".
+            let mut unknown = [0 as c_char; 256];
+            assert_eq!(f(99_999, unknown.as_mut_ptr(), unknown.len()), 22);
+            assert!(CStr::from_ptr(unknown.as_ptr()).to_str().unwrap().contains("Unknown error"));
+        }
+    }
+
+    /// The `char*` flavour must put the message in `buf` and return `buf`, as
+    /// bionic's does: a caller that ignores the return and reads its own
+    /// buffer is as valid as one that uses the return. Seeded with 0x7f so a
+    /// buffer left unwritten cannot pass for the message.
+    #[test]
+    fn gnu_strerror_r_writes_the_message_into_buf_and_returns_it() {
+        // SAFETY: the address is `gnu_strerror_r`, which has this signature.
+        let f: Gnu = unsafe { std::mem::transmute(find("__gnu_strerror_r")) };
+        // SAFETY: every buffer is as long as the length passed with it, and
+        // `__errno_location` is valid for this thread.
+        unsafe {
+            let mut buf = [0x7f as c_char; 256];
+            *__errno_location() = 1234;
+            let got = f(22, buf.as_mut_ptr(), buf.len());
+            assert_eq!(got, buf.as_mut_ptr(), "the return is the caller's buffer");
+            assert_eq!(CStr::from_ptr(buf.as_ptr()).to_str().unwrap(), "Invalid argument");
+            assert_eq!(*__errno_location(), 1234, "errno is left as it was");
+
+            // An errno with no text is still written out, not left unset.
+            let mut unknown = [0x7f as c_char; 256];
+            f(99_999, unknown.as_mut_ptr(), unknown.len());
+            assert!(CStr::from_ptr(unknown.as_ptr()).to_str().unwrap().contains("Unknown error"));
+
+            // A short buffer holds what fits, terminated.
+            let mut short = [0x7f as c_char; 8];
+            f(22, short.as_mut_ptr(), short.len());
+            assert_eq!(CStr::from_ptr(short.as_ptr()).to_str().unwrap(), "Invalid");
+        }
     }
 }
 

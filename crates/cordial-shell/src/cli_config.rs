@@ -28,7 +28,10 @@ const KEYS: &[(&str, &str, &str)] = &[
     ("throttle", "visible | unfocused | off", "When to let the engine slow down: once hidden, once unfocused, or never held awake."),
     ("pointer_acceleration", "unlockedcursor | always", "Whether the desktop's pointer acceleration also moves the camera."),
     ("gamepad", "true | false", "Controllers."),
+    ("record_session", "true | false", "Record every session to a video file, with ffmpeg. Also turns on F9 to start and stop. See docs/recording.md."),
+    ("record_audio", "true | false", "Record the game's own sound with a recording, not other programs'. Also turns on F9 to start and stop."),
     ("audio_output", "SINK", "An output from `stacked audio-outputs`. Empty follows the system."),
+    ("audio_input", "SOURCE", "A microphone from `stacked audio-inputs`. Empty follows the system."),
     ("close_on_leave", "true | false", "Close Roblox when you leave an experience."),
     ("mangohud", "true | false", "MangoHUD's frame-rate overlay, if MangoHUD is installed."),
     ("vkbasalt", "true | false", "vkBasalt sharpening, if vkBasalt is installed. See docs/shaders.md."),
@@ -151,7 +154,7 @@ pub(crate) fn keys() -> impl Iterator<Item = &'static str> {
 /// integer" although `123` is a valid profile name, because [`parse_value`]
 /// reads anything JSON can as JSON. An audio sink named `null` would have been
 /// stored as no sink at all.
-const TEXT_KEYS: &[&str] = &["profile", "audio_output", "roblox.apk", "roblox.lib_dir"];
+const TEXT_KEYS: &[&str] = &["profile", "audio_output", "audio_input", "roblox.apk", "roblox.lib_dir"];
 
 /// Keys that hold a path, made absolute when set.
 ///
@@ -259,7 +262,7 @@ mod tests {
                 "throttle" => Value::from("off"),
                 "pointer_acceleration" => Value::from("always"),
                 "unpacked_plugins" => serde_json::json!(["/tmp/p"]),
-                "profile" | "audio_output" | "roblox.apk" | "roblox.lib_dir" => Value::from("x"),
+                "profile" | "audio_output" | "audio_input" | "roblox.apk" | "roblox.lib_dir" => Value::from("x"),
                 _ => Value::Bool(true),
             };
             change(&defaults(), key, Some(value)).unwrap_or_else(|e| panic!("{key}: {e}"));

@@ -21,6 +21,294 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## #63 reproduced on demand: the engine records a failed Vulkan call before its device exists, 2026-10-15
+
+The `SIGSEGV` at `libroblox.so+0x29b4349`, fault address `0x5a0`, "seen 2/11,
+not reproduced since" (#63), reproduced unaided twice in 65 launches under gdb
+and once in 10 without it, always on a headless sway using the pixman renderer,
+and then in both attempts once the cause below was forced.
+
+What the crashing function is: in 2.738.0.1397 it is the recorder behind the
+engine's `VULKAN ERROR: %s returned %d` path. It keeps a short history
+(`Call`, `Error`, `PrevError`, `FrameIndex`, `History`) and reads a global
+pointer to the graphics device, `+0x5a0`, to do it. That pointer is stored
+once the Vulkan device is created and zeroed when it is torn down. The
+recorder runs only in processes whose per-process sampling draw (a value
+computed once and cached, `% 10000`) comes up under a threshold, which is why
+it is an intermittent crash and not a constant one.
+
+What triggers it here: the first `vkGetPhysicalDeviceSurfaceCapabilitiesKHR` of
+every launch returns `VK_ERROR_SURFACE_LOST_KHR` when the compositor
+advertises no `zwp_linux_dmabuf` (sway and cage on pixman, weston headless).
+`VULKAN ERROR ... -1000000000` is in 77 of 77 engine logs from that
+configuration and in none from KWin or from sway with the GLES renderer. The
+engine goes on and the next query works; only a sampled process falls over,
+in the recorder, because the device pointer is still null at that moment.
+
+Control: the draw was forced to zero in the loaded library's data (gdb, at the
+linker's `mcpelauncher_linker_notifylldb`, which is the only way this was
+touched and only to reproduce). Software-rendered sway: crashed at the same
+address on the first run, both times. Sway on `WLR_RENDERER=gles2`, which does
+advertise dmabuf: 3 of 3 clean and Landing reached.
+
+**What did not work, so nobody repeats it:** retrying the failed query in the
+Vulkan interposer. Forty retries ten milliseconds apart (400 ms) still got
+`SURFACE_LOST` and the forced-draw run still crashed. Whatever makes the first
+query fail is not gone after 400 ms. The engine creates its Vulkan device twice
+per launch, and the first query comes before "surface handed to the engine" in
+Cordial's own log (INFERRED that this ordering is why it fails). Nothing was
+committed for it.
+
+**Not established:** that this is what the original 2/11 was. Those runs were
+on X11 (`CORDIAL_X11=1`) on a machine with dmabuf, so some other first Vulkan
+call may have failed there; the crash site is the same. Not established either
+that any user outside a software-rendered compositor can meet it. And the two
+Vulkan results (`SURFACE_LOST` on dmabuf-less compositors, the recorder's null
+read) are measurements on 2.738; 2.742 was not checked for the second.
+
+**#35's `DeviceUtils` is corrected the same day.** The class is in none of the
+three dex files of 2.742.0.1059, and a gdb log of every `FindClass` and
+`GetMethodID` the engine makes in a run never contains it, though the engine
+logs `Failed to find class 'DeviceUtils'` three times. It is not an unanswered
+Android expectation; see the comment on `DeviceUtils` in `native/init_params.cpp`.
+
+## #63: why the surface is lost, and what Cordial does about it, 2026-10-15
+
+Corrections to the section above, from reading Mesa's WSI and a bare Vulkan
+probe with no Roblox in the process. The query does not fail "first" and the
+ordering against "surface handed to the engine" is not the cause (that line was
+labelled INFERRED and is wrong): a hardware Vulkan device cannot present to a
+Wayland compositor with no `zwp_linux_dmabuf_v1`, because Mesa binds `wl_shm`
+only for software devices (`wsi_common_wayland.c`, `registry_handle_global`
+and the `!wl_dmabuf && !wl_shm` test in `wsi_wl_display_init`). The engine
+fails on both of its two device creations per launch (2 `VULKAN ERROR` lines
+in every engine log, not 1). Cordial now withholds Vulkan there; see
+[ADR-061](adr/ADR-061-vulkan-is-withheld-where-the-compositor-has-no-dmabuf.md).
+
+Measured on the 2.738 engine, unsigned, nested headless sway, `cordial-run`
+from a clean tree, 10 launches an arm:
+
+| arm | compositor | `VULKAN ERROR ... -1000000000` per launch | SIGSEGV |
+|---|---|---|---|
+| before | sway pixman | 2 (1 where it crashed) | 3 of 10, then 0 of 10; 1 of 4 in a screenshot run |
+| after | sway pixman | 0 | 0 of 10 |
+| after, `CORDIAL_FORCE_VULKAN_WITHOUT_DMABUF=1` | sway pixman | 2 | 0 of 10 |
+| after | sway gles2 | 0 | 0 of 10 |
+
+The three crashes in the first run were all `libroblox.so+0x29b4349`, fault
+address `0x5a0`, with no gdb and nothing forced. The crash is a random draw per
+process, so a clean arm is weak evidence by itself; the evidence is the error
+line going from 2 a launch to 0 while the forced control puts it back.
+On pixman sway the client now draws the landing screen on OpenGL ES; on Vulkan
+it drew nothing.
+
+**Not established:** that the 2 of 11 on X11 were this (they were on a machine
+with dmabuf); behaviour on a compositor that advertises dmabuf but whose
+hardware device cannot import it; GTK's own renderer, which also reports
+`VK_ERROR_SURFACE_LOST_KHR` on pixman sway (four `Gdk-WARNING` lines a launch)
+before falling back, and which the shell's renderer choice does not account for.
+
+## Stacked picks GTK's cairo renderer itself when Vulkan is not working, 2026-10-01
+
+The remaining half of #53. `cordial_shell::gtk_renderer` decides from the Vulkan
+probe, started in `cordial-run`'s `main` and collected in `wayland::open` before
+GTK realises the window, so a healthy machine waits 0-10 ms (the probe is about
+60 ms and runs while the engine loads). No loader, `vkCreateInstance` failing, no
+devices or only a CPU renderer sets `GSK_RENDERER=cairo`; a user's own value is
+never touched or probed; a probe that hangs or crashes changes nothing.
+`CORDIAL_GRAPHICS=gles` with working Vulkan is deliberately **not** a trigger:
+GTK stayed on Vulkan and presented. On the #53 reproduction (nested KWin, no
+Vulkan, `fakefocus` x3) the user-set `ngl` control lowered 0 of 3 and the
+automatic choice 3 of 3 under presented frames. **Not observed**: the editor
+being drawn, which no capture here can see; and anything on the reporter's own
+machine. See ADR-047.
+
+## Fixed in part: the grey screen of #53 reproduces with no Vulkan, and the restack is now gated, 2026-09-30
+
+Nested KWin, `VK_ICD_FILENAMES=/nonexistent`, signed out, `fakefocus`: the engine
+falls back to GLES3, GTK to its GL renderer, and GTK then never attaches a buffer
+to the window surface again (`gdk_gl_context_make_current() failed` every 15 s,
+`repaint_now: no GTK frame landed within 40ms`). The old ordering lowered the
+canvas regardless, three times out of three, over the last opaque buffer. With
+Vulkan present, or with `GSK_RENDERER=cairo`, GTK presents and nothing is wrong.
+The restack now waits for a presented GTK frame and otherwise keeps the canvas
+above; see ADR-047. **The editor was still invisible in that configuration**;
+choosing cairo automatically was done on 2026-10-01 (entry above). This also
+corrects the 2026-09-23 note that forcing `repaint_now`'s miss did not reproduce
+it: that forced the timeout on a GTK that then painted late,
+which is not the same as a GTK that never presents. `after-paint` is not
+evidence of a commit; it fired on a frame with no attach behind it.
+
+## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
+
+Measured upstream, on Cordial, and carried into Stacked with the code it
+explains; none of it has been re-run on this fork.
+
+Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless
+sway, 150 s or more apart, every one with `cachedUserId` set, `Home` reached and no
+`DID_LOG_OUT`), run in place on the Flatpak profile data. Raw logs and backtraces:
+`~/.cache/cordial-handoff/signed-2026-10-16/`.
+
+**Which regime a launch is in depends on the engine's flag cache, and this
+confounded the first four launches.** With no usable `flag_cache.dat` in
+`<profile>/data/cache/cache/` the engine answers Cordial's bootstrap with
+`onFlagsFailed` twice, waits in state 11 for the post-settings call, fetches the flags
+from the CDN when that call arrives (`getFlags: flag cache miss`), and only then runs
+`startLuaApp_` and the teardown whose wait is the classic freeze. With a valid cache
+it answers `onFlagsLoaded` straight away, never logs `getFlags`, and starts its own
+Lua app at the first `onStart` (`initEngine_` in the same millisecond, state 7), so
+the post that Cordial makes 250 ms later is logged `ignoring call in state:7`. Every
+launch writes the cache about a second in, so back-to-back launches are mostly in the
+second regime and a launch after six hours or after a client that never wrote it is in
+the first. The 2026-10-04 logs are all first-regime, so this is new on 2.742 or was
+simply not looked for. Launches 2 to 6 alternated between the regimes, tracking whether the
+previous run had written the file; the delayed-post arms I interleaved landed on the
+same parity, which made "delayed post" look like a cause of the stall below that
+it is only the occasion of.
+
+**The stall at four presents is Cordial's own sleep.** In the second regime,
+`CORDIAL_LATE_POST_MS=1200` and a post held until Home (+80 ms) left the client
+presenting exactly four frames and nothing after, 3 launches of 3, and so did one
+first-regime launch whose post was held 80 ms: 4 of 4 launches with the pump thread
+asleep for 330 ms or more, against 0 of 6 at the unmodified 250 ms (two first-regime,
+four second-regime) that stalled this way. `cordial_backtrace` on two of them
+(`L02.bt1.txt`, `L11.bt1.txt`) shows the engine's render thread in
+`vkAcquireNextImageKHR` -> `wsi_wl_swapchain_acquire_next_image_explicit` ->
+`wsi_drm_wait_for_explicit_sync_release` -> `drmSyncobjTimelineWait`: four swapchain
+images presented, none ever released by the compositor. The late post in `load.rs`
+sleeps on the thread that goes on to pump the looper and the window's GTK main loop,
+so for those 330 ms and more nothing ran it. **Control: the same delay with the post
+made from a thread of its own (`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=1200`, same
+regime) presented 75, 83, 91 at 14, 22, 30 s.** One launch each, so this is a
+demonstration that the thread decides it, not a rate. Whether the default 250 ms
+sleep ever stalls a slower machine is not measured; 0 of 6 here. `INFERRED`: the
+release is owed to a Wayland round trip the blocked thread should have made.
+
+**The classic freeze has a window, and an early post is outside it.** Fresh specimen
+(launch 1, first regime): `Forcing finalize` 1.309 s, no `~UgcExperienceController()`,
+presents fixed at 1 for 139 s, three backtraces over 66 s, identical in their top frames (the spinning
+AGDK thread at 1.16 billion polls, `events=9`, the finalize thread parked), all as
+documented above. Its order: Home 1.046, throttle restored 1.057, the post at 1.061,
+the render job's first step ("No DM yet" then "Bind workspace now") at 1.076. In the
+two healthy first-regime launches that followed the first step came before the post
+(0.568 against 0.611 and 0.543 against 0.577), and in the corpus of 56 engine logs the
+bind lands 2-9 ms after `getFlags: success` in 16 of 19 frozen and 1 of 19 healthy.
+So: the first render step landing between the post and the end of the teardown is the
+freeze. Held out of that window both ways: a post held until Home + 80 ms from its own
+thread (`CORDIAL_POST_ASYNC=1 CORDIAL_POST_AFTER_HOME_MS=80`, first regime) logged
+step 0.570, post 0.690, healthy; a post 20 ms after the handoff
+(`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=20`, first regime) finished its teardown at
+0.47 s, before Home (0.81) and the step (0.74), healthy, and did not crash, which the
+comment on `CORDIAL_LATE_POST_MS` says a zero delay does.
+
+**Counts, first regime only, since only it can freeze:** default 1 frozen of 3 (launches
+1, 3, 5); post made from its own thread, held or early, 0 of 2. Second regime: default
+0 of 4, the held-on-the-pump-thread launches excluded as stalled above. A rate cannot be read
+from this and nothing here claims one. Both knobs are off by default and
+`CORDIAL_POST_AFTER_HOME_MS` does nothing in the second regime (it logs
+`post not held`), because there the post is ignored.
+
+**What was not done:** no launch at the 250 ms default with the post made from its own
+thread, so "make it asynchronous by default" is unmeasured; no second place or machine
+(the Mesa/Intel stack and nested sway are this host's); the stall was never seen on
+the host session; the flag cache was set aside (`flag_cache.dat` renamed, rebuilt by the
+engine within the launch) for the last three first-regime launches. The first-regime
+launches are 1, 3, 5, 11, 13 and 14; the others are second-regime.
+
+**Corrections.** The 2026-09-17 entry's "Re-issue the app-bridge start..." line of
+inquiry and the 2026-10-04 "delay `initialize`" lever are both about this post call:
+delaying it on the pump thread is harmful, not a lever. `docs/analysis/startup-freeze-capture.md`
+describes only the first regime.
+
+### Round 2, cache-miss only, 2026-10-16: 16 launches, no freeze in either arm
+
+Sixteen signed-in `CordialTest` launches (150 s or more apart, flag cache set aside
+before each, every one `cachedUserId` set, `Home` reached, no `DID_LOG_OUT`, a Home
+screenshot at the end of each), alternating the post made from its own thread
+(`CORDIAL_POST_ASYNC=1`, the 250 ms default timing, 8 launches, the arm round 1 never
+ran) with the default (8). **Frozen: 0 of 8 and 0 of 8, and all sixteen presented 85 to
+129 frames at 14 s and kept going.** So the default-flip rule (own-thread 0, default 2
+or more) was not met and the default stays as it is.
+
+Why it says nothing about the post's thread: in all sixteen the first render step
+landed 24 to 46 ms *before* the post (Home at 0.46 to 0.50 s, step at Home + 26 ms, post
+at Home + 50 to 70 ms; one slow launch had Home at 0.97 s and the same spacing). The
+freeze window, the step between the post and the end of the teardown, never opened, and
+the post's time does not depend on which thread makes it, so the own-thread arm cannot
+have avoided a window the default arm also missed. Round 1's frozen launch had the post
+15 ms after Home, with Home at 1.05 s. If the freeze rate is near the 1 in 3 round 1 saw,
+0 of 8 default launches would happen about 4 times in 100; if it is nearer 1 in 6 or less,
+about a quarter of the time, so these counts do not separate a rate that low from zero.
+**What would**: a way to place the post at Home + 0 to 20 ms on demand (a launch hold
+that releases on the engine's `Home` announcement without the extra margin, from the own
+thread) so the window opens in every launch, then compare the default placement with a
+post held until the step has run.
+
+
+`CORDIAL_POST_ASYNC` was read with `var_os(..).is_some()`, so `CORDIAL_POST_ASYNC=0` turned
+it on; fixed on 2026-10-16 (it is a switch now).
+
+### Round 3, 2026-10-16: the window opened, and the gate is the default
+
+Sixteen more signed-in `CordialTest` launches (flag cache set aside before each, 155 s
+apart, all `cachedUserId` set, `Home` reached, no `DID_LOG_OUT`, `post gate` lines and
+engine logs in `~/.cache/cordial-handoff/signed-2026-10-16-round3/`). The decision is
+[ADR-065](adr/ADR-065-the-late-post-waits-for-the-first-render-step.md).
+
+**What the gate is.** The post is made from a thread of its own, after the usual 250 ms,
+and waits until the engine's own log shows `stepDataModelJob: No DM yet` (the render job's
+first step), then 10 ms more, then posts; 3 s and it posts anyway. The marker is read
+from `appData/logs/*_Player_*.log`, because FLog lines never pass through liblog: of 395
+lines of Cordial's stderr in a signed-in launch none was a render step. Only on the
+cache-miss path (`onFlagsFailed` seen); `CORDIAL_POST_GATE=0` turns it off.
+
+**Making the window open took three tries.** Gate off, own thread, post held to Home
+(`CORDIAL_POST_AFTER_HOME_MS=0`): the 250 ms sleep before the hold had already passed
+Home in 4 of 5, so the post landed at Home + 42 to 50 ms, after the step at Home + 28:
+the safe order, not the window (X01 was the exception: slow start, Home at 1.03 s,
+post at Home + 22, step 6 ms after it, **frozen**). Adding `CORDIAL_LATE_POST_MS=20`
+put the post at Home + 0.2 ms, 27 to 30 ms before the step (X04, X05): healthy. At
+Home + 15 ms, 13 ms before the step, the same geometry as round 1's frozen launch
+(X06, X07): healthy. **The same Home + 15 ms under `taskset -c 0,1` with
+`stress-ng --cpu 2 --timeout 25s` on the same two cores: frozen both times** (X08, X09,
+presents 1 and 1, `Forcing finalize` with no `~UgcExperienceController`, the round-1
+signature).
+
+| Arm | Post vs step | Launches | Frozen |
+|---|---|---|---|
+| gate off, post before the step, no load | 6 and 27-30 ms before, Home + 0 to 22 | X01, X04-X07 | 1 of 5 |
+| gate off, post before the step, 2-core load | 13 ms before, Home + 15 | X08, X09 | 2 of 2 |
+| gate off, post after the step (the old accident) | 14-23 ms after | X02, X03 | 0 of 2 |
+| gate on, same timing knobs, no load | 10-18 ms after | Y01, Y02, Y04, Y05 | 0 of 4 |
+| gate on, same knobs, 2-core load | 10-11 ms after | Y06, Y07, Y08 | 0 of 3 |
+
+Y01 and Y02 found the step already in the log (the gate waited 0 ms); Y04-Y08 waited 27,
+27, 15, 14 and 16 ms. **Frozen: gate off 3 of 9, gate on 0 of 7**; at the forced timing
+under load 2 of 2 against 0 of 3. The prediction in round 2 ("if the window opens, the
+gate closes it") held in every launch, and it is **not a significant count**: a
+Fisher exact test of 3 of 9 against 0 of 7 gives p = 0.15 one-sided (0.21 two-sided), and 2 of 2
+against 0 of 3 gives p = 0.10. What carries the claim is that the order is now guaranteed by
+construction and was observed in all seven gate-on launches, not the counts.
+
+**What the window is not.** Post-before-step is necessary in every frozen launch seen
+(L01, X01, X08, X09) and is not sufficient: 4 of 5 launches with the post before the step
+and no load were healthy, and in every one of them `Bind workspace now` followed
+`getFlags: success` by 1 to 2 ms, the signature the 56-log corpus had called the freeze.
+So that signature is the window opening, not the freeze. What decides it afterwards is
+not in the engine log: X08's `Forcing finalize` came 41 ms after `startLuaApp_`, as in a
+healthy launch, and `~UgcExperienceController` never followed. Load made it likelier
+(2 of 2); the slow start of X01 and L01 (Home near 1 s) is a second occasion and is not
+understood, since the loaded launches had Home at 0.53 s. `INFERRED`: a race between
+the first app's teardown and the render job's bind that wider thread timing resolves the
+wrong way.
+
+**Not measured.** The gate on a *signed-in cache-hit* launch (own thread, post ignored):
+five signed-out cache-hit launches logged `post gate: not needed` and were healthy
+(780 presents at 30 s). Load on the gate-off, post-after-step arm (no control for load
+alone). Any machine but this one. One signed-out launch in about thirteen stopped
+during the audio-backend probe, before the engine was loaded, with the gate not yet
+involved; unexplained.
+
 ## Open: eight launches, no frozen specimen; the engine's condition variables were Cordial's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
 
 Eight signed-in `CordialTest` launches, 21:01-21:29 local, nested headless sway,
@@ -2189,16 +2477,61 @@ multiline`, `sway`, `--game-activity`, a synthetic 400x200 `multiline=1` box:
   `"one\ntwo"` read back as `"one two"`, 7 characters, zero newlines --
   the single-line flattening path, exercised on the real Wayland widget for
   the first time.
-- Enter inserting a newline in a multi-line box, and Escape/an outside click
-  releasing focus, need no code here at all: `dispatch_key` already returns
-  before editing anything once `editor_owns_text()` is true, whichever widget
-  that is, so GDK's own keyboard object drives `gtk::TextView`'s default
-  Enter-inserts-a-newline binding the same way it drives `gtk::Text`'s lack of
-  one -- see the comment above `editor_owns_text()`'s call in
-  `crates/cordial-runtime/src/android/wayland.rs`'s `dispatch_key`.
-  `returnKeyType`/`manualFocusRelease` (`RawTextBoxInfo` slots 11/12) are
-  still read nowhere in this codebase; that comment explains why that is
-  consistent rather than an oversight.
+- **RETRACTED, 2026-10-04: "Enter inserting a newline in a multi-line box
+  needs no code here at all."** That was written from `fakefocus`, which has
+  no engine behind it. A real chat box ("Say something") reports
+  `multiline=1`; Enter reached the engine as a raw key, which sends the
+  message and empties its TextBox, while GDK's own keyboard object also drove
+  `gtk::TextView`'s newline binding, and the widget's change signal reported
+  `"ok\n"` back over the engine's clear.
+- **RETRACTED again, 2026-10-04: the first fix for that (swallow Return in the
+  multi-line editor, send the engine the raw key, `CORDIAL_EDITOR_GTK_ENTER`)
+  was the wrong owner.** It decided in the host that no multi-line box keeps
+  its newline, which is the engine's call per box, and it left single-line
+  boxes with a key Android never sends them. What replaced it is Android's
+  contract: the focused box is an `EditText` and consumes Enter.
+  - Multi-line: GTK inserts the newline, the text is synced like any edit, and
+    the raw key is withheld from the engine
+    (`input::editor_consumes_enter`, Wayland path only -- X11 has no editor).
+    What the engine does next arrives through `onLuaTextBoxChangedCallback`.
+  - Single-line: `gtk::Text`'s `activate` syncs the final text and calls
+    `nativeReturnPressedFromOnScreenKeyboard(handle)` (`input::return_pressed`;
+    dex prototype `(J)V`, `tools/dex_method.py` on classes2.dex), and the raw
+    key is withheld. If a build does not export the native, the raw key is left
+    alone, because it is then the only way Enter can arrive.
+  - Cordial neither blurs a box nor clears the editor on Enter. Focus and
+    clearing are the engine's, through `hideKeyboard` and the text callback.
+  - Measured, nested sway, signed out. Synthetic boxes, `tools/text-input-e2e.py
+    --only-engine-text`: 40 assertions pass; the same 40 against the old routing
+    (`--client-env` switch, since removed) fail 11, all of them the Enter ones.
+    A synthetic single-line box counts the ReturnPressed call but does not send
+    it (its handle was never issued by the engine). On the real sign-in screen,
+    Enter in the empty username field (`returnKeyType=3 manualFocusRelease=1`)
+    called the native once with the real handle (`-> Ok(())`) and the engine
+    answered by blurring that box and focusing the password field. With the old
+    raw key the same press blurred the username box and focused nothing.
+    Nothing was typed or submitted: the Sign In button is disabled while the
+    fields are empty.
+  - `INFERRED`: what a real multi-line box (a chat box) does with the newline,
+    and what a single-line box that is not the sign-in form does after
+    ReturnPressed. No capture holds either; a signed-in run is the check, with
+    `CORDIAL_TRACE_TEXT=1` and `CORDIAL_TRACE_KEYS=1` (look for `return pressed`
+    and `withheld`, then whether `textbox blurred` follows and whether
+    `engine text arrived` carries the clear). mocktail's `FinishLocked`
+    (Apache-2.0, `src/runtime/roblox_text_editor.cc`) additionally drives
+    `nativePassText(handle, text, finished=true)` and closes its own editor
+    unless `manualFocusRelease` is set, and says that mirrors `RbxKeyboard`'s
+    action listener. **Cordial now does the same** (`input::return_pressed`,
+    after the return call, for a real box whose `manualFocusRelease` is 0;
+    `CORDIAL_RETURN_PASSTEXT=0` is the control): a game's phone chat box
+    stopped sending on Enter after this commit, which the sign-in fields
+    (`manualFocusRelease=1`) could not show. `INFERRED` that it restores the
+    send -- no signed-in run has held it; look for the
+    `nativePassText(.., finished=true)` line under `CORDIAL_TRACE_TEXT=1`.
+  - Escape and an outside click still need no code here: both reach the engine
+    as ordinary input and it decides whether the box blurs.
+    `returnKeyType`/`manualFocusRelease` (slots 11/12) are read only to be
+    traced, in `input::return_pressed`.
 
 **UNVERIFIED**: everything about a real multi-line `TextBox`'s own spec --
 whether Roblox ever actually sends `multiline=1` with a masked
@@ -2268,11 +2601,12 @@ an `i6` of 0 would resolve to no font file. And 3, 4 and 5 are `SourceSans`,
 unstyled TextLabel -- so Roblox's own Android mapping does not cover Roblox's
 own default font, even though `SourceSansPro-Regular.ttf` ships in the same
 archive. That is the strongest available evidence that a fallback is mandatory
-rather than a nicety. Cordial does not paper over it with a hand-written row:
-`3 => SourceSansPro-Regular` is knowledge about Roblox's enum rather than
-something the archive says, nothing would tell us when it stopped being true,
-and it is exactly the hand-maintained table this section already said must not
-be written.
+rather than a nicety. **Superseded:** Cordial now answers 3, 4 and 5 with the
+Source Sans Pro Regular, Bold and Light files (`SOURCE_SANS_FALLBACKS` in
+`editor_font.rs`). The earlier refusal to write the ids down left a box set to
+`SourceSans` drawing in Builder Sans while `SourceSansItalic` beside it drew in
+Source Sans Pro. The family, weight and slant are still read from the file by
+fontconfig and checked against what the id means, and only id 6 may draw slanted.
 
 **"`families/BuilderSans.json` gives the family string Pango needs" is right
 for that one file and wrong in general.** Pango asks fontconfig, and fontconfig
@@ -3921,8 +4255,10 @@ IME. And the engine pushes text *out* during editing —
 `onLuaTextBoxChangedCallback(String)` and the no-argument
 `onLuaTextBoxPropertyChangedCallback()`, whose only sensible response is to
 re-read that geometry. A "properties changed" callback is only needed if Java is
-displaying the box. **Both are unimplemented in Cordial**
-(`docs/analysis/unresolved-java.md` §2c).
+displaying the box. **Both were unimplemented in Cordial** when this was written
+(`docs/analysis/unresolved-java.md` §2c); the property callback now bumps a
+counter the pump re-reads geometry on, and the text callback now carries the
+engine's text to the editor (`input::apply_engine_text`, 2026-10-04).
 
 So the shadow buffer was never the problem, and deleting it was never going to
 help: **the missing piece is a widget, not a message.** Cordial has to draw the
@@ -4868,6 +5204,15 @@ untouched and now also reports any non-success code, at the first of each and
 then at each power of ten. Across both runs and every transition: not one line.
 So "the engine ignored a suboptimal swapchain" and "Cordial ate the error" are
 both off the table — there was no error to ignore or eat.
+
+**Superseded for RADV, 2026-10-01 (PR #72).** That reading was taken on Intel
+and was right of it: no suboptimal code was ever seen to *present*. On RADV the
+status arrives at *acquire*, which this section never instrumented, and the
+engine answers it with a `PRESENT_SRC_KHR` barrier on `VK_NULL_HANDLE` that the
+driver crashes on (#39). The PR's control, one variable, was returning
+`VK_SUCCESS` for the same acquire. `vkAcquireNextImageKHR` is therefore now
+interposed, only for that one code; see `vk_acquire_next_image_khr` in
+`vulkan.rs`. Not reproduced on Intel, which does not return the status.
 
 **So the three named suspects are all disproved and the bug is not reproducible
 from `gtk_window_fullscreen`.** What is left is the difference between that call
