@@ -21,6 +21,87 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## #92: two startup regimes, a stall that is Cordial's own sleep, and the freeze's window, 2026-10-16
+
+Measured upstream, on Cordial, and carried into Stacked with the code it
+explains; none of it has been re-run on this fork.
+
+Fourteen signed-in launches of `CordialTest` (Roblox 2.742.0.1059, nested headless
+sway, 150 s or more apart, every one with `cachedUserId` set, `Home` reached and no
+`DID_LOG_OUT`), run in place on the Flatpak profile data. Raw logs and backtraces:
+`~/.cache/cordial-handoff/signed-2026-10-16/`.
+
+**Which regime a launch is in depends on the engine's flag cache, and this
+confounded the first four launches.** With no usable `flag_cache.dat` in
+`<profile>/data/cache/cache/` the engine answers Cordial's bootstrap with
+`onFlagsFailed` twice, waits in state 11 for the post-settings call, fetches the flags
+from the CDN when that call arrives (`getFlags: flag cache miss`), and only then runs
+`startLuaApp_` and the teardown whose wait is the classic freeze. With a valid cache
+it answers `onFlagsLoaded` straight away, never logs `getFlags`, and starts its own
+Lua app at the first `onStart` (`initEngine_` in the same millisecond, state 7), so
+the post that Cordial makes 250 ms later is logged `ignoring call in state:7`. Every
+launch writes the cache about a second in, so back-to-back launches are mostly in the
+second regime and a launch after six hours or after a client that never wrote it is in
+the first. The 2026-10-04 logs are all first-regime, so this is new on 2.742 or was
+simply not looked for. Launches 2 to 6 alternated between the regimes, tracking whether the
+previous run had written the file; the delayed-post arms I interleaved landed on the
+same parity, which made "delayed post" look like a cause of the stall below that
+it is only the occasion of.
+
+**The stall at four presents is Cordial's own sleep.** In the second regime,
+`CORDIAL_LATE_POST_MS=1200` and a post held until Home (+80 ms) left the client
+presenting exactly four frames and nothing after, 3 launches of 3, and so did one
+first-regime launch whose post was held 80 ms: 4 of 4 launches with the pump thread
+asleep for 330 ms or more, against 0 of 6 at the unmodified 250 ms (two first-regime,
+four second-regime) that stalled this way. `cordial_backtrace` on two of them
+(`L02.bt1.txt`, `L11.bt1.txt`) shows the engine's render thread in
+`vkAcquireNextImageKHR` -> `wsi_wl_swapchain_acquire_next_image_explicit` ->
+`wsi_drm_wait_for_explicit_sync_release` -> `drmSyncobjTimelineWait`: four swapchain
+images presented, none ever released by the compositor. The late post in `load.rs`
+sleeps on the thread that goes on to pump the looper and the window's GTK main loop,
+so for those 330 ms and more nothing ran it. **Control: the same delay with the post
+made from a thread of its own (`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=1200`, same
+regime) presented 75, 83, 91 at 14, 22, 30 s.** One launch each, so this is a
+demonstration that the thread decides it, not a rate. Whether the default 250 ms
+sleep ever stalls a slower machine is not measured; 0 of 6 here. `INFERRED`: the
+release is owed to a Wayland round trip the blocked thread should have made.
+
+**The classic freeze has a window, and an early post is outside it.** Fresh specimen
+(launch 1, first regime): `Forcing finalize` 1.309 s, no `~UgcExperienceController()`,
+presents fixed at 1 for 139 s, three backtraces over 66 s, identical in their top frames (the spinning
+AGDK thread at 1.16 billion polls, `events=9`, the finalize thread parked), all as
+documented above. Its order: Home 1.046, throttle restored 1.057, the post at 1.061,
+the render job's first step ("No DM yet" then "Bind workspace now") at 1.076. In the
+two healthy first-regime launches that followed the first step came before the post
+(0.568 against 0.611 and 0.543 against 0.577), and in the corpus of 56 engine logs the
+bind lands 2-9 ms after `getFlags: success` in 16 of 19 frozen and 1 of 19 healthy.
+So: the first render step landing between the post and the end of the teardown is the
+freeze. Held out of that window both ways: a post held until Home + 80 ms from its own
+thread (`CORDIAL_POST_ASYNC=1 CORDIAL_POST_AFTER_HOME_MS=80`, first regime) logged
+step 0.570, post 0.690, healthy; a post 20 ms after the handoff
+(`CORDIAL_POST_ASYNC=1 CORDIAL_LATE_POST_MS=20`, first regime) finished its teardown at
+0.47 s, before Home (0.81) and the step (0.74), healthy, and did not crash, which the
+comment on `CORDIAL_LATE_POST_MS` says a zero delay does.
+
+**Counts, first regime only, since only it can freeze:** default 1 frozen of 3 (launches
+1, 3, 5); post made from its own thread, held or early, 0 of 2. Second regime: default
+0 of 4, the held-on-the-pump-thread launches excluded as stalled above. A rate cannot be read
+from this and nothing here claims one. Both knobs are off by default and
+`CORDIAL_POST_AFTER_HOME_MS` does nothing in the second regime (it logs
+`post not held`), because there the post is ignored.
+
+**What was not done:** no launch at the 250 ms default with the post made from its own
+thread, so "make it asynchronous by default" is unmeasured; no second place or machine
+(the Mesa/Intel stack and nested sway are this host's); the stall was never seen on
+the host session; the flag cache was set aside (`flag_cache.dat` renamed, rebuilt by the
+engine within the launch) for the last three first-regime launches. The first-regime
+launches are 1, 3, 5, 11, 13 and 14; the others are second-regime.
+
+**Corrections.** The 2026-09-17 entry's "Re-issue the app-bridge start..." line of
+inquiry and the 2026-10-04 "delay `initialize`" lever are both about this post call:
+delaying it on the pump thread is harmful, not a lever. `docs/analysis/startup-freeze-capture.md`
+describes only the first regime.
+
 ## Open: eight launches, no frozen specimen; the engine's condition variables were Cordial's all along, and two "frozen" signatures are also healthy, 2026-09-29 (late)
 
 Eight signed-in `CordialTest` launches, 21:01-21:29 local, nested headless sway,

@@ -376,3 +376,14 @@ client that is wedged in the finalize is not known (the `SIGKILL` fallback is
 for that), and the restart's effect on how often the race is lost is not
 known. `CORDIAL_NO_FREEZE_RESTART=1` turns it off for the measurement in item
 (1).
+
+## 2026-10-16: this describes the first of two regimes
+
+Everything above is a launch with no usable flag cache: the engine says
+`onFlagsFailed`, waits for Cordial's post-settings call, and the freeze is the
+first render step landing between that call and the end of the teardown it
+starts. With a valid cache the engine starts its Lua app on its own and ignores
+the call; that regime did not freeze in this session, but holding Cordial's
+thread in it left the client at four presents, the render thread in
+`vkAcquireNextImageKHR`. Evidence, counts and what was not measured:
+`docs/NEXT.md`, "#92: two startup regimes".

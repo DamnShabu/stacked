@@ -2304,6 +2304,8 @@ pub mod game_activity {
             f: *mut c_void, out: *mut RawTextBoxInfo, err: *mut c_char, n: usize,
         ) -> c_int;
         fn cordial_games_loaded() -> u32;
+        fn cordial_home_ready() -> u32;
+        fn cordial_flags_failed() -> u32;
         fn cordial_last_place() -> i64;
         fn cordial_game_activity_window_focus(
             handle: i64,
@@ -2546,6 +2548,20 @@ pub mod game_activity {
     pub fn games_loaded() -> u32 {
         // SAFETY: a plain atomic load on the C++ side.
         unsafe { cordial_games_loaded() }
+    }
+
+    /// How many times the engine has reported its flag load failed, which is
+    /// what a launch with no usable flag cache gets.
+    pub fn flags_failed() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_flags_failed() }
+    }
+
+    /// How many times the engine has announced `Home` ready. Non-zero once the
+    /// first Lua app has reached its home screen.
+    pub fn home_ready() -> u32 {
+        // SAFETY: a plain atomic load on the C++ side.
+        unsafe { cordial_home_ready() }
     }
 
     /// The place id of the most recent load, or 0 if none has been reported.
