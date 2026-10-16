@@ -26,8 +26,8 @@ fn a_session_cookie_value_goes_in_every_shape_it_is_printed() {
         "Authorization: Bearer super-secret-value",
     ] {
         let out = r.redact_line(line);
-        for secret in ["xxx", "super-secret-value", "_|WARNING", "CAEaAhAB", "AbCdEf123456"] {
-            assert!(!out.contains(secret), "{secret:?} survived in {out:?} (from {line:?})");
+        for planted in ["xxx", "super-secret-value", "_|WARNING", "CAEaAhAB", "AbCdEf123456"] {
+            assert!(!out.contains(planted), "{planted:?} survived in {out:?} (from {line:?})");
         }
         assert!(out.contains("<redacted>"), "{out:?}");
     }
@@ -214,7 +214,7 @@ fn the_archive_lists_what_it_should_and_nothing_secret_survives_in_any_of_it() {
     );
     for entry in &entries {
         let text = String::from_utf8(entry.data.clone()).unwrap();
-        for secret in [
+        for planted in [
             "super-secret-value",
             "SYNTHETIC-NOT-A-TICKET",
             "hunter2",
@@ -224,7 +224,7 @@ fn the_archive_lists_what_it_should_and_nothing_secret_survives_in_any_of_it() {
             "/home/alice",
             "AliceMain",
         ] {
-            assert!(!text.contains(secret), "{secret:?} survived in {}:\n{text}", entry.name);
+            assert!(!text.contains(planted), "{planted:?} survived in {}:\n{text}", entry.name);
         }
     }
     let crash = String::from_utf8(entries[2].data.clone()).unwrap();
