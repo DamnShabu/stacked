@@ -54,7 +54,6 @@ motion during the hold, and the idle readings themselves vary from 0.001 to
 0.098. A better score needs the character's position, not the whole frame,
 and a run where movement is known to work, scored the same way.
 
-<<<<<<< HEAD
 ## What decides it: input around the join (2026-10-05)
 
 One signed-in `CordialTest` client for the Steal An Egg joins, a second launch
@@ -171,14 +170,3 @@ above were taken after releasing the key and checking the stream was gone.
   `Set by developer` hides it in some experiences, which this one may do.
 - A run with `CORDIAL_GAMEPAD=0` is no longer interesting: the reporter has no
   controller and reproduces it with controllers off.
-||||||| 7d77d2e
-=======
-## Still open
-
-- Whether any Cordial lever moves the control scheme at all.
-- Whether the Movement Mode list in Roblox's settings shows a touch or
-  click-to-move mode in the dead state, and whether changing it brings WASD
-  back. The reporter on #29 has been asked; nobody has looked here yet.
-- A run with `CORDIAL_GAMEPAD=0`, since a gamepad being reported may change the
-  scheme the engine picks. `INFERRED`, not run.
->>>>>>> origin/claude/port-cordial-graphics

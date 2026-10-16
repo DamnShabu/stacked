@@ -434,7 +434,6 @@ fn handle(line: &str) -> String {
             push(Cmd::Redraw);
             "ok".into()
         }
-<<<<<<< HEAD
         // `gameseed on|off` -- the pointer hover handed to the engine when a
         // game loads (`input::NewGameSeed`, #29), switched without a relaunch
         // so one session can join with it off and then on.
@@ -449,9 +448,6 @@ fn handle(line: &str) -> String {
             }
             _ => "err gameseed <on|off>".into(),
         },
-||||||| 7d77d2e
-=======
->>>>>>> origin/claude/port-cordial-graphics
         "updatesurface" => match it.next().unwrap_or("game") {
             "app" => {
                 push(Cmd::UpdateSurface { app: true, game: false });
