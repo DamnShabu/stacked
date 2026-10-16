@@ -87,6 +87,17 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.22.0" date="2026-10-16">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.22.0</url>
+      <description>
+        <p>
+          Fixes brought over from Cordial: the keyboard after joining a game,
+          text boxes, a start that freezes, fullscreen and touch crashes.
+          New: gameplay recording, the sign-in security check, and a choice of
+          microphone.
+        </p>
+      </description>
+    </release>
     <release version="0.21.12" date="2026-10-16">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.12</url>
       <description>
