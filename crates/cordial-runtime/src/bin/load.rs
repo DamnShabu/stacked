@@ -1652,6 +1652,9 @@ fn main() -> ExitCode {
     if std::env::var_os("vk_require_etc2").is_none() {
         std::env::set_var("vk_require_etc2", "true");
     }
+    // Before anything can create the engine's log: the post gate reads only a
+    // log that was not modified before this (ADR-065).
+    cordial_runtime::post_gate::note_start();
 
     // **Before `parse()`, and that is not stylistic.** `--profile` latches the
     // active profile directory as a side effect of being parsed, and the whole
@@ -4530,11 +4533,19 @@ fn main() -> ExitCode {
                                                     .map_or(Some(250), |v| {
                                                         if v == "off" { None } else { v.parse::<u64>().ok() }
                                                     });
+                                                // `CORDIAL_POST_GATE` (ADR-065, #92) holds the post, on a
+                                                // launch the engine is waiting for it on, until the engine's log
+                                                // shows its first render step. It needs the thread below, so it
+                                                // implies it.
+                                                let post_gate = match std::env::var("CORDIAL_POST_GATE") {
+                                                    Ok(v) => switch_on(Some(&v)),
+                                                    Err(_) => cordial_runtime::post_gate::DEFAULT_ON,
+                                                };
                                                 // `CORDIAL_POST_ASYNC=1`: make the late post, and the retry that
                                                 // follows it, from a thread of their own so this one goes on to
                                                 // pump the looper at once (#92).
                                                 //
-                                                // EXPERIMENT, off by default. Sleeping here keeps the pump -- and
+                                                // Sleeping here keeps the pump -- and
                                                 // so the window's GTK main loop -- from running, and in launches
                                                 // where the engine had already started its Lua app on its own (a
                                                 // valid flag cache) every sleep of 330 ms or more was followed by
@@ -4543,7 +4554,8 @@ fn main() -> ExitCode {
                                                 // image (docs/NEXT.md). The post is made from this thread on
                                                 // Android's behalf anyway; that it may be made from another is
                                                 // `INFERRED` until a launch shows it.
-                                                if let (true, Some(ms)) = (post_async(), late_post) {
+                                                let own_thread = post_async() || post_gate;
+                                                if let (true, Some(ms)) = (own_thread, late_post) {
                                                     let post_f = lib
                                                         .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativePostClientSettingsLoadedInitialization3")
                                                         .map(|p| p as usize);
@@ -4554,7 +4566,16 @@ fn main() -> ExitCode {
                                                         .ok()
                                                         .and_then(|v| v.parse::<u64>().ok());
                                                     let retry_on = std::env::var("CORDIAL_LATE_RETRY").map_or(true, |v| v != "off");
-                                                    println!("  late post: on its own thread, after {ms} ms{}", extra.map_or(String::new(), |e| format!(" and Home + {e} ms")));
+                                                    println!(
+                                                        "  late post: on its own thread, after {ms} ms{}{}",
+                                                        extra.map_or(String::new(), |e| format!(" and Home + {e} ms")),
+                                                        if post_gate { ", then the engine's first render step" } else { "" }
+                                                    );
+                                                    // The same root `link_ca` and `game_log` use for the engine's tree.
+                                                    let logs_dir = std::env::var("CORDIAL_FILES_DIR")
+                                                        .map(std::path::PathBuf::from)
+                                                        .unwrap_or_else(|_| cordial_runtime::profile::active().join("data"))
+                                                        .join("files/appData/logs");
                                                     let _ = std::thread::Builder::new().name("cordial-late-post".into()).spawn(move || {
                                                         std::thread::sleep(std::time::Duration::from_millis(ms));
                                                         if let Some(extra) = extra {
@@ -4565,7 +4586,7 @@ fn main() -> ExitCode {
                                                                 while linker::game_activity::home_ready() == 0
                                                                     && t0.elapsed() < std::time::Duration::from_secs(3)
                                                                 {
-                                                                    std::thread::sleep(std::time::Duration::from_millis(2));
+                                                                    std::thread::sleep(std::time::Duration::from_micros(500));
                                                                 }
                                                                 let seen = linker::game_activity::home_ready() != 0;
                                                                 println!(
@@ -4574,6 +4595,16 @@ fn main() -> ExitCode {
                                                                     t0.elapsed().as_millis()
                                                                 );
                                                                 std::thread::sleep(std::time::Duration::from_millis(extra));
+                                                            }
+                                                        }
+                                                        // The engine waits for this call only when its flag load
+                                                        // failed; with a valid cache it ignores the call, so there is
+                                                        // nothing to order it against.
+                                                        if post_gate {
+                                                            if linker::game_activity::flags_failed() == 0 {
+                                                                println!("  post gate: not needed, the engine loaded its flags itself");
+                                                            } else {
+                                                                cordial_runtime::post_gate::hold(&logs_dir);
                                                             }
                                                         }
                                                         match post_f {
@@ -4596,7 +4627,7 @@ fn main() -> ExitCode {
                                                         }
                                                     });
                                                 }
-                                                if let Some(ms) = late_post.filter(|_| !post_async()) {
+                                                if let Some(ms) = late_post.filter(|_| !own_thread) {
                                                     std::thread::sleep(
                                                         std::time::Duration::from_millis(ms),
                                                     );
