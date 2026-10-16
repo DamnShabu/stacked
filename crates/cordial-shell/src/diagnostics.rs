@@ -65,7 +65,8 @@ fn install_method() -> String {
     if Path::new("/.flatpak-info").exists() {
         return "flatpak".into();
     }
-    // The AppImage runtime sets this to the mounted image's path. Checked
+    // The AppImage runtime sets this to the .AppImage file's path, and
+    // APPDIR to where it is mounted. Checked
     // before the package managers because an AppImage on a Fedora host would
     // otherwise fall through to them and be reported as not-installed.
     if std::env::var_os("APPIMAGE").is_some() {
