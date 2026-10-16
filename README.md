@@ -60,8 +60,8 @@ stacked desktop install   # the browser's Play button opens Stacked
 stacked doctor            # checks the machine and says how to fix anything it finds
 ```
 
-From the Flatpak, run these as `flatpak run io.github.damnshabu.Stacked`.
-From the AppImage, `desktop install` does not yet add a menu entry. Every
+From the Flatpak, run these as `flatpak run io.github.damnshabu.Stacked`;
+from the AppImage, as `./Stacked-*.AppImage desktop install`. Every
 file is signed with Sigstore; its `.cosign.bundle` sits next to it. There is
 no package repository yet, so updating means downloading the next release.
 [`docs/install.md`](docs/install.md) covers building from source.

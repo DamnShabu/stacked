@@ -44,10 +44,10 @@ the fork has not turned Pages on, so `damnshabu.github.io/stacked` is a 404.
 Updating Stacked means downloading the next release. There is no AUR package
 either.
 
-From the AppImage, `stacked desktop install` sets the browser handler but adds
-no menu entry: the AppImage puts its own `usr/share` on `XDG_DATA_DIRS`, so
-the command finds the AppImage's internal entry and takes it for a system
-package's.
+From the AppImage, `desktop install` writes an entry that runs the
+`.AppImage` file, so moving the file means running it again. Before 0.21.11 it
+wrote no menu entry at all; the fix has unit tests but has not been run from a
+real AppImage.
 
 The Flatpak remote, repositories and signatures documented under upstream
 Cordial's name install Cordial, not Stacked, and nothing about their signing

@@ -87,6 +87,15 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.21.11" date="2026-10-16">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.11</url>
+      <description>
+        <p>
+          From the AppImage, stacked desktop install now adds a menu entry that
+          runs the AppImage file, and the website's Play button opens it.
+        </p>
+      </description>
+    </release>
     <release version="0.21.10" date="2026-10-15">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.21.10</url>
       <description>
