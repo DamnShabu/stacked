@@ -47,6 +47,7 @@ mod launch;
 mod root_warning;
 mod shell_config;
 
+use cordial_shell::freeze_recovery;
 use cordial_shell::profile;
 use std::process::ExitCode;
 
@@ -432,7 +433,7 @@ fn play(args: &[String]) -> u8 {
     // ADR-012's claim, taken before the process exists so that a refusal
     // costs nothing, and naming the profile because "already open" on its own
     // does not tell anyone which one to close.
-    let claim = match profile::acquire(&profile_name) {
+    let mut claim = match profile::acquire(&profile_name) {
         Ok(claim) => claim,
         Err(e @ profile::Error::Busy(..)) => {
             report(&format!(
@@ -467,50 +468,95 @@ fn play(args: &[String]) -> u8 {
         ),
         None => println!("stacked: starting Roblox on profile {profile_name:?}"),
     }
-    let mut instance = match launch::spawn(
-        &build,
-        claim,
-        launch::LaunchRequest { run_seconds, join_url: join_url.as_deref(), secret_store },
-    ) {
-        Ok(instance) => instance,
-        Err(message) => {
-            report(&message);
-            return 1;
-        }
-    };
+    // A start that freezes (#92) is stopped by the watch below and started
+    // again from here, at most `freeze_recovery::MAX_RESTARTS` times, with the
+    // link and the account routing this launch began with: the browser's
+    // ticket was spent by the first resolve, and its join URL is what is left.
+    let mut restarts = 0;
+    loop {
+        let freeze_watch = freeze_recovery::enabled(std::env::var("CORDIAL_NO_FREEZE_RESTART").ok().as_deref())
+            .then(|| freeze_recovery::Supervisor::new(freeze_recovery::logs_dir(claim.profile_dir())));
+        let mut instance = match launch::spawn(
+            &build,
+            claim,
+            launch::LaunchRequest { run_seconds, join_url: join_url.as_deref(), secret_store },
+        ) {
+            Ok(instance) => instance,
+            Err(message) => {
+                report(&message);
+                return 1;
+            }
+        };
 
-    println!("stacked: cordial-run is pid {}", instance.pid());
-    // Ctrl-C reaches the whole foreground process group, so the client hears
-    // it and shuts down in order on its own. This process must not die first:
-    // it holds the read end of the client's output, and a client that loses
-    // its stdout mid-shutdown fails there instead of exiting cleanly. Set only
-    // now, after the spawn, because an ignored signal survives `exec` and a
-    // client started with SIGINT ignored would never hear Ctrl-C at all.
-    //
-    // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
-    // changes this process's disposition.
-    unsafe {
-        libc::signal(libc::SIGINT, libc::SIG_IGN);
-    }
-    let status = match instance.wait() {
-        Ok(status) => status,
-        Err(e) => {
-            report(&format!("lost track of the client: {e}"));
+        println!("stacked: cordial-run is pid {}", instance.pid());
+        let watchdog = freeze_watch.map(|s| freeze_recovery::Watchdog::start(instance.pid(), s));
+        // Ctrl-C reaches the whole foreground process group, so the client hears
+        // it and shuts down in order on its own. This process must not die first:
+        // it holds the read end of the client's output, and a client that loses
+        // its stdout mid-shutdown fails there instead of exiting cleanly. Set only
+        // now, after the spawn, because an ignored signal survives `exec` and a
+        // client started with SIGINT ignored would never hear Ctrl-C at all.
+        //
+        // SAFETY: `signal` with `SIG_IGN` installs no handler code; it only
+        // changes this process's disposition.
+        unsafe {
+            libc::signal(libc::SIGINT, libc::SIG_IGN);
+        }
+        let status = instance.wait();
+        // Before anything else is read: the watch must stop signalling a pid that
+        // has now been reaped and may be reused.
+        let stopped_frozen = watchdog.is_some_and(freeze_recovery::Watchdog::finish);
+        let status = match status {
+            Ok(status) => status,
+            Err(e) => {
+                report(&format!("lost track of the client: {e}"));
+                return 1;
+            }
+        };
+        // A client this process stopped because it froze at startup is neither a
+        // crash nor a clean exit. It is reaped, so the profile's lock went with it
+        // and the relaunch is an ordinary launch that can take the lock again.
+        if stopped_frozen {
+            match freeze_recovery::after_freeze(restarts) {
+                freeze_recovery::Next::Restart { attempt, of } => {
+                    println!("stacked: {}", freeze_recovery::status_line(attempt, of));
+                    restarts += 1;
+                    // SIGINT was ignored for the client just reaped. Put back before
+                    // the next spawn, or the relaunched client inherits the ignored
+                    // disposition through `exec` and Ctrl-C stops nothing.
+                    //
+                    // SAFETY: as above, a disposition change and no handler code.
+                    unsafe {
+                        libc::signal(libc::SIGINT, libc::SIG_DFL);
+                    }
+                    claim = match profile::acquire(&profile_name) {
+                        Ok(claim) => claim,
+                        Err(e) => {
+                            report(&format!("Roblox got stuck starting and could not be restarted: {e}"));
+                            return 1;
+                        }
+                    };
+                    continue;
+                }
+                freeze_recovery::Next::GiveUp => {
+                    report(&format!("{}. {}", freeze_recovery::GIVE_UP_HEADING, freeze_recovery::give_up_body()));
+                    return 1;
+                }
+            }
+        }
+        if crash::is_crash(&status, &instance.recent_output()) {
+            eprintln!();
+            report(&format!(
+                "{} Its output is above, or in the journal if it was started from the desktop. \
+                 `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
+                 bug report needs alongside it.",
+                crash::describe(&status),
+            ));
+            eprintln!("It was started with:\n{}", instance.command_line);
             return 1;
         }
-    };
-    if crash::is_crash(&status, &instance.recent_output()) {
-        eprintln!();
-        report(&format!(
-            "{} Its output is above, or in the journal if it was started from the desktop. \
-             `stacked logs` shows Roblox's own log, and `stacked diagnostics` prints what a \
-             bug report needs alongside it.",
-            crash::describe(&status),
-        ));
-        eprintln!("It was started with:\n{}", instance.command_line);
-        return 1;
+        return 0;
     }
-    0
 }
 
 /// A launch that could not happen, said where the person who asked for it

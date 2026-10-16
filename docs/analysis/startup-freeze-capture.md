@@ -349,3 +349,30 @@ launches per arm (several days at the launch cap); (2) meanwhile, recovery:
 detect the frozen shape from the engine log (`Forcing finalize` with no
 `RenderView destroyed[1]` before it and no `~UgcExperienceController` within
 5 s) and relaunch the client.
+
+### Recovery in the shell (2026-10-04)
+
+`crates/cordial-shell/src/freeze_recovery.rs` implements the second item: the
+shell reads the new client's engine log once a second, and calls it stuck when
+the first `Forcing finalize` has no `[Graphics] RenderView destroyed[1]` before
+it and no `~UgcExperienceController` within 5 s. It then stops the client
+(`SIGTERM`, `SIGKILL` after 5 s) and relaunches the same profile, at most twice
+per press of Play, and on the third freeze shows a message pointing at #92.
+
+The rule over every engine log on this machine (the capture directories, `/tmp`
+and the app's own profiles; 173 logs after de-duplicating): **38 signed-in logs
+healthy and 24 frozen**, 3 signed-out logs that never finish a finalize, 34 with
+no finalize at all. Restricted to `~/.cache` and `/tmp`, which is where the
+22/19 above was counted, it gives 21 healthy and 19 frozen; the missing healthy
+log was not found. It agrees, on all 139 logs that have a finalize, with the
+check that does not use the rule (a finished finalize logs the destructor sooner
+or later). In 112 healthy
+logs the finalize-to-destructor gap is at most 0.71 s, so 5 s is a wide margin.
+`cargo test -p cordial-shell --lib freeze_corpus -- --ignored --nocapture` with
+`CORDIAL_FREEZE_CORPUS` set to colon-separated directories reprints this.
+
+**Not measured:** that a real freeze is recovered. Whether `SIGTERM` stops a
+client that is wedged in the finalize is not known (the `SIGKILL` fallback is
+for that), and the restart's effect on how often the race is lost is not
+known. `CORDIAL_NO_FREEZE_RESTART=1` turns it off for the measurement in item
+(1).

@@ -39,6 +39,7 @@
 #![allow(unsafe_code)]
 
 pub mod branding;
+pub mod freeze_recovery;
 pub mod host_window;
 pub mod network;
 pub mod profile;
