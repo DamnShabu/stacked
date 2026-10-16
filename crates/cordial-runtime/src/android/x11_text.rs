@@ -88,14 +88,18 @@ pub fn init(engine: c_ulong) {
         }
     });
     // Enter on a single-line box is an editor action: the final text, then the
-    // engine is told Enter was pressed, and what follows is the engine's.
+    // engine is told Enter was pressed, and what follows is the engine's. When
+    // the engine has no return native, the key forward below hands Enter to
+    // the engine as a key instead and this never runs for it.
     editor.connect_activate(|| {
         let Some(which) = cordial_linker_sys::game_activity::focused_textbox() else { return };
         send_current_text(which);
         super::input::return_pressed(which);
     });
     // Keys the engine must hear although the editor has the keyboard: Escape
-    // (the engine decides whether a box blurs), F11 and the recording hotkey.
+    // (the engine decides whether a box blurs), F11, and Enter in the case
+    // above. `window::forward_editor_key` is the list. The recording hotkey is
+    // not on it; this comment used to say it was.
     editor.connect_key_forward(Box::new(|keyval, keycode, state, down| {
         super::window::current().is_some_and(|w| w.forward_editor_key(keyval, keycode, state, down))
     }));
@@ -126,6 +130,14 @@ pub fn connection_fd() -> Option<c_int> {
 /// path must not also edit the text.
 pub fn owns_keyboard() -> bool {
     driver().is_some_and(|d| d.visible.get() && d.editor.owns_keyboard())
+}
+
+/// The user pressed a mouse button on the engine window. Called from the
+/// engine connection's event drain, which is this thread.
+pub fn engine_clicked() {
+    if let Some(d) = driver() {
+        d.editor.user_clicked_engine();
+    }
 }
 
 /// Whether there is an editor at all on this thread.
@@ -209,6 +221,11 @@ fn update_overlay(d: &Driver, generation: u32, revision: u64, text: &str, caret:
             .is_some_and(|(g, r, old, old_caret, old_info)| *g == generation && *r == revision && old == text && *old_caret == caret && *old_info == info);
         if unchanged {
             return;
+        }
+        // A focus the engine made since the user last clicked away is a box
+        // they are meant to type in, so the editor may take the keyboard again.
+        if cache.as_ref().map_or(true, |(g, ..)| *g != generation) {
+            d.editor.reclaim_keyboard();
         }
         *cache = Some((generation, revision, text.to_owned(), caret, info));
     }

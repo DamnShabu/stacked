@@ -35,7 +35,9 @@
 //! mouse window manager handing it back to the engine when the pointer crosses
 //! the edge (taken straight back), the user switching to another application
 //! (the editor hides, or it would float over that application), and the engine
-//! window being unmapped.
+//! window being unmapped. A fourth is left alone on purpose: the user clicking
+//! the game window outside the box. The editor stops taking focus back until
+//! the engine focuses a box again or the user clicks the editor.
 //!
 //! Every Xlib symbol is looked up with `dlsym` against the process, never
 //! linked: the library half of this crate is built on hosts with no X headers
@@ -54,8 +56,9 @@ type Display = *mut c_void;
 type Window = c_ulong;
 
 /// What the runtime does with a key the editor receives that the *engine*
-/// should also hear (Escape, F11, the recording hotkey): `(keyval, keycode,
-/// state, down)`, returning whether it consumed the key.
+/// should also hear (Escape, F11, and Enter where the engine cannot be told
+/// it as an editor action): `(keyval, keycode, state, down)`, returning
+/// whether it consumed the key.
 pub type KeyForward = Box<dyn Fn(u32, u32, u32, bool) -> bool>;
 
 const NONE_WINDOW: Window = 0;
@@ -247,6 +250,40 @@ struct State {
     refocused: u32,
 }
 
+/// What [`X11Editor::place`] does about X keyboard focus on one pump.
+#[derive(Debug, PartialEq, Eq)]
+enum FocusMove {
+    /// Nothing: the editor has it, or the user gave it to the engine.
+    Leave,
+    Take,
+    /// Another application has it; hide until the engine has it again.
+    Suspend,
+}
+
+/// The focus decision, pure so the cases are tested. `holder` is the window X
+/// says has focus.
+///
+/// Focus that has gone back to the engine is taken again, because a
+/// focus-follows-mouse manager hands it there whenever the pointer leaves the
+/// editor. **Except after the user clicks the engine window**: then the
+/// engine having focus is what they asked for, and taking it back on every pump
+/// is the editor fighting them for the keyboard. That fight is what a box left
+/// focused across a server switch turned into a dead keyboard on X11, since
+/// every key then went to GTK and only Escape and F11 were passed on.
+fn focus_move(holder: Window, editor: Window, engine: Window, yielded: bool) -> FocusMove {
+    if holder == editor {
+        FocusMove::Leave
+    } else if holder == engine || holder == NONE_WINDOW || holder == POINTER_ROOT {
+        if yielded {
+            FocusMove::Leave
+        } else {
+            FocusMove::Take
+        }
+    } else {
+        FocusMove::Suspend
+    }
+}
+
 pub struct X11Editor {
     window: gtk::Window,
     core: EditorCore,
@@ -259,6 +296,10 @@ pub struct X11Editor {
     st: RefCell<State>,
     key_forward: std::rc::Rc<RefCell<Option<KeyForward>>>,
     scale: Cell<i32>,
+    /// The user clicked the engine window while the editor was up, so it
+    /// leaves X focus where the click put it; see [`focus_move`]. Shared with
+    /// the editor window's click handler, which clears it.
+    yielded: std::rc::Rc<Cell<bool>>,
 }
 
 impl X11Editor {
@@ -304,6 +345,21 @@ impl X11Editor {
         }
         window.add_controller(keys);
 
+        // A click on the editor is a click in the box, which is the user
+        // coming back to it after clicking away: the next pump takes the
+        // keyboard again. Nothing else would, because without a window manager
+        // a click gives an override-redirect window no focus. Capture phase and
+        // unclaimed, so the widget still places the caret from the same click.
+        let yielded = std::rc::Rc::new(Cell::new(false));
+        let clicks = gtk::GestureClick::new();
+        clicks.set_button(0);
+        clicks.set_propagation_phase(gtk::PropagationPhase::Capture);
+        {
+            let yielded = yielded.clone();
+            clicks.connect_pressed(move |_, _, _, _| yielded.set(false));
+        }
+        window.add_controller(clicks);
+
         let editor = Self {
             window,
             core,
@@ -325,6 +381,7 @@ impl X11Editor {
             }),
             key_forward,
             scale: Cell::new(1),
+            yielded,
         };
         eprintln!(
             "[x11-editor] ready: compositing {} ({}), engine window {engine:#x}",
@@ -379,6 +436,23 @@ impl X11Editor {
     pub fn owns_keyboard(&self) -> bool {
         let st = self.st.borrow();
         st.shown && st.xid != 0 && self.focus_holder() == st.xid
+    }
+
+    /// The user pressed a button on the engine window. While the editor is up
+    /// that is a press outside the box, and from here on the editor leaves X
+    /// focus wherever the click put it, until [`Self::reclaim_keyboard`] or a
+    /// click on the editor itself. A press while the editor is down is the one
+    /// that may be about to focus a box, and changes nothing.
+    pub fn user_clicked_engine(&self) {
+        if self.st.borrow().shown && !self.yielded.replace(true) {
+            eprintln!("[x11-editor] the game window was clicked: leaving it the keyboard");
+        }
+    }
+
+    /// The engine has focused a box since the user last clicked away, so the
+    /// editor may take the keyboard for it again.
+    pub fn reclaim_keyboard(&self) {
+        self.yielded.set(false);
     }
 
     /// Show, move or hide the editor for the focused box. `None` is a box that
@@ -581,18 +655,20 @@ impl X11Editor {
 
         // Focus, once the server says the window is mapped (an XSetInputFocus
         // on an unviewable window is a BadMatch).
-        if self.map_state(xid) == IS_VIEWABLE && holder != xid {
-            if holder == self.engine || holder == NONE_WINDOW || holder == POINTER_ROOT {
-                self.take_focus(xid);
-                let mut st = self.st.borrow_mut();
-                st.refocused += 1;
-                if st.refocused <= 3 {
-                    eprintln!("[x11-editor] took keyboard focus from {holder:#x} for the box");
+        if self.map_state(xid) == IS_VIEWABLE {
+            match focus_move(holder, xid, self.engine, self.yielded.get()) {
+                FocusMove::Leave => {}
+                FocusMove::Take => {
+                    self.take_focus(xid);
+                    let mut st = self.st.borrow_mut();
+                    st.refocused += 1;
+                    if st.refocused <= 3 {
+                        eprintln!("[x11-editor] took keyboard focus from {holder:#x} for the box");
+                    }
                 }
-            } else {
                 // Somebody else's window has focus: the user left. Hide rather
                 // than float over it.
-                self.suspend();
+                FocusMove::Suspend => self.suspend(),
             }
         }
     }
@@ -660,6 +736,7 @@ impl X11Editor {
         if !keep_wanted {
             st.suspended = false;
             st.background = None;
+            self.yielded.set(false);
         }
     }
 }
@@ -743,5 +820,35 @@ mod tests {
     fn the_window_sheet_is_transparent_only_when_nothing_is_asked_to_be_opaque() {
         assert!(window_sheet(None).contains("transparent"));
         assert!(window_sheet(Some(0x232527)).contains("#232527"));
+    }
+
+    const EDITOR: Window = 0x500_0001;
+    const ENGINE: Window = 0x400_0001;
+    const OTHER_APP: Window = 0x600_0001;
+
+    #[test]
+    fn focus_that_went_back_to_the_engine_is_taken_again() {
+        for holder in [ENGINE, NONE_WINDOW, POINTER_ROOT] {
+            assert_eq!(focus_move(holder, EDITOR, ENGINE, false), FocusMove::Take);
+        }
+    }
+
+    #[test]
+    fn after_a_click_on_the_game_the_editor_leaves_the_keyboard_alone() {
+        for holder in [ENGINE, NONE_WINDOW, POINTER_ROOT] {
+            assert_eq!(focus_move(holder, EDITOR, ENGINE, true), FocusMove::Leave);
+        }
+    }
+
+    #[test]
+    fn another_application_with_focus_hides_the_editor_clicked_or_not() {
+        assert_eq!(focus_move(OTHER_APP, EDITOR, ENGINE, false), FocusMove::Suspend);
+        assert_eq!(focus_move(OTHER_APP, EDITOR, ENGINE, true), FocusMove::Suspend);
+    }
+
+    #[test]
+    fn an_editor_that_has_focus_does_nothing() {
+        assert_eq!(focus_move(EDITOR, EDITOR, ENGINE, false), FocusMove::Leave);
+        assert_eq!(focus_move(EDITOR, EDITOR, ENGINE, true), FocusMove::Leave);
     }
 }

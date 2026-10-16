@@ -1808,9 +1808,12 @@ pub fn idle_keepalive() {
 ///
 /// Four a second for the join, which is ten to twelve seconds of events, because
 /// the cost of an extra hover is nil and the only schedule that held in every
-/// hand-driven join was dense and began early. **The built schedule below has
-/// not been run against a join**; it is the hand-driven one, moved into the
-/// pump.
+/// hand-driven join was dense and began early. The built schedule below is the
+/// hand-driven one moved into the pump, and it was run against joins on
+/// 2026-10-16: 4 of 4 walked with it on and 0 of 5 with it off, alternating in
+/// one signed-in client on nested Wayland, in one place.
+/// `docs/analysis/movement-keys.md` has the table and what it does not cover:
+/// a second place, X11, and a join from a link.
 #[derive(Debug, Default)]
 pub struct NewGameSeed {
     seen_bumps: u32,
@@ -2032,6 +2035,29 @@ fn enter_belongs_to_editor(evdev: i32, box_focused: bool, multiline: bool, can_r
     evdev_is_enter(evdev) && box_focused && (multiline || can_return)
 }
 
+/// Whether an Enter that reached the X11 editor window has to be handed to the
+/// engine as a raw key instead. The same rule as Wayland's, from the other
+/// side: there the editor *takes* Enter only when it can do something with it,
+/// and here the editor has the keyboard and must *give* Enter back when it
+/// cannot. Without this a single-line box on X11 always went to
+/// [`return_pressed`], which on a build lacking
+/// `nativeReturnPressedFromOnScreenKeyboard` reports the gap and does nothing,
+/// so Enter never reached the engine by any path while the box had focus.
+fn enter_goes_raw(evdev: i32, box_focused: bool, multiline: bool, can_return: bool) -> bool {
+    evdev_is_enter(evdev) && box_focused && !enter_belongs_to_editor(evdev, box_focused, multiline, can_return)
+}
+
+/// [`enter_goes_raw`] for the focused box, for `window::forward_editor_key`.
+pub fn x11_enter_goes_raw(evdev: i32) -> bool {
+    let spec = cordial_linker_sys::game_activity::focused_textbox_info();
+    enter_goes_raw(
+        evdev,
+        cordial_linker_sys::game_activity::focused_textbox().is_some(),
+        spec.is_some_and(|i| i.multiline != 0),
+        !RETURN_PRESSED.load(Ordering::Relaxed).is_null(),
+    )
+}
+
 /// Enter keys whose press was withheld from the engine, so the release is too.
 /// The mirror of [`FORWARDED_PRESSES`], for the same stuck-key reason: a press
 /// withheld while a box had focus must not leave a release the engine never
@@ -2041,7 +2067,8 @@ static WITHHELD_ENTERS: Mutex<Vec<i32>> = Mutex::new(Vec::new());
 /// Decide, for one Enter transition arriving at the Wayland keyboard, whether
 /// the editor consumes it; `true` means it must not reach the engine by any
 /// path. Only the Wayland path asks: on X11 the editor is its own GTK window
-/// (ADR-062), which takes Enter itself and calls `return_pressed`.
+/// (ADR-062), which takes Enter itself and calls `return_pressed`, or hands it
+/// back through [`x11_enter_goes_raw`] when that native is missing.
 pub fn editor_consumes_enter(down: bool, evdev: i32) -> bool {
     if !evdev_is_enter(evdev) || keys_to_game_while_typing() {
         return false;
@@ -2649,8 +2676,9 @@ pub fn trace_text() -> bool {
 /// nothing printed an answer without also printing everything else.
 ///
 /// **It records every key, including ones typed into a password box.** The
-/// evdev code of a letter is the letter. See the troubleshooting page before
-/// attaching one to an issue.
+/// evdev code of a letter is the letter. `docs/usage.md` says so beside the
+/// variable, which is where a user turning it on will read it; there is no
+/// separate troubleshooting page, though this comment once pointed at one.
 pub fn trace_keys() -> bool {
     static ON: OnceLock<bool> = OnceLock::new();
     *ON.get_or_init(|| std::env::var_os("CORDIAL_TRACE_KEYS").is_some())
@@ -2661,7 +2689,11 @@ pub fn trace_keys() -> bool {
 /// thing in every line.
 ///
 /// `path` is `native` for `nativePassKeyEvent`, `agdk` for `onKeyDownNative`,
-/// `gate` for a key the Wayland keyboard-focus gate dropped before either.
+/// `gate` for a key the Wayland keyboard-focus gate dropped before either, and
+/// `wayland` for an Enter the Wayland editor kept from the engine
+/// ([`editor_consumes_enter`]). On X11 the editor is its own window, so a key
+/// typed into it prints a line only if the editor forwards it to the engine,
+/// and then on the `native` path.
 /// `evdev` is absent on the AGDK path, whose callers disagree about the scan
 /// code they pass (Wayland hands evdev, X11 hands evdev plus eight), so the
 /// Android keycode is what identifies the key there. `t` is milliseconds since
@@ -3573,6 +3605,37 @@ mod tests {
         assert!(!enter_belongs_to_editor(28, true, false, false), "no native: the raw key is all there is");
         assert!(!enter_belongs_to_editor(28, false, true, true), "no box, no editor");
         assert!(!enter_belongs_to_editor(30, true, true, true), "only Enter");
+    }
+
+    /// The X11 editor hands Enter back exactly where Wayland's would not have
+    /// taken it: a single-line box on a build with no return native.
+    #[test]
+    fn x11_enter_falls_back_to_the_raw_key_where_wayland_does() {
+        // (evdev, box focused, multiline, native present)
+        assert!(enter_goes_raw(28, true, false, false), "single-line, no native");
+        assert!(enter_goes_raw(96, true, false, false), "the keypad's Enter too");
+        assert!(!enter_goes_raw(28, true, false, true), "the native is the editor action");
+        assert!(!enter_goes_raw(28, true, true, false), "a newline is the editor's own");
+        assert!(!enter_goes_raw(28, false, false, false), "no box: not the editor's to give");
+        assert!(!enter_goes_raw(30, true, false, false), "only Enter");
+    }
+
+    extern "C" {
+        fn cordial_new_game_drops_focus(event: std::ffi::c_int, start_pending: std::ffi::c_int, ms: i64) -> std::ffi::c_int;
+    }
+
+    /// `native/android_classes.cpp`'s decision about a box still focused when
+    /// a new game begins. 0 is an experience start, 1 a load.
+    #[test]
+    fn a_new_game_drops_a_box_focused_before_it_began() {
+        // SAFETY: a pure function of its three integers.
+        let drops = |event, pending, ms| unsafe { cordial_new_game_drops_focus(event, pending, ms) } != 0;
+        assert!(drops(0, 0, -1), "a start always begins a new game");
+        assert!(drops(0, 1, 100), "even a start after a start that never loaded");
+        assert!(!drops(1, 1, -1), "a load completing a start: the box was focused while loading");
+        assert!(!drops(1, 0, 40), "the second callback for the same load");
+        assert!(drops(1, 0, -1), "a load with no start and no load before it");
+        assert!(drops(1, 0, 60_000), "a load long after the last one: a teleport announcing only the load");
     }
 
     fn at(ms: u64, base: std::time::Instant) -> std::time::Instant {
