@@ -196,7 +196,27 @@ fn runtime_dir() -> Option<PathBuf> {
 }
 
 fn display() -> Check {
-    if let Ok(name) = std::env::var("WAYLAND_DISPLAY") {
+    let var = |k: &str| std::env::var(k).ok();
+    // The loader's own rule, so this says what `cordial-run` will do. Inside
+    // gamescope the Wayland socket is empty or cannot host the game's surface,
+    // and the game opens on gamescope's Xwayland.
+    if cordial_shell::gamescope::inside(var(cordial_shell::gamescope::MARKER).as_deref())
+        && !cordial_shell::gamescope::wayland_usable(
+            var("WAYLAND_DISPLAY").as_deref(),
+            var("DISPLAY").as_deref(),
+            var(cordial_shell::gamescope::MARKER).as_deref(),
+        )
+    {
+        return check(
+            Level::Warn,
+            "inside gamescope, so the game opens on X11 through the Xwayland it provides",
+            "gamescope's own Wayland server cannot host the game's surface, and X11 has no in-app \
+             web views, so sign each profile in once outside gamescope and launch it here afterwards.",
+        );
+    }
+    // Set to nothing is no compositor: gamescope exports `WAYLAND_DISPLAY=""`,
+    // and the empty name used to read as a socket at the runtime directory.
+    if let Some(name) = var("WAYLAND_DISPLAY").filter(|n| !n.is_empty()) {
         let socket = if Path::new(&name).is_absolute() {
             PathBuf::from(&name)
         } else {

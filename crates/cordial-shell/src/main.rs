@@ -502,6 +502,17 @@ fn play(args: &[String]) -> u8 {
             return 1;
         }
     };
+    // `cordial-run` exits 5 when it could not open a window at all, which used
+    // to be a clean 0 and so a run that showed nothing reported as a success.
+    // Passed on as 5, so a program launching `stacked` can tell that apart.
+    if status.code() == Some(5) {
+        eprintln!();
+        report(
+            "Roblox could not open a window; the reason is on the \"no window:\" line above. \
+             `stacked doctor` checks the display.",
+        );
+        return 5;
+    }
     if crash::is_crash(&status, &instance.recent_output()) {
         eprintln!();
         report(&format!(

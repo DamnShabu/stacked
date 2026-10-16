@@ -39,6 +39,9 @@
 #![allow(unsafe_code)]
 
 pub mod branding;
+// Which display backend a gamescope session gets; `stacked doctor` and the
+// loader both ask it, so it is here and not in either of them.
+pub mod gamescope;
 pub mod host_window;
 pub mod log_export;
 pub mod network;

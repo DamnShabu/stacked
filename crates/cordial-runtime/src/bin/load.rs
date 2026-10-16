@@ -1388,7 +1388,8 @@ fn install_webview_presenter() {
         println!(
             "  webview: WARNING -- there is no Wayland host window, so nothing can be attached \
              to and every openWindow (Join, sign-in, Robux) will be dropped. This run is on the \
-             X11 backend -- either CORDIAL_X11 is set, or there is no WAYLAND_DISPLAY to use. \
+             X11 backend -- either CORDIAL_X11 is set, there is no WAYLAND_DISPLAY to use, or this is \
+             inside gamescope, whose Wayland server cannot host the engine's surface. \
              Web views need the Wayland backend."
         );
     }
@@ -2289,7 +2290,10 @@ fn main() -> ExitCode {
                     match cordial_runtime::android::open_window(
                         rw, rh, &cordial_shell::host_window::title(),
                     ) {
-                        Err(e) => println!("  no window: {e}"),
+                        Err(e) => {
+                            println!("  no window: {e}");
+                            WINDOW_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                        }
                         Ok(w) => {
                             let (width, height, _) = w.geometry();
                             cordial_runtime::android::config::set_screen(width, height);
@@ -2751,7 +2755,10 @@ fn main() -> ExitCode {
                                 match cordial_runtime::android::open_window(
                                     rw, rh, &cordial_shell::host_window::title(),
                                 ) {
-                                    Err(e) => println!("  no window: {e}"),
+                                    Err(e) => {
+                                        println!("  no window: {e}");
+                                        WINDOW_FAILED.store(true, std::sync::atomic::Ordering::Relaxed);
+                                    }
                                     Ok(w) => {
                                         let (width, height, format) = w.geometry();
                                         cordial_runtime::android::config::set_screen(width, height);
@@ -5009,8 +5016,18 @@ fn main() -> ExitCode {
     //
     // SAFETY: _exit is async-signal-safe and terminates without running any
     // handler. Nothing here owns a resource the kernel will not reclaim.
-    unsafe { libc_exit(0) }
+    //
+    // **5 when no window could be opened, because 0 was a lie.** Under gamescope
+    // the client printed "no window: ..." and left with status 0, so a launcher
+    // reported a clean exit for a run that never showed anything, and a program
+    // that starts clients per account had no way to tell a game from a failure
+    // to start one.
+    let status = if WINDOW_FAILED.load(std::sync::atomic::Ordering::Relaxed) { 5 } else { 0 };
+    unsafe { libc_exit(status) }
 }
+
+/// Set when `open_window` failed. Read once, at exit, for the status above.
+static WINDOW_FAILED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 extern "C" {
     #[link_name = "_exit"]
