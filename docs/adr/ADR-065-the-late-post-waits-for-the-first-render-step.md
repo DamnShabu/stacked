@@ -18,7 +18,7 @@ On the cache-miss path the post is made from a thread of its own, after the usua
 - **The marker is read from the engine's own log file.** FLog lines go to `appData/logs/*_Player_*.log` and do not pass through `__android_log_print`: of 395 lines of Cordial's stderr in a signed-in launch none was a render step. `game_log` already reads that file for the same reason it is not a hook, and ADR-001 and ADR-003 are not touched: Cordial reads a file the engine writes into a directory Cordial made and changes nothing in the process. The gate follows the newest `*.log` modified after the process started, from byte 0, every millisecond.
 - **Either of two lines counts**, `stepDataModelJob: No DM yet` and `Bind workspace now`. They carry the same millisecond in every engine log read; the first is earlier by 40 to 100 microseconds.
 - **The 10 ms margin** copies the 24 to 46 ms every healthy first-regime launch had between step and post, in less than half the time; `CORDIAL_POST_GATE_SETTLE_MS` changes it. It was not tuned against anything.
-- **Never the pump thread.** A post held on the pump thread for 330 ms or more stalls the window for good (`docs/NEXT.md`, round 1).
+- **Never the pump thread, for a held post.** This is the cache-miss post the gate holds; the valid-cache post above keeps its fixed 250 ms on the pump thread, as before this ADR. A post held on the pump thread for 330 ms or more stalls the window for good (`docs/NEXT.md`, round 1).
 - **On by default**; `CORDIAL_POST_GATE=0` (or `off`, `false`, `no`) turns it off, parsed by the loader's `switch_on`. `CORDIAL_POST_ASYNC`, `CORDIAL_POST_AFTER_HOME_MS` and `CORDIAL_LATE_POST_MS` are kept: they are how the window is opened for a test.
 
 ## What the measurements showed
