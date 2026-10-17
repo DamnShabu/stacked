@@ -183,7 +183,15 @@ impl Xlib {
                 // SAFETY: the handle is open and the name is XKB's documented
                 // export; null is mapped to `None`, never called.
                 let p = unsafe { dlsym(lib, c"XkbSetDetectableAutoRepeat".as_ptr()) };
-                if p.is_null() { None } else { Some(unsafe { std::mem::transmute(p) }) }
+                if p.is_null() {
+                    None
+                } else {
+                    // SAFETY: a non-null `p` is that function, whose C
+                    // signature is the field's type.
+                    Some(unsafe {
+                        std::mem::transmute::<*mut c_void, unsafe extern "C" fn(Display, c_int, *mut c_int) -> c_int>(p)
+                    })
+                }
             },
             grab_pointer: sym!("XGrabPointer"),
             ungrab_pointer: sym!("XUngrabPointer"),
@@ -1517,10 +1525,11 @@ fn android_meta_state(x11_state: c_uint) -> i32 {
 // why the keysym table in particular carries over unchanged: X11 keysyms and
 // XKB keysyms are the same numbering.
 use super::input::{
-    deliver_key, deliver_surface_redraw, deliver_mouse, edit_text_buffer, keysym_to_android,
+    deliver_key, deliver_surface_redraw, deliver_mouse, deliver_mouse_button, edit_text_buffer,
+    keysym_to_android,
     pass_key_event, pass_mouse_button, pass_mouse_move, pass_text, report_keyboard_state, Caret,
-    Edit, ACTION_BUTTON_PRESS, ACTION_BUTTON_RELEASE, ACTION_DOWN, ACTION_HOVER_MOVE, ACTION_MOVE,
-    ACTION_UP, BUTTON_BACK, BUTTON_FORWARD, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_TERTIARY,
+    Edit, ACTION_HOVER_MOVE, ACTION_MOVE,
+    BUTTON_BACK, BUTTON_FORWARD, BUTTON_PRIMARY, BUTTON_SECONDARY, BUTTON_TERTIARY,
 };
 
 /// X11 numbers buttons 1/2/3 as left/middle/right; Android's bit assignment
@@ -1615,25 +1624,21 @@ impl HostWindow {
         let mut state = self.input.lock().unwrap_or_else(|e| e.into_inner());
         let now = state.clock.elapsed().as_millis() as i64;
 
+        let before = state.buttons;
         if press {
-            if state.buttons == 0 {
+            if before == 0 {
                 state.down_time_ms = now;
             }
             state.buttons |= android_button;
-            let (buttons, down_time) = (state.buttons, state.down_time_ms);
-            drop(state);
-            // Real Android mouse input delivers exactly this pair for a
-            // click: ACTION_DOWN establishes the gesture, then
-            // ACTION_BUTTON_PRESS names which button did it.
-            deliver_mouse(handle, ACTION_DOWN, x, y, buttons, 0, now, down_time);
-            deliver_mouse(handle, ACTION_BUTTON_PRESS, x, y, buttons, android_button, now, down_time);
         } else {
             state.buttons &= !android_button;
-            let (buttons, down_time) = (state.buttons, state.down_time_ms);
-            drop(state);
-            deliver_mouse(handle, ACTION_BUTTON_RELEASE, x, y, buttons, android_button, now, down_time);
-            deliver_mouse(handle, ACTION_UP, x, y, buttons, 0, now, down_time);
         }
+        let down_time = state.down_time_ms;
+        drop(state);
+        // Real Android mouse input delivers `ACTION_DOWN` for the first button
+        // only, `ACTION_BUTTON_PRESS` for each, and `ACTION_UP` when the last
+        // comes up. See `mouse_button_events`.
+        deliver_mouse_button(handle, press, before, android_button, x, y, now, down_time);
 
         // The interface's own input path, alongside AGDK's — and every button,
         // not only the primary one. The gate that used to stand here dropped
@@ -1773,8 +1778,14 @@ impl HostWindow {
         // SAFETY: an event is queued, so this returns at once; `peek` is
         // larger than every concrete event struct in the `XEvent` union.
         unsafe { (self.xlib.peek_event)(self.display, peek.as_mut_ptr() as *mut c_void) };
+        // SAFETY: both buffers hold a whole event, and every X event begins
+        // with its `int type`. `next` is read as a key event whatever it is,
+        // which stays inside `peek`; its fields mean something only when
+        // `kind` is KeyPress, and `is_autorepeat_pair` looks at nothing else.
         let kind = unsafe { *(peek.as_ptr() as *const c_int) };
+        // SAFETY: as above; `buf` is the KeyRelease being handled.
         let release = unsafe { &*(buf.as_ptr() as *const XInputEvent) };
+        // SAFETY: as above.
         let next = unsafe { &*(peek.as_ptr() as *const XInputEvent) };
         is_autorepeat_pair((release.time, release.detail), Some((kind, next.time, next.detail)))
     }
@@ -2197,8 +2208,12 @@ impl HostWindow {
 /// one is open — the loader/asset-only paths that never call `open()` make
 /// this a no-op).
 pub fn pump_input_events(handle: i64) {
+    super::input::note_pump_tick();
     if let Some(w) = current() {
+        let started = std::time::Instant::now();
         w.pump_input_events(handle);
+        // No GTK main loop is iterated on this path, so none of it is GTK's.
+        super::input::note_pump_phases(0, started.elapsed().as_millis() as u64);
     }
 }
 

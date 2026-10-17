@@ -21,6 +21,30 @@ This file is the handover. It says what is blocking, how to work on it, and —
 the part worth reading even if you are in a hurry — **what has already been
 ruled out**.
 
+## Pending in-game verification: held mouse buttons across toplevel locks, 2026-10-07
+
+The click gate added for Hyprland accepts a confirmed toplevel lock, but
+`pointer_leave` still released every held button immediately, and camera drags
+still required canvas focus. Both disagreed with that gate. Held buttons are
+now reconciled after dispatching pending Wayland events, so a canvas-to-lock
+handoff within that batch preserves them. Right and middle drags also recognise
+a confirmed lock. Real releases follow accepted presses even after ownership
+changes; unmatched releases and duplicate presses are discarded.
+
+**INFERRED** as an explanation for intermittent shooting loss. This is not a
+claim that Hyprland delivers the relevant events in one batch, or that the
+reported game symptom is fixed. If confirmation arrives in a later batch, the
+buttons can still be released. Repeat in an experience with
+`CORDIAL_TRACE_MOUSE=1`, holding fire while toggling shift lock and aiming,
+then losing and regaining window focus. Compare against the build before this
+change; record `nativePassMouseButton` and lock transitions alongside the
+visible behaviour. The MCP click verb bypasses these Wayland handlers and
+cannot test this change.
+
+The button-routing regression test passes; restoring the old ownership gate
+makes it fail on the secondary-button release after focus changes. This
+control checks routing, not compositor event ordering or engine behaviour.
+
 ## #63 reproduced on demand: the engine records a failed Vulkan call before its device exists, 2026-10-15
 
 The `SIGSEGV` at `libroblox.so+0x29b4349`, fault address `0x5a0`, "seen 2/11,
@@ -1914,9 +1938,10 @@ bugs were in machinery Cordial does not have.
   contradicts it, and a comment that confident about a behaviour nobody has
   measured is the shape this file exists to warn about. Nothing here has been
   observed in that state.
-- **Locked.** `relative_pointer_motion` picks the unaccelerated pair unless
-  `CORDIAL_POINTER_ACCEL=always`. Raw is the shipped default and is deliberate.
-  Settings offers "Only the cursor" and "Cursor and camera" for it.
+- **Locked.** `relative_pointer_motion` picks the accelerated pair unless
+  `CORDIAL_POINTER_ACCEL=unlocked`. Raw was the default until upstream d17baa6
+  (2026-09-30) and this line said so; `stacked config set pointer_acceleration
+  unlockedcursor` gets it back.
 - **The setting only reaches a client the shell launched.** `launch.rs:397` is
   the one place `CORDIAL_POINTER_ACCEL` is set, and `just dev`, `just client`
   and a hand-run `cordial-run` set none of it. **Anybody testing this from a

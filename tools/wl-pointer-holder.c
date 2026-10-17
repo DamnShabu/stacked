@@ -16,6 +16,7 @@
 // line, so a shell script can drive a whole interaction:
 //
 //     move <x> <y>            absolute, in output coordinates
+//     rel <dx> <dy>           relative motion, which is what a camera turn is
 //     down|up|click [button]  button is left (default), right or middle
 //     scroll <notches>        vertical wheel; negative scrolls up (zooms in)
 //     quit
@@ -76,8 +77,15 @@ int main(int argc, char **argv) {
         unsigned x, y;
         char which[16] = "";
         clock_ms += 16;
+        int dx, dy;
         if (sscanf(line, "move %u %u", &x, &y) == 2) {
             zwlr_virtual_pointer_v1_motion_absolute(ptr, clock_ms, x, y, width, height);
+            zwlr_virtual_pointer_v1_frame(ptr);
+        } else if (sscanf(line, "rel %d %d", &dx, &dy) == 2) {
+            // Relative, because absolute motion under a lock tells the
+            // compositor nothing about how far the camera should turn.
+            zwlr_virtual_pointer_v1_motion(ptr, clock_ms, wl_fixed_from_int(dx),
+                                           wl_fixed_from_int(dy));
             zwlr_virtual_pointer_v1_frame(ptr);
         } else if (!strncmp(line, "down", 4) || !strncmp(line, "up", 2)
                    || !strncmp(line, "click", 5)) {

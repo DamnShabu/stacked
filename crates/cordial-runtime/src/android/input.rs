@@ -270,6 +270,16 @@ pub fn deliver_mouse(
     if no_agdk_touch() {
         return;
     }
+    // `CORDIAL_TRACE_MOUSE` shows the AGDK half of a click as well as the
+    // `nativePassMouseButton` half. `super::trace` is the general switch that
+    // aborts the engine, so until now the action sequence a held button chord
+    // produced could not be read at all.
+    if trace_mouse() && action != ACTION_MOVE && action != ACTION_HOVER_MOVE {
+        eprintln!(
+            "[cordial] onTouchEventNative(action={action}, buttons={button_state}, \
+             action_button={action_button})"
+        );
+    }
     match cordial_linker_sys::game_activity::touch(
         handle,
         action,
@@ -285,6 +295,56 @@ pub fn deliver_mouse(
         }
         Ok(None) => report_unregistered("onTouchEventNative"),
         Err(e) => super::trace(format_args!("onTouchEventNative(action={action}) failed: {e}")),
+    }
+}
+
+/// The AGDK `MotionEvent`s one mouse button press or release produces, as
+/// `(action, button_state, action_button)` in delivery order.
+///
+/// **`ACTION_DOWN` starts a gesture and `ACTION_UP` ends it, and a second button
+/// does neither.** Android reports the first button down as `ACTION_DOWN` then
+/// `ACTION_BUTTON_PRESS`, every further button as `ACTION_BUTTON_PRESS` alone,
+/// and the last button up as `ACTION_BUTTON_RELEASE` then `ACTION_UP`. Both
+/// backends sent the full pair for every button, so a right press under a held
+/// left restarted the gesture and the right release ended it while the left was
+/// still down -- the engine was told the left button had come up, and nothing
+/// more was said about it until the real release. Reported as the left click
+/// stopping when the right button is held.
+///
+/// `held_before` is the mask before this change; `button` is the one changing.
+pub fn mouse_button_events(press: bool, held_before: i32, button: i32) -> Vec<(i32, i32, i32)> {
+    if press {
+        let after = held_before | button;
+        let mut out = Vec::with_capacity(2);
+        if held_before == 0 {
+            out.push((ACTION_DOWN, after, 0));
+        }
+        out.push((ACTION_BUTTON_PRESS, after, button));
+        out
+    } else {
+        let after = held_before & !button;
+        let mut out = vec![(ACTION_BUTTON_RELEASE, after, button)];
+        if after == 0 {
+            out.push((ACTION_UP, after, 0));
+        }
+        out
+    }
+}
+
+/// Deliver [`mouse_button_events`] for one button, through AGDK.
+#[allow(clippy::too_many_arguments)]
+pub fn deliver_mouse_button(
+    handle: i64,
+    press: bool,
+    held_before: i32,
+    button: i32,
+    x: f32,
+    y: f32,
+    event_time_ms: i64,
+    down_time_ms: i64,
+) {
+    for (action, state, action_button) in mouse_button_events(press, held_before, button) {
+        deliver_mouse(handle, action, x, y, state, action_button, event_time_ms, down_time_ms);
     }
 }
 
@@ -1447,6 +1507,79 @@ fn keys_to_game_while_typing() -> bool {
     *ON.get_or_init(|| std::env::var_os("CORDIAL_KEYS_TO_GAME_WHILE_TYPING").is_some())
 }
 
+/// Longest gap between two input pumps that is not worth a line.
+const PUMP_STALL_MS: u64 = 1000;
+
+/// Whether a gap between two input pumps is one to report: long enough to
+/// matter, and not during start-up, when the loop is legitimately busy loading
+/// the engine for tens of seconds. Pure so the cases are tested.
+fn pump_gap_is_a_stall(gap_ms: u64, since_first_pump_ms: u64) -> bool {
+    gap_ms >= PUMP_STALL_MS && since_first_pump_ms >= 60_000
+}
+
+/// Called once per input pump by both display backends. Says so, once per
+/// occurrence, when the loop that delivers input did not run for a second or
+/// more.
+///
+/// "My character keeps walking and nothing I press does anything" (#108) has
+/// two very different causes: input that is dropped, and a loop that is not
+/// running so that input waits in the compositor's queue and is delivered, late
+/// and all at once, afterwards. Nothing in the log could tell them apart, and
+/// the symptom is identical from the player's chair. This line is the second
+/// cause's footprint; its absence next to a reported freeze points at the
+/// first.
+pub fn note_pump_tick() {
+    static START: OnceLock<std::time::Instant> = OnceLock::new();
+    static LAST_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+    let start = *START.get_or_init(std::time::Instant::now);
+    let now = start.elapsed().as_millis() as u64;
+    let last = LAST_MS.swap(now, Ordering::Relaxed);
+    if last != u64::MAX && pump_gap_is_a_stall(now.saturating_sub(last), now) {
+        eprintln!(
+            "[cordial] input pump: the loop that delivers input did not run for {} ms; keys and \
+             mouse that arrived meanwhile were queued and are being delivered now, none were dropped{}",
+            now - last,
+            pump_phase_note(now - last)
+        );
+    }
+}
+
+/// How long the last input pump spent inside GTK's main loop, and in all.
+/// Zero until a pump has finished one.
+static LAST_PUMP_GTK_MS: AtomicU64 = AtomicU64::new(0);
+static LAST_PUMP_TOTAL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// Recorded by the display backend at the end of each pump, so that a stall can
+/// say which half it was in.
+///
+/// The stall line named a 3,057 ms gap (#108) and nothing about where it went:
+/// the pump runs GTK's main loop, which also runs every timer and D-Bus
+/// callback the process has registered, and a slow one of those is
+/// indistinguishable from the engine's thread being held up somewhere outside
+/// the pump entirely. Two integers per pump, not a profile.
+pub fn note_pump_phases(gtk_ms: u64, total_ms: u64) {
+    LAST_PUMP_GTK_MS.store(gtk_ms, Ordering::Relaxed);
+    LAST_PUMP_TOTAL_MS.store(total_ms, Ordering::Relaxed);
+}
+
+/// The sentence appended to a stall line: where the previous pump's time went.
+/// The previous pump is the one a gap is measured from, so a stall inside GTK's
+/// loop shows up here and one outside the pump shows up as a small total.
+fn pump_phase_note(gap_ms: u64) -> String {
+    pump_phase_sentence(
+        gap_ms,
+        LAST_PUMP_GTK_MS.load(Ordering::Relaxed),
+        LAST_PUMP_TOTAL_MS.load(Ordering::Relaxed),
+    )
+}
+
+fn pump_phase_sentence(gap_ms: u64, gtk_ms: u64, total_ms: u64) -> String {
+    format!(
+        "; the pump before it ran for {total_ms} ms ({gtk_ms} ms of that in GTK's main loop), \
+         so {} ms of the gap were outside the pump",
+        gap_ms.saturating_sub(total_ms)
+    )
+}
 pub fn pass_key_event(down: bool, evdev_code: i32, modifiers: i32) {
     if no_pass_key() {
         return;
@@ -3576,7 +3709,42 @@ pub fn script_type(handle: i64, text: &str, now_ms: i64) -> usize {
 
 #[cfg(test)]
 mod tests {
+    /// Two buttons are one gesture. `ACTION_DOWN` for the first, `ACTION_UP` for
+    /// the last, a press and a release for each: the sequence Android's own mouse
+    /// input produces, and what both backends failed to send.
+    #[test]
+    fn a_second_mouse_button_neither_starts_nor_ends_the_gesture() {
+        use super::{
+            mouse_button_events as ev, ACTION_BUTTON_PRESS as PRESS, ACTION_BUTTON_RELEASE as RELEASE,
+            ACTION_DOWN as DOWN, ACTION_UP as UP, BUTTON_PRIMARY as L, BUTTON_SECONDARY as R,
+        };
+        // Left down, right down, right up, left up.
+        assert_eq!(ev(true, 0, L), vec![(DOWN, L, 0), (PRESS, L, L)]);
+        assert_eq!(ev(true, L, R), vec![(PRESS, L | R, R)], "no second ACTION_DOWN");
+        assert_eq!(ev(false, L | R, R), vec![(RELEASE, L, R)], "no ACTION_UP while left is down");
+        assert_eq!(ev(false, L, L), vec![(RELEASE, 0, L), (UP, 0, 0)]);
+        // The other order, and a release of the first button before the second.
+        assert_eq!(ev(false, L | R, L), vec![(RELEASE, R, L)]);
+        assert_eq!(ev(false, R, R), vec![(RELEASE, 0, R), (UP, 0, 0)]);
+    }
+
     use super::*;
+
+    #[test]
+    fn a_pump_gap_is_a_stall_only_after_a_second_and_once_the_engine_runs() {
+        assert!(!pump_gap_is_a_stall(999, 120_000));
+        assert!(pump_gap_is_a_stall(1000, 120_000));
+        assert!(!pump_gap_is_a_stall(30_000, 20_000), "loading the engine is not a stall");
+    }
+
+    #[test]
+    fn a_stall_line_says_how_much_of_the_gap_was_inside_the_pump() {
+        let inside = pump_phase_sentence(3057, 3051, 3055);
+        assert!(inside.contains("ran for 3055 ms (3051 ms of that in GTK's main loop)"), "{inside}");
+        assert!(inside.contains("so 2 ms of the gap were outside"), "{inside}");
+        let outside = pump_phase_sentence(3020, 0, 1);
+        assert!(outside.contains("so 3019 ms of the gap were outside"), "{outside}");
+    }
 
     /// `devctl text` with no box focused must still release every key it
     /// pressed. It used to skip the release, leaving the key in `KEYS_HELD`.

@@ -80,7 +80,7 @@ values it accepts.
 | `graphics_optimization_mode` | `balanced` | `balanced`, `roblox-app`, `mobile-tier`, `more-cores` or `fewer-cores`. None of these is measured to help. |
 | `gamemode` | `true` | Ask Feral GameMode for the performance governor while you play. |
 | `throttle` | `visible` | `visible`, `unfocused` or `off`. When the engine is allowed to slow down in the background. |
-| `pointer_acceleration` | `unlockedcursor` | `unlockedcursor` or `always`. Whether desktop pointer acceleration also affects the camera. |
+| `pointer_acceleration` | `always` | `always` or `unlockedcursor`. Whether desktop pointer acceleration also affects the camera; `unlockedcursor` gives raw camera movement. A config that already names `unlockedcursor` keeps it. |
 | `gamepad` | `true` | Controllers. |
 | `record_session` / `record_audio` | `false` | Record each session to a video file with `ffmpeg`, and its sound. Either one also makes F9 start and stop recording. See [recording.md](recording.md). |
 | `audio_output` | empty | An output name from `stacked audio-outputs`. Empty follows the system. |
@@ -229,6 +229,8 @@ the rest are for testing and troubleshooting.
 |---|---|
 | `CORDIAL_NO_FULLSCREEN_CONFINE=1` | Don't confine the cursor in fullscreen. |
 | `CORDIAL_NO_POINTER_LOCK=1` | Never capture the cursor, even for first-person or a camera drag. |
+| `CORDIAL_DRAG_LOCK=0` | On Hyprland, don't hold the cursor still during a right-button camera drag ([ADR-060](adr/ADR-060-hyprland-takes-the-camera-button-when-the-lock-activates.md)). |
+| `CORDIAL_NO_GAME_SEED=1` | Don't hand the engine pointer hovers while a game starts. They are there because movement keys were dead after a Play-button join without them ([movement-keys.md](analysis/movement-keys.md)). |
 | `CORDIAL_FPS_CAP=N` | The same as `fps_cap`. `0` is the engine's own target; unset follows the screen. |
 | `CORDIAL_THEME=stacked\|system` | The same as `theme`. |
 | `CORDIAL_PRESENT_MODE=…` | The same as `present_mode`, plus `uncapped` and `fifo-relaxed`. |
