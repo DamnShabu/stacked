@@ -108,9 +108,19 @@ pub fn backend() -> Backend {
         // escape hatch is how a regression becomes unreportable: anyone whose
         // session breaks on Wayland needs a way to say so from a working
         // client rather than from a bisect.
-        let b = if std::env::var_os("CORDIAL_X11").is_some() {
+        //
+        // **"Is there a compositor" is `gamescope::wayland_usable_here`, not
+        // "is the variable set".** gamescope exports `WAYLAND_DISPLAY=""`
+        // unless it was started with `--expose-wayland`, and a variable set to
+        // nothing used to read as a Wayland session: GTK was then forced onto a
+        // display that did not exist and the client exited 0 with no window.
+        // With `--expose-wayland` the socket is real and lacks the
+        // `wl_subcompositor` the engine's surface is embedded with, so that is
+        // X11 too.
+        let forced = std::env::var_os("CORDIAL_X11").is_some();
+        let b = if forced {
             Backend::X11
-        } else if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+        } else if cordial_shell::gamescope::wayland_usable_here() {
             Backend::Wayland
         } else {
             Backend::X11
@@ -119,9 +129,12 @@ pub fn backend() -> Backend {
             Backend::Wayland => {
                 println!("[android] display backend: Wayland (set CORDIAL_X11=1 to force X11)")
             }
-            Backend::X11 if std::env::var_os("CORDIAL_X11").is_some() => {
+            Backend::X11 if forced => {
                 println!("[android] display backend: X11 (forced by CORDIAL_X11; web views cannot be attached on this backend)")
             }
+            Backend::X11 if cordial_shell::gamescope::inside_here() => println!(
+                "[android] display backend: X11 (inside gamescope, whose Wayland server cannot host the engine's surface; web views cannot be attached on this backend)"
+            ),
             Backend::X11 => println!(
                 "[android] display backend: X11 (no WAYLAND_DISPLAY; web views cannot be attached on this backend)"
             ),

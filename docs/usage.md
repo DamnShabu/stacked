@@ -30,11 +30,12 @@ The reasons are in [ADR-043](adr/ADR-043-the-launcher-is-a-command-line.md).
 | `stacked doctor` | Check this machine for what would stop Roblox working, and say what to run about each problem. `--offline` skips the update check. |
 | `stacked desktop install` | Add Stacked to the app menu and make it what the website's Play button opens. `desktop remove` undoes it. Packages and the Flatpak do this themselves. |
 | `stacked completions SHELL` | Print tab completion for `bash`, `zsh` or `fish`. |
-| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--crash` shows the newest crash report instead, `--lines N` shows more, and `--path` prints where the file is. |
+| `stacked logs` | Show the last 50 lines of Roblox's own newest log. `--crash` shows the newest crash report instead, `--lines N` shows more, and `--path` prints where the file is. `--zip [FILE]` saves a redacted archive of the diagnostics, the newest crash report and engine logs to attach to an issue. |
 | `stacked diagnostics` | Print the version, distribution and install method for a bug report. |
 
-Exit status is 0 on success, 1 on failure, 2 for a usage mistake, and 3 when
-the profile is already open in another client. `stacked doctor` exits 1 when
+Exit status is 0 on success, 1 on failure, 2 for a usage mistake, 3 when
+the profile is already open in another client, and 5 when Roblox started but
+could not open a window. `stacked doctor` exits 1 when
 it finds a problem that would stop Roblox starting.
 
 A mistyped command or setting gets a suggestion: `stacked staus` answers "Did
@@ -162,18 +163,19 @@ stacked flags                                   # list them
 stacked flags set DFIntTaskSchedulerTargetFps 144
 stacked flags set FFlagDebugDisplayFPS true     # written as True
 stacked flags unset FFlagDebugDisplayFPS
-stacked flags import bloxstrap.json             # merge a Bloxstrap export; --replace to start over
-stacked flags import --sober                    # copy the fflags from Sober's config.json
+stacked flags import ClientAppSettings.json     # merge a Bloxstrap or Fishstrap list; --replace to start over
+stacked flags import --from sober               # copy the fflags from Sober's config.json
 stacked flags edit                              # open it in $EDITOR
 stacked flags path                              # where the file is
 ```
 
 `set` checks the value against the type in the flag's name. `FFlag…` takes
-`true` or `false`, `FInt…` and `FLog…` take a whole number, and `FString…`
-takes any text. A `D` or `S` in front doesn't change the type. A name without
+`true` or `false`, `FInt…` takes a whole number, and `FString…` and `FLog…`
+take any text (a log channel can be `7` or `Info`). A `D` or `S` in front doesn't change the type. A name without
 one of those prefixes is saved with a warning.
 
-`import` and `edit` save nothing if any value is invalid, and say which one.
+`edit` saves nothing if any value is invalid, and says which one. `import`
+skips an invalid entry, names it, and imports the rest.
 `edit` works on a copy, so a half-finished edit never reaches the game. More on
 what flags do, and which ones Stacked sets itself, is in
 [fastflags.md](fastflags.md).

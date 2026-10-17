@@ -10,8 +10,9 @@ stacked flags import bloxstrap.json    # a Bloxstrap export pastes in unchanged
 stacked flags                          # what is set
 ```
 
-Coming from Sober, `stacked flags import --sober` copies the `fflags` from its
-`config.json`.
+Coming from Sober, `stacked flags import --from sober` copies the `fflags` from
+its `config.json`. [Importing](#importing-a-list-from-another-launcher) has the
+details.
 
 `stacked flags set` checks an `FLog` value as a whole number, but some log
 channels take a severity (`Warning`, `Info,7`) instead, and go silent, with no
@@ -108,6 +109,32 @@ needs a relaunch. Only the `DFFlag`/`DFInt`/`DFString` family is re-read while
 the client is running. That distinction matters if you are building anything
 that changes flags dynamically — a plugin loaded part-way through a session
 cannot change a startup flag, whatever it writes.
+
+## Importing a list from another launcher
+
+`stacked flags import FILE` reads a Bloxstrap or Fishstrap
+`ClientAppSettings.json`, or Sober's `config.json` (only its `fflags` object;
+the `FFlagExample` placeholder a stock Sober install carries is dropped), and
+merges the flags into this profile's:
+
+```bash
+stacked flags import ClientAppSettings.json       # or - for standard input
+stacked flags import --from sober                 # finds Sober's own config
+stacked flags import list.json --profile NAME --replace
+```
+
+Flags already set are kept unless the list sets them again; `--replace` starts
+from empty instead. Values are checked by the flag's prefix: `FFlag` takes
+`True` or `False`, `FInt` a whole number, and `FLog` takes anything, because
+log channels are declared as a number (`"7"`) or a severity (`"Info"`,
+`"Warning,6"`) and which one a channel wants is not visible from outside.
+
+**One entry the check refuses does not stop the rest.** It is skipped and named,
+and everything else is imported. A name with no FastFlag prefix is imported and
+listed, so a typo shows. The Sober config path outside the Flatpak
+(`~/.config/sober/config.json`) is `INFERRED`; only the Flatpak's has been seen.
+Bloxstrap and Fishstrap are Windows programs, so there is no fixed place to
+find their file on Linux; pass it by path.
 
 ## Layers and provenance
 
