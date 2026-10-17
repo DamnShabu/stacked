@@ -106,6 +106,10 @@ every push, filing into `luohoa97/cordial` and posting into `#issues`, and a
 real bug report has been filed through it by a person who did not use GitHub to
 do it.
 
+That Worker is Cordial's. Stacked holds no Cloudflare token for it, so on this
+fork `deploy-issue-bridge.yml` runs the bridge's tests and skips the deploy
+with a warning until a `CLOUDFLARE_API_TOKEN` secret is set.
+
 Two decisions in the draft above turned out to be load-bearing, and one gap had
 to be filled.
 

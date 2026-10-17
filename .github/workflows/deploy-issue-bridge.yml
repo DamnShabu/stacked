@@ -43,6 +43,12 @@ permissions:
 jobs:
   deploy:
     runs-on: ubuntu-latest
+    env:
+      # **The Worker is Cordial's, and Stacked holds no token for it.** Every
+      # run from 2026-09-30 failed at `wrangler deploy` with an empty
+      # CLOUDFLARE_API_TOKEN. The tests below still run; the deploy and its
+      # health check wait for a token, and say so rather than go red.
+      HAS_CF_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - uses: denoland/setup-deno@22d081ff2d3a40755e97629de92e3bcbfa7cf2ed # v2.0.5
@@ -73,7 +79,12 @@ jobs:
         working-directory: tools/discord-bridge
         run: deno lint && deno fmt --check
 
+      - name: No Cloudflare token, so nothing is deployed
+        if: env.HAS_CF_TOKEN != 'true'
+        run: echo "::warning::CLOUDFLARE_API_TOKEN is not set, so the bridge was tested but not deployed."
+
       - name: Deploy
+        if: env.HAS_CF_TOKEN == 'true'
         working-directory: tools/discord-bridge
         env:
           # A scoped API token, not the OAuth login a person uses. It needs
@@ -87,6 +98,7 @@ jobs:
       # Deploying is not the same as working, and a Worker that boots and then
       # throws on its first request would otherwise look like a green deploy.
       - name: Does the deployed bridge answer?
+        if: env.HAS_CF_TOKEN == 'true'
         run: |
           for i in $(seq 1 10); do
             body=$(curl -fsS -m 15 https://cordial-issues.cordial-7d5.workers.dev/health) && {
