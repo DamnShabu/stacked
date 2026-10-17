@@ -4624,7 +4624,19 @@ fn main() -> ExitCode {
                                                 // the thread below, and none froze. Those were
                                                 // upstream's launches, carried here with the ADR and not re-run
                                                 // on this fork.
-                                                let own_thread = post_async() || post_gate;
+                                                //
+                                                // The gate is for a launch the engine is waiting on, and it
+                                                // has said by now whether it is: `onFlagsFailed` comes from
+                                                // `bootstrapTheApp`, before the surface. With a valid cache
+                                                // the post and the retry stay here, before the pump, as they
+                                                // were before 0.22.0. Made from the gate's thread they landed
+                                                // while the app shell was already up, and `nativeRetryInit`
+                                                // then builds it a second time (a second Vulkan device and a
+                                                // second `game loaded: place 0` in the log); a launch with
+                                                // `--join-url` sometimes stayed on Home instead of joining.
+                                                // That the second build is what loses the link is INFERRED.
+                                                let engine_waits = linker::game_activity::flags_failed() != 0;
+                                                let own_thread = post_async() || (post_gate && engine_waits);
                                                 if let (true, Some(ms)) = (own_thread, late_post) {
                                                     let post_f = lib
                                                         .symbol("Java_com_roblox_engine_jni_NativeGLInterface_nativePostClientSettingsLoadedInitialization3")
