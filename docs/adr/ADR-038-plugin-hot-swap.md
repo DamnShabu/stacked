@@ -144,6 +144,70 @@ just changed again.
 If the intersection leaves nothing, the plugin is not restarted at all — the
 same `not started` invariant as an ordinary launch, applied to an update
 whose new manifest happens to ask for less than the profile ever granted.
+The first version of that rule was a bypass; the next section is what it
+became.
+
+## An update that asks for nothing granted stays stopped, waiting for approval
+
+The "not restarted" above only stopped the old process and moved on. The next
+tick found the plugin absent from `running` and still wanted, `diff` said
+`Start`, and `Start` hands over `Desired::granted`, the raw grants-file entry:
+the update ran on exactly the grant this section says it must not inherit,
+one second late. The same route was open whenever the replacement failed to
+spawn and was retried, and whenever the old process was slow enough to die
+that the restart was deferred a tick.
+
+Decided (maintainer's choice, not derived): when an update requests nothing
+the profile has granted, the plugin is **left stopped**. The new version is
+not run, the old version is not run in its place, and no later tick starts it.
+
+- `BlockKind::NeedsApproval` records the state in `Shared::blocked`, against
+  the plugin's fingerprint and grant. It is not retried by time or by Deno
+  appearing; it lifts only when the plugin's files change again or the
+  profile's grant for it changes, which is the user approving in Settings.
+- `Shared::updating` remembers that a plugin's files changed while it ran, and
+  every start of it until one succeeds, including the retry after a spawn
+  failure, goes through `intersect_for_restart`. A grant that changes but
+  still intersects to nothing (the user switched on something the new
+  manifest does not ask for) is recorded again rather than started.
+- The plugin's health entry reads `Update needs approval: <permissions>`,
+  naming what the manifest requests that the profile has not granted. Settings
+  shows it as a warning icon on the plugin's row, not as a failure, and the
+  entry is cleared when the plugin starts or stops being wanted.
+
+Not covered, deliberately: an update that requests *some* of what was granted
+plus something new still runs, with the granted part only, as above. And a
+Cordial relaunch, or a plugin switched off and on, starts from the grants file
+as `start_all` always has; the launch-time trust in `docs/plugin-api.md` is
+unchanged.
+
+## A plugin that failed to start is remembered, not retried every tick
+
+`diff` reports `Start` for every wanted plugin that is not running, and a
+plugin whose spawn failed is not running. The first version therefore retried
+each failed plugin once a second for the whole session: with no Deno on the
+machine, three plugins produced about nine log lines a second, each attempt
+certain to fail as the last had. Found in a Flatpak client mid-game.
+
+A failed start is now recorded (`Shared::blocked`, `reconcile::Blocked`)
+against the plugin's fingerprint and grant, with a reason that decides when to
+try again. No interpreter: retried when one is found at any of the paths
+`sandbox::interpreter_present` looks in, checked once per tick and only while
+something is waiting. An unusable `entry`: retried only when the plugin's files
+or grant change. Any other spawn error: retried with a doubling wait, two
+seconds up to about a minute. Plugins waiting for Deno are named in one log
+line, not one each, and that line and the health entry Settings shows no longer
+say to restart, because installing Deno is picked up by the next tick
+(`plugin_host` tests drive `reconcile_tick_with` with a runtime that is absent
+and then present).
+
+The same investigation found the message was also wrong on the machine that
+reported it. Inside the Flatpak the sandbox is always `Sandbox::None`, whose
+command ran a bare `deno` resolved against `PATH`, while the check before it
+also accepts Cordial's own downloaded copy. Deno 2.9.6 was in the data
+directory, `interpreter_present` said yes, the spawn said ENOENT, and that was
+reported as "Deno is not installed". The unconfined command now runs the path
+that was found.
 
 ## What is deliberately out of scope
 

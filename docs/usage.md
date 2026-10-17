@@ -208,7 +208,8 @@ stacked plugins remove thing
 ```
 
 `grant` accepts only the capabilities the plugin's manifest asks for;
-`stacked plugins` lists them.
+`stacked plugins` lists them, and `enable` names any the profile has not
+granted yet.
 
 `stacked plugins prefs ID` lists a plugin's preferences with the values each
 accepts. `stacked plugins prefs ID KEY VALUE` changes one, and `--reset` puts

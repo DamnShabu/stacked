@@ -36,6 +36,19 @@ pub struct Failure {
     pub when: u64,
 }
 
+/// How the message for an update that is waiting on the user begins.
+///
+/// The runtime writes it and the settings window recognises it, so it lives
+/// here: an update the profile has not approved is not a failure, and a row
+/// that said "Failed" over it would send someone looking for a fault that is
+/// not there.
+pub const NEEDS_APPROVAL: &str = "Update needs approval";
+
+/// Whether `message` is a [`NEEDS_APPROVAL`] notice rather than a failure.
+pub fn is_approval_notice(message: &str) -> bool {
+    message.starts_with(NEEDS_APPROVAL)
+}
+
 /// Every plugin that has failed since it last started cleanly.
 pub type Record = BTreeMap<String, Failure>;
 
