@@ -87,6 +87,15 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.23.1" date="2026-10-17">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.1</url>
+      <description>
+        <p>
+          A launch into a game from the Roblox manager no longer sometimes
+          stops on the home screen instead of joining.
+        </p>
+      </description>
+    </release>
     <release version="0.23.0" date="2026-10-17">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.0</url>
       <description>
