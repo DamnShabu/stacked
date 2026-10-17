@@ -50,6 +50,17 @@ use std::sync::{Mutex, OnceLock};
 #[derive(Debug, Clone)]
 pub enum Cmd {
     Move { x: f32, y: f32 },
+    /// `padconnect <id> [type]`: announce a synthetic standard-layout pad.
+    PadConnect { id: i32, gamepad_type: Option<i32> },
+    /// `padaxis <id> <android-axis> <x> <y> <z>`: one raw
+    /// `nativeGamepadAxisEvent`, exactly the arguments given.
+    PadAxis { id: i32, axis: i32, x: f32, y: f32, z: f32 },
+    /// `padjs <id> <joydev-axis-index> <value>`: one joydev axis event on the
+    /// standard layout, through the real fold.
+    PadJs { id: i32, index: u8, value: i16 },
+    /// `padbutton <id> <android-keycode> <down|up>`: one raw
+    /// `nativeGamepadButtonEvent`.
+    PadButton { id: i32, key: i32, down: bool },
     Button { x: f32, y: f32, down: bool, button: i32 },
     Key { down: bool, evdev: i32, modifiers: i32 },
     Text(String),
@@ -352,6 +363,52 @@ fn handle(line: &str) -> String {
             }
             _ => "err click <x> <y> [button]".into(),
         },
+        // The three `pad*` verbs call the gamepad natives with exactly the
+        // arguments given, so the call shape the engine wants can be found by
+        // sending candidates at a running client with no controller attached.
+        "padconnect" => match it.next().and_then(|v| v.parse::<i32>().ok()) {
+            Some(id) => {
+                let gamepad_type = it.next().and_then(|v| v.parse::<i32>().ok());
+                push(Cmd::PadConnect { id, gamepad_type });
+                "ok".into()
+            }
+            None => "err padconnect <id> [gamepadType]".into(),
+        },
+        "padaxis" => match (
+            it.next().and_then(|v| v.parse::<i32>().ok()),
+            it.next().and_then(|v| v.parse::<i32>().ok()),
+            num(it.next()),
+            num(it.next()),
+            num(it.next()),
+        ) {
+            (Some(id), Some(axis), Some(x), Some(y), Some(z)) => {
+                push(Cmd::PadAxis { id, axis, x, y, z });
+                "ok".into()
+            }
+            _ => "err padaxis <id> <android-axis> <x> <y> <z>".into(),
+        },
+        "padjs" => match (
+            it.next().and_then(|v| v.parse::<i32>().ok()),
+            it.next().and_then(|v| v.parse::<u8>().ok()),
+            it.next().and_then(|v| v.parse::<i16>().ok()),
+        ) {
+            (Some(id), Some(index), Some(value)) => {
+                push(Cmd::PadJs { id, index, value });
+                "ok".into()
+            }
+            _ => "err padjs <id> <joydev-axis-index 0..7> <-32767..32767>".into(),
+        },
+        "padbutton" => match (
+            it.next().and_then(|v| v.parse::<i32>().ok()),
+            it.next().and_then(|v| v.parse::<i32>().ok()),
+            it.next(),
+        ) {
+            (Some(id), Some(key), Some(a @ ("down" | "up"))) => {
+                push(Cmd::PadButton { id, key, down: a == "down" });
+                "ok".into()
+            }
+            _ => "err padbutton <id> <android-keycode> <down|up>".into(),
+        },
         "down" | "up" => match (num(it.next()), num(it.next())) {
             (Some(x), Some(y)) => {
                 let button = it.next().and_then(|b| b.parse::<i32>().ok()).unwrap_or(1);
@@ -433,6 +490,20 @@ fn handle(line: &str) -> String {
         "redraw" => {
             push(Cmd::Redraw);
             "ok".into()
+        }
+        // `gamepad [on|off]` -- switch controller support while a game runs
+        // (`gamepad::set_enabled`): off disconnects every pad the engine was
+        // told about, on lets the next rescan announce them again. With no
+        // argument it only reports the switch.
+        "gamepad" => {
+            match it.next() {
+                Some("on") => crate::android::gamepad::set_enabled(true),
+                Some("off") => crate::android::gamepad::set_enabled(false),
+                None => {}
+                Some(_) => return "err gamepad [on|off]".into(),
+            }
+            let on = crate::android::gamepad::current_enabled();
+            format!("ok gamepad {}", if on { "on" } else { "off" })
         }
         // `gameseed on|off` -- the pointer hover handed to the engine when a
         // game loads (`input::NewGameSeed`, #29), switched without a relaunch
@@ -674,6 +745,18 @@ pub fn apply_queued(handle: i64) {
             // `cordial_click` -- and it costs the mouse arm nothing, which
             // still sends exactly what it always sent.
             Cmd::Move { x, y } => crate::android::input::script_move(handle, x, y, now_ms()),
+            Cmd::PadConnect { id, gamepad_type } => {
+                crate::android::gamepad::synthetic_connect(id, gamepad_type)
+            }
+            Cmd::PadAxis { id, axis, x, y, z } => {
+                crate::android::input::deliver_gamepad_axis(id, axis, x, y, z)
+            }
+            Cmd::PadJs { id, index, value } => {
+                crate::android::gamepad::synthetic_axis(id, index, value)
+            }
+            Cmd::PadButton { id, key, down } => {
+                crate::android::input::deliver_gamepad_button(id, key, if down { 0 } else { 1 })
+            }
             Cmd::Button { x, y, down, button } => {
                 crate::android::input::script_button(handle, x, y, down, button, now_ms())
             }
@@ -740,6 +823,16 @@ fn report_replace(verb: &str, text: &str, result: Result<usize, String>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_gamepad_verb_moves_the_switch_and_reports_it() {
+        let _g = crate::android::gamepad::TEST_GUARD.lock().unwrap_or_else(|e| e.into_inner());
+        assert_eq!(handle("gamepad off"), "ok gamepad off");
+        assert_eq!(handle("gamepad"), "ok gamepad off", "a bare verb only reports");
+        assert_eq!(handle("gamepad on"), "ok gamepad on");
+        assert_eq!(handle("gamepad maybe"), "err gamepad [on|off]");
+        assert_eq!(handle("gamepad"), "ok gamepad on", "a bad argument changes nothing");
+    }
 
     // `QUEUE` is process-global, so this drains it first rather than assuming
     // it starts empty -- this is the only test in the file that touches it,
