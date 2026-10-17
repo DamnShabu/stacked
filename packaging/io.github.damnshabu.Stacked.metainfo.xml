@@ -87,6 +87,17 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.23.0" date="2026-10-17">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.0</url>
+      <description>
+        <p>
+          More fixes from Cordial: pointer lock on Hyprland and KDE Plasma,
+          controller mapping and controllers in the Flatpak, quieter plugin
+          restarts, stacked logs --zip for bug reports, and gamescope. Plus a
+          stability pass over input, audio and plugins.
+        </p>
+      </description>
+    </release>
     <release version="0.22.0" date="2026-10-16">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.22.0</url>
       <description>
