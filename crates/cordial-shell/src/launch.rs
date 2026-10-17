@@ -268,8 +268,25 @@ fn already_stamped(line: &str) -> bool {
 
 fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool) -> std::thread::JoinHandle<()> {
     std::thread::spawn(move || {
-        for line in BufReader::new(reader).lines() {
-            let Ok(line) = line else { break };
+        // Bytes, decoded lossily, rather than `lines()`. `lines()` fails on
+        // the first line that is not UTF-8 -- `liblog` truncates at 4 KiB and
+        // can cut a codepoint in half -- and stopping here drops the only read
+        // end of the client's pipe. The client's next `println!` then gets
+        // EPIPE and panics, inside an `extern "C"` callback, which aborts it.
+        let mut reader = BufReader::new(reader);
+        let mut raw = Vec::new();
+        loop {
+            raw.clear();
+            match reader.read_until(b'\n', &mut raw) {
+                Ok(0) => break,
+                Ok(_) => {}
+                Err(e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+                Err(_) => break,
+            }
+            while matches!(raw.last(), Some(b'\n' | b'\r')) {
+                raw.pop();
+            }
+            let line = String::from_utf8_lossy(&raw).into_owned();
             // **A clock on every line the runtime prints.**
             //
             // `native/liblog.cpp` stamps the Android log, but Cordial's own
@@ -293,7 +310,11 @@ fn pump(reader: impl std::io::Read + Send + 'static, tail: Tail, to_stderr: bool
                 let mut out = std::io::stderr().lock();
                 let _ = writeln!(out, "{line}");
             } else {
-                println!("{line}");
+                // Not `println!`: a closed stdout (`stacked play | head`) would
+                // panic this thread and stop the drain, with the same effect on
+                // the client as above.
+                let mut out = std::io::stdout().lock();
+                let _ = writeln!(out, "{line}");
             }
             let kept = redact(&line).map(str::to_string).unwrap_or(line);
             let mut tail = tail.lock().unwrap_or_else(|e| e.into_inner());
@@ -973,6 +994,20 @@ fn describe(loader: &Path, lib_dir: &Path, apk: &Path, run: &str, join_url: Opti
 
 #[cfg(test)]
 mod tests {
+
+    /// The drain must survive a line that is not UTF-8. It used to stop at the
+    /// first one, dropping the read end of the client's pipe, after which the
+    /// client's next print got EPIPE and panicked.
+    #[test]
+    fn the_output_drain_keeps_reading_past_a_line_that_is_not_utf8() {
+        use super::*;
+        let input: &[u8] = b"before\ncut \xe2\x82 mid-codepoint\nafter\n";
+        let tail: Tail = Arc::new(Mutex::new(VecDeque::new()));
+        pump(std::io::Cursor::new(input.to_vec()), tail.clone(), true).join().unwrap();
+        let kept: Vec<String> = tail.lock().unwrap().iter().cloned().collect();
+        assert_eq!(kept.len(), 3, "{kept:?}");
+        assert!(kept[2].ends_with("after"), "{kept:?}");
+    }
 
     #[test]
     fn a_session_line_is_replaced_rather_than_kept_or_dropped() {

@@ -61,6 +61,7 @@ struct Alsa {
     int (*close)(snd_pcm_t*);
     int (*prepare)(snd_pcm_t*);
     int (*drop)(snd_pcm_t*);
+    int (*nonblock)(snd_pcm_t*, int);
     snd_pcm_sframes_t (*writei)(snd_pcm_t*, const void*, snd_pcm_uframes_t);
     int (*recover)(snd_pcm_t*, int, int);
 
@@ -108,6 +109,7 @@ const Alsa* alsa() {
         NEED(close, "snd_pcm_close");
         NEED(prepare, "snd_pcm_prepare");
         NEED(drop, "snd_pcm_drop");
+        NEED(nonblock, "snd_pcm_nonblock");
         NEED(writei, "snd_pcm_writei");
         NEED(recover, "snd_pcm_recover");
         NEED(hw_params_malloc, "snd_pcm_hw_params_malloc");
@@ -225,7 +227,15 @@ bool AlsaStream::open(uint32_t, bool, const char*, const char* target_node_name,
     // alsa-lib's own configured default, which on a machine running PipeWire is
     // usually its ALSA plugin, and on one that is not is the hardware.
     const char* device = (target_node_name && target_node_name[0]) ? target_node_name : "default";
-    int err = a->open(&pcm_, device, SND_PCM_STREAM_PLAYBACK, 0);
+    // Opened non-blocking, then switched back. A blocking `snd_pcm_open`
+    // sleeps in the kernel until whoever holds a hardware PCM lets go, so a
+    // busy device used to wedge the engine thread at startup indefinitely;
+    // non-blocking turns that into EBUSY, which is "unavailable".
+    int err = a->open(&pcm_, device, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+    if (err >= 0) {
+        err = a->nonblock(pcm_, 0);
+        if (err < 0) { a->close(pcm_); }
+    }
     if (err < 0) {
         std::fprintf(stderr,
             "I/Cordial-ALSA            could not open PCM \"%s\": %s; this backend is "
@@ -320,7 +330,9 @@ bool alsa_available() {
         const Alsa* a = alsa();
         if (!a) return false;
         snd_pcm_t* pcm = nullptr;
-        if (a->open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, 0) < 0) return false;
+        // Non-blocking for the reason `AlsaStream::open` gives: a busy device
+        // is an answer, not a wait.
+        if (a->open(&pcm, "default", SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK) < 0) return false;
         a->close(pcm);
         return true;
     }();

@@ -162,7 +162,17 @@ void OssStream::writer() {
 
 bool OssStream::open(uint32_t, bool, const char*, const char*, FillCallback cb, void* user) {
     const char* path = device_path();
-    fd_ = ::open(path, O_WRONLY | O_CLOEXEC);
+    // Opened non-blocking and then switched back: a blocking open of an OSS
+    // device sleeps until its current holder closes it, which would wedge the
+    // engine thread rather than report the device as busy.
+    fd_ = ::open(path, O_WRONLY | O_CLOEXEC | O_NONBLOCK);
+    if (fd_ >= 0) {
+        int flags = ::fcntl(fd_, F_GETFL);
+        if (flags < 0 || ::fcntl(fd_, F_SETFL, flags & ~O_NONBLOCK) < 0) {
+            ::close(fd_);
+            fd_ = -1;
+        }
+    }
     if (fd_ < 0) {
         std::fprintf(stderr, "W/Cordial-OSS             cannot open %s: %s\n", path,
                      std::strerror(errno));
@@ -242,7 +252,7 @@ bool oss_available() {
     // whatever holds it. Cached for that reason as much as for cost, and it is
     // another reason this backend is only reached when asked for by name.
     static const bool ok = [] {
-        int fd = ::open(device_path(), O_WRONLY | O_CLOEXEC);
+        int fd = ::open(device_path(), O_WRONLY | O_CLOEXEC | O_NONBLOCK);
         if (fd < 0) return false;
         ::close(fd);
         return true;

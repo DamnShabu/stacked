@@ -82,6 +82,25 @@ template <class T>
 static auto to_jni(jnivm::ENV* env, const std::shared_ptr<T>& p) {
     return jnivm::JNITypes<std::shared_ptr<T>>::ToJNIType(env, p);
 }
+
+/// Scopes the references `to_jni` parks for one call into the engine.
+///
+/// The input entry points run on the looper thread, which never returns
+/// through a Java-to-native boundary, so its top-level local frame is never
+/// popped: every unwrapped `to_jni` there is a `shared_ptr` kept for the life
+/// of the process. Once per pointer motion that is unbounded growth. Touch and
+/// AGDK keys were wrapped for that reason; mouse, keyboard, text and gamepad
+/// were not.
+class LocalFrame {
+public:
+    explicit LocalFrame(jnivm::ENV* env) : jni_(env->GetJNIEnv()) { jni_->PushLocalFrame(8); }
+    ~LocalFrame() { jni_->PopLocalFrame(nullptr); }
+    LocalFrame(const LocalFrame&) = delete;
+    LocalFrame& operator=(const LocalFrame&) = delete;
+
+private:
+    JNIEnv* jni_;
+};
 jnivm::ENV* process_env();
 
 using jnivm::Class;
@@ -1431,6 +1450,7 @@ int cordial_input_key_event(void* fn, int down, int key_code, int modifiers, int
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
                                    down ? JNI_TRUE : JNI_FALSE, key_code, modifiers,
@@ -1456,6 +1476,7 @@ int cordial_input_pass_text(void* fn, long long which, const char* text, int fla
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
         auto str = std::make_shared<cordial::String>(std::string(text ? text : ""));
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
@@ -1490,6 +1511,7 @@ int cordial_game_activity_surface_resized(long long handle, int format, int widt
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto* jni = env->GetJNIEnv();
         auto cls = env->GetClass("com/google/androidgamesdk/GameActivity");
         auto native = [&](const char* name) -> void* {
@@ -1545,6 +1567,7 @@ int cordial_input_update_keyboard_size(void* fn, int visible, int x, int y, int 
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
                                    visible ? JNI_TRUE : JNI_FALSE, x, y, w, h);
@@ -1577,6 +1600,7 @@ int cordial_input_sync_textbox(void* fn, const char* text, int cursor, char* err
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeGLInterface");
         auto str = std::make_shared<cordial::String>(std::string(text ? text : ""));
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls),
@@ -1630,6 +1654,7 @@ int cordial_input_mouse_move(void* fn, float x, float y, float dx, float dy, cha
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y, dx,
                                    dy);
@@ -1652,6 +1677,7 @@ int cordial_input_mouse_button(void* fn, float x, float y, int down, int button,
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y,
                                    down ? JNI_TRUE : JNI_FALSE, button);
@@ -1686,6 +1712,7 @@ int cordial_input_mouse_wheel(void* fn, float x, float y, float delta, char* err
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), x, y,
                                    delta);
@@ -1729,6 +1756,7 @@ int cordial_input_pass_input(void* fn, int pointer_id, float x, float y, int act
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), pointer_id,
                                    x, y, action, width, height);
@@ -1789,6 +1817,7 @@ int cordial_input_gamepad_connect(void* fn, int id, int gamepad_type, char* err,
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
                                    gamepad_type);
@@ -1814,6 +1843,7 @@ int cordial_input_gamepad_disconnect(void* fn, int id, char* err, size_t err_len
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id);
         return 0;
@@ -1844,6 +1874,7 @@ int cordial_input_gamepad_button(void* fn, int id, int key_code, int action, cha
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
                                    key_code, action);
@@ -1876,6 +1907,7 @@ int cordial_input_gamepad_axis(void* fn, int id, int axis, float x, float y, flo
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id, axis,
                                    x, y, z);
@@ -1909,6 +1941,7 @@ int cordial_input_gamepad_supported_key(void* fn, int id, int key_code, int supp
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id,
                                    key_code, supported ? JNI_TRUE : JNI_FALSE, gamepad_type);
@@ -1942,6 +1975,7 @@ int cordial_input_gamepad_supported_motion(void* fn, int id, int axis, int sourc
         return -1;
     }
     try {
+        cordial::LocalFrame frame(env);
         auto cls = env->GetClass("com/roblox/engine/jni/NativeInputInterface");
         reinterpret_cast<Call>(fn)(env->GetJNIEnv(), (jobject)cordial::to_jni(env, cls), id, axis,
                                    source, supported ? JNI_TRUE : JNI_FALSE, gamepad_type);

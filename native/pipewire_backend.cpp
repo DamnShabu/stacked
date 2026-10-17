@@ -1040,6 +1040,12 @@ CallbackStream::~CallbackStream() {
 bool CallbackStream::open(uint32_t sample_bits, bool is_float, const char* node_description,
                            const char* target_node_name, FillCallback cb, void* user) {
     if (!cb) return false;
+    // A second `open` without a `close` used to overwrite `impl_->stream` and
+    // orphan the first one, which kept calling `process` on this `Impl` --
+    // two streams draining one callback, and a use-after-free on the loop
+    // thread once the object was deleted. `PulseStream` and `AlsaStream`
+    // already close first; this matches them.
+    if (impl_->stream) close();
     Session* session = get_session();
     if (!session) return false;
 
@@ -1506,6 +1512,8 @@ PlaybackStream::~PlaybackStream() {
 bool PlaybackStream::open(uint32_t rate_hz, uint32_t channels, uint32_t bits_per_sample,
                            uint32_t container_bits, bool big_endian, uint32_t max_pending_buffers,
                            const std::string& target_node_name) {
+    // See `CallbackStream::open`: never orphan a live stream on re-open.
+    if (impl_->stream) close();
     Session* session = get_session();
     if (!session) return false; // slCreateEngine already refused if this is reachable; defensive only
 

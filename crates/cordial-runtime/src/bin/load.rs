@@ -5229,6 +5229,9 @@ fn main() -> ExitCode {
     // pipe nobody drains.
     cordial_runtime::recording::finish_at_exit();
 
+    // `_exit` drops nothing, so plugins outside bwrap would outlive the client.
+    cordial_runtime::plugin_host::kill_all();
+
     // Leave via _exit rather than returning.
     //
     // Roblox's static initialisers registered atexit handlers and DT_FINI_ARRAY
@@ -5239,7 +5242,8 @@ fn main() -> ExitCode {
     // teardown crash as a load failure would be actively misleading.
     //
     // SAFETY: _exit is async-signal-safe and terminates without running any
-    // handler. Nothing here owns a resource the kernel will not reclaim.
+    // handler. Plugin processes, the one thing the kernel would not reclaim,
+    // were killed above.
     //
     // **5 when no window could be opened, because 0 was a lie.** Under gamescope
     // the client printed "no window: ..." and left with status 0, so a launcher
