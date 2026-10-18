@@ -1721,8 +1721,15 @@ impl HostWindow {
     fn refresh_input_region(&self) {
         let Some(surface) = self.window.surface() else { return };
         let Some(canvas) = self.canvas_rect.get().or_else(|| self.content_rect()) else { return };
-        let region = input_region(
+        let (dx, dy) = self.window.surface_transform();
+        let bounds = clickable_bounds(
             (surface.width(), surface.height()),
+            (self.window.width(), self.window.height()),
+            dx,
+            dy,
+        );
+        let region = input_region(
+            bounds,
             canvas,
             self.editor_rect.get(),
             self.dialog_up.get() || self.pointer_constrained.get(),
@@ -2374,19 +2381,22 @@ impl HostWindow {
 /// hole for it a header bar's height too high, so the text was visible and
 /// unclickable, and nothing about either the code or the screen said why.
 ///
-/// `surface` is the whole surface including any CSD shadow, and is widened to
-/// cover the content if a configure has left it briefly smaller -- a region
-/// that does not reach the canvas would clip the hole rather than the chrome.
+/// `bounds` is the part of the surface that may take a click at all -- see
+/// [`clickable_bounds`] -- and is widened to cover the content if a configure
+/// has left it briefly smaller: a region that does not reach the canvas would
+/// clip the hole rather than the chrome.
 fn input_region(
-    surface: (i32, i32),
+    bounds: (i32, i32, i32, i32),
     content: (i32, i32, i32, i32),
     editor: Option<(i32, i32, i32, i32)>,
     modal: bool,
 ) -> gtk::cairo::Region {
     let (cx, cy, cw, ch) = content;
-    let w = surface.0.max(cx + cw);
-    let h = surface.1.max(cy + ch);
-    let region = gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(0, 0, w, h));
+    let (bx, by, bw, bh) = bounds;
+    let (x0, y0) = (bx.min(cx), by.min(cy));
+    let (x1, y1) = ((bx + bw).max(cx + cw), (by + bh).max(cy + ch));
+    let region =
+        gtk::cairo::Region::create_rectangle(&gtk::cairo::RectangleInt::new(x0, y0, x1 - x0, y1 - y0));
     // **A web-view dialog wants the whole window, so the hole is not punched
     // at all.** An `AdwDialog` draws inside this toplevel and is centred over
     // the canvas, so with the usual cut-out its buttons sit in the rectangle
@@ -2432,6 +2442,39 @@ fn input_region(
             .ok();
     }
     region
+}
+
+/// GTK's own resize handle, `RESIZE_HANDLE_SIZE` in `gtkwindow.c`: how far
+/// past the window's edge, into the shadow, a press still starts a resize.
+const RESIZE_HANDLE: i32 = 12;
+
+/// The rectangle of the surface that takes input: the window, plus GTK's resize
+/// handle where there is shadow for it to sit in.
+///
+/// **Not the whole surface, and that was a bug you could see from outside the
+/// window.** The surface carries libadwaita's drop shadow, twenty pixels a side
+/// under sway (see [`opaque_bounds`]), and the input region used to be every
+/// pixel of it. GTK leaves the shadow out of its own region so the window
+/// behind gets those clicks; ours replaced GTK's roughly twenty times a second,
+/// so a band of transparent shadow round the game swallowed every click aimed
+/// at whatever showed through it, and the window there never came forward.
+/// Reported on KDE Plasma as the game keeping itself on top. `INFERRED` that
+/// this is all of that report: it is read off the region, not run on KWin.
+///
+/// Clamped per side, so a maximised or tiled edge with no shadow gets no
+/// margin, and an unsized window falls back to the whole surface as before.
+fn clickable_bounds(surface: (i32, i32), window: (i32, i32), dx: f64, dy: f64) -> (i32, i32, i32, i32) {
+    let (sw, sh) = surface;
+    let (ww, wh) = window;
+    if ww <= 0 || wh <= 0 {
+        return (0, 0, sw, sh);
+    }
+    let (x, y) = (dx.round() as i32, dy.round() as i32);
+    let x0 = (x - RESIZE_HANDLE).max(0);
+    let y0 = (y - RESIZE_HANDLE).max(0);
+    let x1 = (x + ww + RESIZE_HANDLE).min(sw.max(x + ww));
+    let y1 = (y + wh + RESIZE_HANDLE).min(sh.max(y + wh));
+    (x0, y0, x1 - x0, y1 - y0)
 }
 
 /// How tall the strip of window that keeps the host surface visible is, given
@@ -2507,6 +2550,35 @@ mod tests {
     /// 47px down, and an editor the engine placed 10px into that content.
     fn layout() -> ((i32, i32), (i32, i32, i32, i32), (i32, i32, i32, i32)) {
         ((1280, 720), (0, 47, 1280, 673), (332, 10, 592, 36))
+    }
+
+    fn whole(surface: (i32, i32)) -> (i32, i32, i32, i32) {
+        (0, 0, surface.0, surface.1)
+    }
+
+    /// The measured floating case again: surface 1636x911, window 1596x871,
+    /// twenty pixels of shadow a side. The outer eight pixels of shadow belong
+    /// to whatever is behind the window; the inner twelve are GTK's resize
+    /// handle.
+    #[test]
+    fn the_shadow_beyond_the_resize_handle_is_not_ours_to_click() {
+        let bounds = clickable_bounds((1636, 911), (1596, 871), 20.0, 20.0);
+        assert_eq!(bounds, (8, 8, 1620, 895));
+        let r = input_region(bounds, (20, 67, 1596, 824), None, false);
+        assert!(!r.contains_point(2, 400), "the outer shadow goes to the window behind");
+        assert!(!r.contains_point(1632, 400));
+        assert!(!r.contains_point(800, 907));
+        assert!(r.contains_point(10, 400), "the resize handle is still ours");
+        assert!(r.contains_point(30, 30), "and the header bar");
+        assert!(!r.contains_point(800, 500), "and the canvas is still the engine's");
+    }
+
+    /// Maximised, fullscreen or tiled: no shadow, so the whole surface is the
+    /// window and nothing is given away.
+    #[test]
+    fn a_window_with_no_shadow_claims_its_whole_surface() {
+        assert_eq!(clickable_bounds((1920, 1080), (1920, 1080), 0.0, 0.0), (0, 0, 1920, 1080));
+        assert_eq!(clickable_bounds((1920, 1080), (0, 0), 0.0, 0.0), (0, 0, 1920, 1080));
     }
 
     /// fontconfig's weight scale is not Pango's, and the conversion is where
@@ -2710,7 +2782,7 @@ mod tests {
     #[test]
     fn a_dialog_takes_the_whole_window_rather_than_a_hole() {
         let (surface, content, editor) = layout();
-        let region = input_region(surface, content, Some(editor), true);
+        let region = input_region(whole(surface), content, Some(editor), true);
         let (cx, cy, cw, ch) = content;
         // The middle of the canvas, which is where a centred dialog's buttons
         // land, and which is emphatically not clickable without this.
@@ -2728,7 +2800,7 @@ mod tests {
     #[test]
     fn closing_a_dialog_gives_the_canvas_back() {
         let (surface, content, editor) = layout();
-        let region = input_region(surface, content, Some(editor), false);
+        let region = input_region(whole(surface), content, Some(editor), false);
         let (cx, cy, cw, ch) = content;
         assert!(!region.contains_point(cx + cw / 2, cy + ch / 2));
     }
@@ -2750,7 +2822,7 @@ mod tests {
     #[test]
     fn the_canvas_is_not_ours_to_click() {
         let (surface, content, _) = layout();
-        let r = input_region(surface, content, None, false);
+        let r = input_region(whole(surface), content, None, false);
         assert!(r.contains_point(10, 10), "the header bar still takes input");
         assert!(!r.contains_point(640, 400), "the canvas does not");
     }
@@ -2764,7 +2836,7 @@ mod tests {
         let (surface, content, editor) = layout();
         let (cx, cy, _, _) = content;
         let (ex, ey, ew, eh) = editor;
-        let r = input_region(surface, content, Some(editor), false);
+        let r = input_region(whole(surface), content, Some(editor), false);
 
         for (dx, dy, what) in [(1, 1, "top left"), (ew / 2, eh / 2, "middle"), (ew - 2, eh - 2, "bottom right")] {
             assert!(
@@ -2794,7 +2866,7 @@ mod tests {
         // region that stopped at the stale width would clip the subtraction and
         // leave part of the canvas taking input.
         let (_, content, _) = layout();
-        let r = input_region((320, 200), content, None, false);
+        let r = input_region(whole((320, 200)), content, None, false);
         assert!(!r.contains_point(1200, 700), "still excluded, not merely off the end");
         assert!(r.contains_point(10, 10));
     }
