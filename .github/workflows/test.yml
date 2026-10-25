@@ -1,4 +1,13 @@
-# The 792 tests, on every push and pull request.
+# The workspace's tests, on every push and pull request.
+#
+# The count used to be written here as 792. On 2026-10-25 `cargo test
+# --workspace` on main reported 1421 passed and 18 ignored, so it is left out
+# rather than left to go stale again.
+#
+# **A workflow disabled in the repository's Actions settings does not run, and
+# this one was, from 2026-09-30, with nothing in the history saying why.** For
+# that month the only run of the tests was the RPM job's `%check`, with its
+# three skips. Check the workflow's state before trusting the sentence above.
 #
 # **They ran nowhere before this.** `just test` runs them and CI did not, so the
 # only thing standing between a broken test and `main` was somebody remembering
