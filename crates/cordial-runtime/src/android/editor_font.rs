@@ -1151,7 +1151,7 @@ mod tests {
         }
         let mut t = shipped_shape();
         add_missing_source_sans(&mut t, |_| None);
-        assert!(t.get(&3).is_none() && t.get(&4).is_none() && t.get(&5).is_none());
+        assert!(!t.contains_key(&3) && !t.contains_key(&4) && !t.contains_key(&5));
     }
 
     #[test]

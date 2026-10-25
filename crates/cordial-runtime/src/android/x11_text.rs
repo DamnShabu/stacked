@@ -224,7 +224,7 @@ fn update_overlay(d: &Driver, generation: u32, revision: u64, text: &str, caret:
         }
         // A focus the engine made since the user last clicked away is a box
         // they are meant to type in, so the editor may take the keyboard again.
-        if cache.as_ref().map_or(true, |(g, ..)| *g != generation) {
+        if cache.as_ref().is_none_or(|(g, ..)| *g != generation) {
             d.editor.reclaim_keyboard();
         }
         *cache = Some((generation, revision, text.to_owned(), caret, info));

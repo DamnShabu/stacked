@@ -583,9 +583,7 @@ mod tests {
     }
 
     fn desired(dir: &Path, seed: u8, granted: &[Capability], version: Option<&str>) -> Desired {
-        let mut manifest_json = format!(
-            r#"{{"id":"p","entry":"main.ts","capabilities":["log"]"#
-        );
+        let mut manifest_json = r#"{"id":"p","entry":"main.ts","capabilities":["log"]"#.to_string();
         if let Some(v) = version {
             manifest_json.push_str(&format!(r#","version":"{v}""#));
         }

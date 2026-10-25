@@ -490,7 +490,7 @@ fn versions_in(d: &[u8]) -> Vec<Available> {
             out.push(Available { name: m.name.clone(), code });
         }
     }
-    out.sort_by(|a, b| b.code.cmp(&a.code));
+    out.sort_by_key(|v| std::cmp::Reverse(v.code));
     out
 }
 

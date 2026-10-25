@@ -353,7 +353,7 @@ pub fn start_all() -> usize {
         // `reconcile::desired_state` never returns one, so this flag is the
         // one thing `spawn_one` cannot recompute from `plugin` alone and has
         // to be told.
-        let unpacked = manifest::unpacked_dirs().iter().any(|d| *d == plugin.dir);
+        let unpacked = manifest::unpacked_dirs().contains(&plugin.dir);
         let want = cordial_plugins::reconcile::Desired {
             fingerprint: cordial_plugins::reconcile::fingerprint_of(&plugin),
             plugin: plugin.clone(),

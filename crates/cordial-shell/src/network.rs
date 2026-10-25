@@ -132,20 +132,15 @@ use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
 /// Whether an instance is allowed to start without a VPN already up under it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "kebab-case")]
 pub enum Mode {
     /// No requirement — today's behaviour, and what every profile without a
     /// `network.json` gets.
+    #[default]
     Default,
     /// Refuse to start unless the profile's own `check` command exits zero.
     VpnRequired,
-}
-
-impl Default for Mode {
-    fn default() -> Self {
-        Mode::Default
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

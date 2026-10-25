@@ -86,7 +86,7 @@ use std::path::{Path, PathBuf};
 /// and `Option` on the size fields mean a file written before a field existed,
 /// or one with only `fullscreen` in it, still loads -- same shape as
 /// `ShellConfig` and `NetworkConfig` in this crate.
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(default)]
 pub struct WindowState {
     pub fullscreen: bool,
@@ -103,12 +103,6 @@ pub struct WindowState {
     /// existed.
     pub width: Option<i32>,
     pub height: Option<i32>,
-}
-
-impl Default for WindowState {
-    fn default() -> Self {
-        Self { fullscreen: false, maximised: false, width: None, height: None }
-    }
 }
 
 impl WindowState {

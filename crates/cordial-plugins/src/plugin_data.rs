@@ -249,7 +249,7 @@ mod tests {
 
         forget(&dir, "fps-flex").unwrap();
         assert!(
-            grants::load(&grants::path_in(&dir)).get("fps-flex").is_none(),
+            !grants::load(&grants::path_in(&dir)).contains_key("fps-flex"),
             "the grant is withdrawn"
         );
     }

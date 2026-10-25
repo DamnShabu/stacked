@@ -236,9 +236,8 @@ pub fn install_local_with(
             // resolving it from the returned value must get the real,
             // permanent directory, not the staging one this function is
             // about to have deleted the sibling of.
-            let plugin = read_manifest(&target).map_err(|e| {
+            let plugin = read_manifest(&target).inspect_err(|_| {
                 let _ = std::fs::remove_dir_all(&target);
-                e
             })?;
             Ok((plugin, target))
         }

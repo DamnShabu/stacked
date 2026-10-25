@@ -1338,7 +1338,7 @@ pub(crate) mod tests {
 
         let layer = read_layer(&root.join("tuner/flags.json"), Source::Plugin("tuner".into())).unwrap();
         assert_eq!(layer.values["FFlagA"], "false");
-        assert!(layer.values.get("FFlagStale").is_none(), "{:?}", layer.values);
+        assert!(!layer.values.contains_key("FFlagStale"), "{:?}", layer.values);
     }
 
     #[test]
@@ -1368,8 +1368,8 @@ pub(crate) mod tests {
 
         let layer_a = read_layer(&root.join("plugin-a/flags.json"), Source::Plugin("plugin-a".into())).unwrap();
         let layer_b = read_layer(&root.join("plugin-b/flags.json"), Source::Plugin("plugin-b".into())).unwrap();
-        assert!(layer_a.values.get("FFlagB").is_none());
-        assert!(layer_b.values.get("FFlagA").is_none());
+        assert!(!layer_a.values.contains_key("FFlagB"));
+        assert!(!layer_b.values.contains_key("FFlagA"));
     }
 
     /// A user plugin may not take an id a first-party plugin already provides.

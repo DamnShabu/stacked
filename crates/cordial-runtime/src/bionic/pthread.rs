@@ -1327,7 +1327,7 @@ mod tests {
         // SAFETY: as `thread_specific_data_round_trips` above.
         unsafe {
             assert_eq!(key_create(&mut key, None), 0);
-            assert_eq!(setspecific(key, 1 as *const c_void), 0);
+            assert_eq!(setspecific(key, std::ptr::dangling::<c_void>()), 0);
         }
 
         let elsewhere = key;

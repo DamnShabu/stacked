@@ -1482,7 +1482,7 @@ mod overlay_tests {
         assert!(r.seek(SeekFrom::End(-99)).is_err());
         // The failed seek must not have moved it -- a position quietly
         // clamped to zero would read the wrong entry rather than fail.
-        assert_eq!(r.seek(SeekFrom::Current(0)).unwrap(), 0);
+        assert_eq!(r.stream_position().unwrap(), 0);
     }
 
     #[test]

@@ -8,7 +8,7 @@ fn keyring_snapshot_prefers_plaintext_without_migrating_it() {
     std::fs::write(dir.join("identity"), b"plaintext identity").unwrap();
     let request = SnapshotRequest {
         store: Store::Keyring,
-        profile_dir: &dir,
+        profile_dir: dir,
         kind: Kind::Identity,
         max_bytes: 16 * 1024,
     };
@@ -30,7 +30,7 @@ fn keyring_snapshot_reads_service_when_plaintext_is_absent() {
     let dir = scratch.path();
     let request = SnapshotRequest {
         store: Store::Keyring,
-        profile_dir: &dir,
+        profile_dir: dir,
         kind: Kind::Identity,
         max_bytes: 16 * 1024,
     };
@@ -50,7 +50,7 @@ fn unavailable_keyring_and_none_store_fail_closed() {
     std::fs::write(dir.join("identity"), b"ignored identity").unwrap();
     let none = SnapshotRequest {
         store: Store::None,
-        profile_dir: &dir,
+        profile_dir: dir,
         kind: Kind::Identity,
         max_bytes: 16 * 1024,
     };
@@ -65,7 +65,7 @@ fn unavailable_keyring_and_none_store_fail_closed() {
     std::fs::remove_file(dir.join("identity")).unwrap();
     let keyring = SnapshotRequest {
         store: Store::Keyring,
-        profile_dir: &dir,
+        profile_dir: dir,
         kind: Kind::Identity,
         max_bytes: 16 * 1024,
     };
@@ -82,7 +82,7 @@ fn snapshots_refuse_values_over_the_requested_bound() {
     std::fs::write(dir.join("cookies"), b"12345").unwrap();
     let file = SnapshotRequest {
         store: Store::File,
-        profile_dir: &dir,
+        profile_dir: dir,
         kind: Kind::Cookies,
         max_bytes: 4,
     };

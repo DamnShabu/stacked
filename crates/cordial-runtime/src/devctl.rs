@@ -321,7 +321,7 @@ fn handle(line: &str) -> String {
         // An empty payload is meaningful (it is the chat-box clear), which is
         // why the text is whatever follows the verb rather than a token.
         "enginetext" => {
-            let rest = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            let rest = line.split_once(char::is_whitespace).map(|x| x.1).unwrap_or("").trim();
             cordial_linker_sys::game_activity::test_engine_text(rest);
             format!("ok enginetext synthetic bytes={}", rest.len())
         }
@@ -441,7 +441,7 @@ fn handle(line: &str) -> String {
             None => "err tap <evdev-code> [modifiers]".into(),
         },
         "text" => {
-            let rest = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            let rest = line.split_once(char::is_whitespace).map(|x| x.1).unwrap_or("").trim();
             if rest.is_empty() {
                 return "err text <string>".into();
             }
@@ -458,7 +458,7 @@ fn handle(line: &str) -> String {
         // line itself because the protocol is one command per line and a
         // multi-line payload cannot be one line of it.
         "paste" | "settext" => {
-            let path = line.splitn(2, char::is_whitespace).nth(1).unwrap_or("").trim();
+            let path = line.split_once(char::is_whitespace).map(|x| x.1).unwrap_or("").trim();
             if path.is_empty() {
                 return format!("err {verb} <path>");
             }

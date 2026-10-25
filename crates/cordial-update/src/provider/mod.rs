@@ -222,7 +222,7 @@ pub enum Want {
 ///
 /// Zero-network first. See [`Want`] for when that ordering is wrong.
 pub fn all() -> Vec<Box<dyn Provider>> {
-    vec![Box::new(local::OnThisMachine::default()), Box::new(mirror::ApkPure::default())]
+    vec![Box::new(local::OnThisMachine), Box::new(mirror::ApkPure)]
 }
 
 /// The source named `name`, for a user who has chosen one.
@@ -965,7 +965,7 @@ mod tests {
             vec![Box::new(Genuine(apk))],
             Want::Newest,
             &Cancel::new(),
-            &[signer.certificate_sha256.clone()],
+            std::slice::from_ref(&signer.certificate_sha256),
             &dir,
             &mut noise,
         )

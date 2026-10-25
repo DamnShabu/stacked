@@ -132,7 +132,7 @@ impl Automatic {
 /// opinion about: **may a download run when the connection is metered?** Off
 /// means downloads wait for an unmetered link, which is what somebody on a data
 /// allowance wants. On means the connection is not consulted at all.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(default, rename_all = "kebab-case")]
 pub struct DownloadOn {
     /// *Download on metered connection.* Off by default: reading a guess as
@@ -140,12 +140,6 @@ pub struct DownloadOn {
     /// never asked for, and the cost of being wrong the other way is a button
     /// press.
     pub metered: bool,
-}
-
-impl Default for DownloadOn {
-    fn default() -> Self {
-        DownloadOn { metered: false }
-    }
 }
 
 /// The sentence shown where a download is being held back by the connection.

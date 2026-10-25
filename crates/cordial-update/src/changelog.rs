@@ -152,7 +152,7 @@ pub fn parse_releases(value: &serde_json::Value) -> Result<Vec<Release>, String>
             topics.len()
         ));
     }
-    out.sort_by(|a, b| b.major.cmp(&a.major));
+    out.sort_by_key(|n| std::cmp::Reverse(n.major));
     Ok(out)
 }
 
@@ -185,8 +185,7 @@ pub fn parse_notes(value: &serde_json::Value) -> Result<Notes, String> {
 fn major_in_title(title: &str) -> Option<u32> {
     title
         .split(|c: char| !c.is_ascii_digit())
-        .filter(|s| !s.is_empty())
-        .next_back()
+        .rfind(|s| !s.is_empty())
         .and_then(|s| s.parse().ok())
 }
 

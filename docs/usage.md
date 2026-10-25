@@ -190,7 +190,8 @@ The game window's title bar follows `theme`.
   unchanged.
 
 The title bar is hidden in fullscreen either way. `title_bar compact` makes
-it shorter, and `title_bar hidden` removes it.
+it shorter, and `title_bar hidden` removes it; [title-bar.md](title-bar.md)
+says what Hidden leaves you without.
 
 ## Plugins
 
