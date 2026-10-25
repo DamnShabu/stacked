@@ -521,8 +521,8 @@ fn ensure_room(dir: &Path) -> Result<(), Unreachable> {
 /// directly: same `flock(2)`, but rustix turns the `-1`-on-failure C
 /// convention into an `Err`, so there is no unsafe block and no raw fd to
 /// mismanage. `std::fs::File::try_lock` would do this with no extra
-/// dependency at all, but it only stabilised in Rust 1.89 and this workspace
-/// pins `rust-version = "1.75"` for the Flatpak runtime — see
+/// dependency at all. It stabilised in Rust 1.89, after the 1.75 floor this
+/// workspace then declared; the floor is 1.92 now, so it is available — see
 /// [ADR-036](../../../docs/adr/ADR-036-unsafe-is-a-boundary-not-a-convention.md).
 fn exclusive(path: &Path, busy: &str) -> Result<std::fs::File, Unreachable> {
     if let Some(parent) = path.parent() {

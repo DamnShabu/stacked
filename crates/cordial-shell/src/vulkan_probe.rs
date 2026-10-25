@@ -257,7 +257,8 @@ pub fn enumerate_here() -> Result<Vec<Device>, Failure> {
         unsafe { get_proc(instance, c.as_ptr()) }
     };
 
-    // `c"..."` needs Rust 1.77 and the workspace floor is 1.75.
+    // Written when the declared floor was 1.75 and `c"..."` needed 1.77. The
+    // floor is 1.92 now, so a C-string literal would do.
     let app_name = CString::new("cordial doctor").expect("no NUL in a literal");
     let app = ApplicationInfo {
         s_type: STRUCTURE_TYPE_APPLICATION_INFO,
