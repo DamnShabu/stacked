@@ -37,7 +37,7 @@ pub use cordial_shell::title_bar::TitleBar;
 /// real transition whatever this is set to; answering a platform question
 /// honestly is not a setting. On [`ThrottleWhen::Off`] the engine still knows
 /// it is unfocused and Cordial simply carries on driving it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum ThrottleWhen {
     /// Throttle only when the window is not visible — minimised, on another
@@ -51,6 +51,7 @@ pub enum ThrottleWhen {
     /// is the question actually being asked and Wayland answers it directly —
     /// `xdg_toplevel`'s `suspended` state, which reaches this process as
     /// `GdkToplevelState::SUSPENDED`.
+    #[default]
     Visible,
     /// Throttle whenever the window loses focus. The most saving, and wrong for
     /// anyone who watches Cordial while working in another window.
@@ -58,12 +59,6 @@ pub enum ThrottleWhen {
     /// Never throttle. Full rate in the background, which is what a recording
     /// or a long download inside the client wants.
     Off,
-}
-
-impl Default for ThrottleWhen {
-    fn default() -> Self {
-        ThrottleWhen::Visible
-    }
 }
 
 impl ThrottleWhen {
@@ -115,7 +110,7 @@ impl ThrottleWhen {
 /// accessibility tree, and reading it any other way is out of scope under
 /// ADR-001. The lock is Cordial's own, and Roblox takes it for exactly the
 /// three camera cases that want raw movement.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PointerAcceleration {
     /// The desktop's setting moves the cursor, and camera movement is raw.
@@ -124,13 +119,8 @@ pub enum PointerAcceleration {
     /// 2026-09-30: players found accelerated camera movement better in
     /// shooters, and raw movement is still one choice away. A profile whose
     /// saved config already names "unlocked" keeps it.
+    #[default]
     Always,
-}
-
-impl Default for PointerAcceleration {
-    fn default() -> Self {
-        PointerAcceleration::Always
-    }
 }
 
 impl PointerAcceleration {
@@ -176,7 +166,7 @@ impl PointerAcceleration {
 /// AGENTS.md asks to be argued in an ADR rather than introduced in a widget.
 /// Choosing Automatic lands on the runtime's own `auto`, which is MAILBOX
 /// (`vulkan.rs`), when no plugin says otherwise.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum PresentMode {
     /// One image per refresh: no tearing, no wasted frames, and the latency of
@@ -184,18 +174,13 @@ pub enum PresentMode {
     Fifo,
     /// No queue, no tearing, where the driver advertises it. The default:
     /// responsive, and it costs power.
+    #[default]
     Mailbox,
     /// Uncapped, unsynchronised, tears. The lowest latency there is.
     Immediate,
     /// No opinion, so a plugin may have one. Falls back to the runtime's
     /// `auto`, which is MAILBOX.
     Automatic,
-}
-
-impl Default for PresentMode {
-    fn default() -> Self {
-        PresentMode::Mailbox
-    }
 }
 
 impl PresentMode {

@@ -222,7 +222,7 @@ pub enum Want {
 ///
 /// Zero-network first. See [`Want`] for when that ordering is wrong.
 pub fn all() -> Vec<Box<dyn Provider>> {
-    vec![Box::new(local::OnThisMachine::default()), Box::new(mirror::ApkPure::default())]
+    vec![Box::new(local::OnThisMachine), Box::new(mirror::ApkPure)]
 }
 
 /// The source named `name`, for a user who has chosen one.
@@ -521,8 +521,8 @@ fn ensure_room(dir: &Path) -> Result<(), Unreachable> {
 /// directly: same `flock(2)`, but rustix turns the `-1`-on-failure C
 /// convention into an `Err`, so there is no unsafe block and no raw fd to
 /// mismanage. `std::fs::File::try_lock` would do this with no extra
-/// dependency at all, but it only stabilised in Rust 1.89 and this workspace
-/// pins `rust-version = "1.75"` for the Flatpak runtime — see
+/// dependency at all. It stabilised in Rust 1.89, after the 1.75 floor this
+/// workspace then declared; the floor is 1.92 now, so it is available — see
 /// [ADR-036](../../../docs/adr/ADR-036-unsafe-is-a-boundary-not-a-convention.md).
 fn exclusive(path: &Path, busy: &str) -> Result<std::fs::File, Unreachable> {
     if let Some(parent) = path.parent() {
@@ -965,7 +965,7 @@ mod tests {
             vec![Box::new(Genuine(apk))],
             Want::Newest,
             &Cancel::new(),
-            &[signer.certificate_sha256.clone()],
+            std::slice::from_ref(&signer.certificate_sha256),
             &dir,
             &mut noise,
         )

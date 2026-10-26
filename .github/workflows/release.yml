@@ -178,7 +178,7 @@ jobs:
         # workspace's own build dependencies, plus this job's packaging
         # tools (patchelf, squashfs-tools, zsync) and rustup rather than
         # apt's own rustc/cargo -- Ubuntu's packaged Rust trails upstream
-        # stable and this workspace pins rust-version = 1.75 in Cargo.toml.
+        # stable and this workspace pins rust-version = 1.92 in Cargo.toml.
         run: |
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
@@ -300,7 +300,7 @@ jobs:
         # Stacked on Debian/Ubuntu from source, plus the audio backends'
         # headers and the packaging tools this job needs on top of that.
         # rustup rather than apt's own rustc/cargo: Ubuntu's packaged Rust
-        # trails upstream stable and this workspace pins rust-version = 1.75
+        # trails upstream stable and this workspace pins rust-version = 1.92
         # in Cargo.toml.
         run: |
           export DEBIAN_FRONTEND=noninteractive

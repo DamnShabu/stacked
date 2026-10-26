@@ -865,7 +865,7 @@ extern "C" fn run_bootstrap() {
             // points at an exported symbol in a library that stays loaded for
             // the life of the process, so it is valid for as long as anything
             // here could use it.
-            let native = plan.settings_native as usize;
+            let native = plan.settings_native;
             std::thread::spawn(move || {
                 std::thread::sleep(std::time::Duration::from_millis(ms));
                 // Re-read from disk: `load` goes through `apply_overrides`,
@@ -1688,16 +1688,15 @@ fn main() -> ExitCode {
     // process's parent before anything touches a display or a profile. Handing
     // over here means the child does all of it once, properly, inside the
     // nested compositor.
-    if !cordial_runtime::headless::is_child() {
-        if cordial_runtime::headless::nested_argv(&std::env::args_os().collect::<Vec<_>>())
+    if !cordial_runtime::headless::is_child()
+        && cordial_runtime::headless::nested_argv(&std::env::args_os().collect::<Vec<_>>())
             .is_some()
-        {
-            match cordial_runtime::headless::exec_nested() {
-                Ok(never) => match never {},
-                Err(msg) => {
-                    eprintln!("error: {msg}");
-                    return ExitCode::from(2);
-                }
+    {
+        match cordial_runtime::headless::exec_nested() {
+            Ok(never) => match never {},
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                return ExitCode::from(2);
             }
         }
     }
@@ -2823,8 +2822,8 @@ fn main() -> ExitCode {
                                         // this long, and wrong by the whole
                                         // difference once anyone goes fullscreen.
                                         linker::game_activity::set_display_size(
-                                            width as i32,
-                                            height as i32,
+                                            width,
+                                            height,
                                         );
                                         // And the same display in millimetres,
                                         // for `DeviceUtils`. Beside the pixel
@@ -5751,7 +5750,7 @@ mod local_storage_secrets {
         if out.is_null() || found.is_null() || out_len.is_null() {
             return -1;
         }
-        let value = get(user_id as i64, key);
+        let value = get(user_id, key);
         // SAFETY: pointers were just checked non-null; `out` has `out_cap`
         // bytes per the caller's own contract in local_storage.cpp.
         unsafe {
@@ -5806,7 +5805,7 @@ mod local_storage_secrets {
             println!("  [local-storage] {key}: value is not UTF-8; refused rather than stored");
             return -1;
         };
-        if set(user_id as i64, key, value) { 0 } else { -1 }
+        if set(user_id, key, value) { 0 } else { -1 }
     }
 
     #[no_mangle]
@@ -5816,12 +5815,12 @@ mod local_storage_secrets {
         let Some(key) = (unsafe { borrow_str(key) }) else {
             return -1;
         };
-        if delete(user_id as i64, key) { 0 } else { -1 }
+        if delete(user_id, key) { 0 } else { -1 }
     }
 
     #[no_mangle]
     pub extern "C" fn cordial_local_storage_delete_user(user_id: c_longlong) -> c_int {
-        if delete_user(user_id as i64) { 0 } else { -1 }
+        if delete_user(user_id) { 0 } else { -1 }
     }
 }
 

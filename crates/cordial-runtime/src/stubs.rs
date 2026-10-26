@@ -167,7 +167,7 @@ pub fn report() {
         .iter()
         .map(|&i| (i, hits.counts[i]))
         .collect();
-    called.sort_by(|a, b| b.1.cmp(&a.1));
+    called.sort_by_key(|c| std::cmp::Reverse(c.1));
 
     eprintln!(
         "\n=== stubs called: {} distinct of {} ===",

@@ -102,7 +102,7 @@ extern "C" fn b_sigfillset(set: *mut BionicSigset) -> c_int {
 }
 
 extern "C" fn b_sigaddset(set: *mut BionicSigset, sig: c_int) -> c_int {
-    if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
+    if set.is_null() || !(1..=MAX_SIGNAL).contains(&sig) {
         return -1;
     }
     // SAFETY: as above.
@@ -111,7 +111,7 @@ extern "C" fn b_sigaddset(set: *mut BionicSigset, sig: c_int) -> c_int {
 }
 
 extern "C" fn b_sigdelset(set: *mut BionicSigset, sig: c_int) -> c_int {
-    if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
+    if set.is_null() || !(1..=MAX_SIGNAL).contains(&sig) {
         return -1;
     }
     // SAFETY: as above.
@@ -120,7 +120,7 @@ extern "C" fn b_sigdelset(set: *mut BionicSigset, sig: c_int) -> c_int {
 }
 
 extern "C" fn b_sigismember(set: *const BionicSigset, sig: c_int) -> c_int {
-    if set.is_null() || sig < 1 || sig > MAX_SIGNAL {
+    if set.is_null() || !(1..=MAX_SIGNAL).contains(&sig) {
         return -1;
     }
     // SAFETY: as above.

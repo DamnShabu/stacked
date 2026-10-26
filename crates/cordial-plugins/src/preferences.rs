@@ -749,7 +749,7 @@ mod tests {
     fn keys_nothing_declares_are_dropped() {
         let fields = fabricated();
         let values = quietly(&fields, &serde_json::json!({"removed": "yesterday"}));
-        assert!(values.get("removed").is_none(), "{values:?}");
+        assert!(!values.contains_key("removed"), "{values:?}");
     }
 
     #[test]

@@ -64,7 +64,7 @@ assistance, and the git history records that in `Co-Authored-By` trailers.
 
 Building needs:
 
-- **Rust** (the workspace declares 1.75 as its minimum) and **CMake**, which
+- **Rust** (the workspace declares 1.92 as its minimum) and **CMake**, which
   the `cmake` crate drives to build the native tree
 - **Clang** — AOSP bionic uses C11 `_Atomic` inside C++ headers and GCC rejects it
 - **GTK4 (≥ 4.12) and libadwaita (≥ 1.5)** development packages. The launcher

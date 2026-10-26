@@ -354,7 +354,6 @@ dependencies = [
  "gtk4",
  "libadwaita",
  "libc",
- "minisign-verify",
  "percent-encoding",
  "serde",
  "serde_json",

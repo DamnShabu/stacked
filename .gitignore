@@ -59,3 +59,10 @@ tools/discord-bridge/*-app.env
 tools/discord-bridge/.env.*
 tools/discord-bridge/node_modules/
 .vscode
+
+# direnv's per-machine cache from `use flake`; it records absolute paths into
+# whoever's home directory made it, so it is never project content.
+.direnv/
+
+# Kept off to the side on purpose; see rescued/README.md.
+rescued/

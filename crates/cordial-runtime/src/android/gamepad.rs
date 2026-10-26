@@ -1777,8 +1777,8 @@ mod tests {
     /// `-32767..=32767`, so the scale is symmetric and needs no offset.
     #[test]
     fn axis_scale_is_symmetric() {
-        assert_eq!(32767i16 as f32 / JS_AXIS_MAX, 1.0);
-        assert_eq!(-32767i16 as f32 / JS_AXIS_MAX, -1.0);
+        assert_eq!(32767_f32 / JS_AXIS_MAX, 1.0);
+        assert_eq!(-32767_f32 / JS_AXIS_MAX, -1.0);
         assert_eq!(0i16 as f32 / JS_AXIS_MAX, 0.0);
     }
 

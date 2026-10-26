@@ -244,16 +244,16 @@ fn a_session_survives_the_round_trip_through_the_service() {
     // Obviously fake, and short. No test in this repository holds a real
     // token, at any verbosity.
     let body = "# cordial test\nroblox.com\tCORDIALTEST=not-a-session\n";
-    let saved = save(Store::Keyring, &dir, Kind::Cookies, body);
-    let back = load(Store::Keyring, &dir, Kind::Cookies);
+    let saved = save(Store::Keyring, dir, Kind::Cookies, body);
+    let back = load(Store::Keyring, dir, Kind::Cookies);
     let seen = snapshot(SnapshotRequest {
         store: Store::Keyring,
         profile_dir: dir,
         kind: Kind::Cookies,
         max_bytes: 1024 * 1024,
     });
-    let erased = erase(Store::Keyring, &dir, Kind::Cookies);
-    let gone = load(Store::Keyring, &dir, Kind::Cookies);
+    let erased = erase(Store::Keyring, dir, Kind::Cookies);
+    let gone = load(Store::Keyring, dir, Kind::Cookies);
     if service_timed_out() {
         return;
     }
@@ -293,10 +293,10 @@ fn a_plaintext_store_is_adopted_and_destroyed() {
         kind: Kind::Cookies,
     };
     let body = "# cordial test\nroblox.com\tCORDIALTEST=adopt-me\n";
-    save(Store::File, &dir, Kind::Cookies, body).unwrap();
-    let migrated = load(Store::Keyring, &dir, Kind::Cookies);
+    save(Store::File, dir, Kind::Cookies, body).unwrap();
+    let migrated = load(Store::Keyring, dir, Kind::Cookies);
     let file_left = dir.join("cookies").exists();
-    let next = load(Store::Keyring, &dir, Kind::Cookies);
+    let next = load(Store::Keyring, dir, Kind::Cookies);
     if service_timed_out() {
         return;
     }
@@ -311,5 +311,5 @@ fn a_plaintext_store_is_adopted_and_destroyed() {
         Some(body),
         "the next launch must read it from the service"
     );
-    erase(Store::Keyring, &dir, Kind::Cookies).unwrap();
+    erase(Store::Keyring, dir, Kind::Cookies).unwrap();
 }

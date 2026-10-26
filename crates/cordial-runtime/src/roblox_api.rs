@@ -184,6 +184,40 @@ pub fn is_roblox_image_url(url: &str) -> bool {
         && !host.is_empty()
 }
 
+/// Cordial's key for a Roblox asset's picture.
+///
+/// Prefixed so an asset id and a universe id cannot collide in the one map the
+/// presence broker looks pictures up in -- they are separate id spaces and
+/// `13913198647` could plausibly be both.
+pub fn asset_key(asset_id: &str) -> String {
+    format!("a{asset_id}")
+}
+
+/// Cordial's key for an experience's own icon.
+pub fn universe_key(universe_id: u64) -> String {
+    format!("u{universe_id}")
+}
+
+/// Resolve an experience's name, creator and icon, and register the icon.
+///
+/// **Blocking, and called from a thread of the caller's making.** Three HTTP
+/// requests behind the log-watcher's poll loop would stall the watcher for as
+/// long as Roblox took to answer; `game_log` spawns for this and republishes
+/// when it returns.
+pub fn resolve_game(universe_id: u64) -> Option<GameDetails> {
+    if let Some(icon) = game_icon_url(universe_id) {
+        cordial_plugins::presence::remember_image(&universe_key(universe_id), &icon);
+    }
+    game_details(universe_id)
+}
+
+/// Resolve one asset a game asked for, and register it.
+pub fn resolve_asset(asset_id: &str) {
+    if let Some(url) = asset_image_url(asset_id) {
+        cordial_plugins::presence::remember_image(&asset_key(asset_id), &url);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,39 +255,5 @@ mod tests {
         assert_eq!(asset_image_url(""), None);
         assert_eq!(asset_image_url("../../etc"), None);
         assert_eq!(asset_image_url("1 OR 1"), None);
-    }
-}
-
-/// Cordial's key for a Roblox asset's picture.
-///
-/// Prefixed so an asset id and a universe id cannot collide in the one map the
-/// presence broker looks pictures up in -- they are separate id spaces and
-/// `13913198647` could plausibly be both.
-pub fn asset_key(asset_id: &str) -> String {
-    format!("a{asset_id}")
-}
-
-/// Cordial's key for an experience's own icon.
-pub fn universe_key(universe_id: u64) -> String {
-    format!("u{universe_id}")
-}
-
-/// Resolve an experience's name, creator and icon, and register the icon.
-///
-/// **Blocking, and called from a thread of the caller's making.** Three HTTP
-/// requests behind the log-watcher's poll loop would stall the watcher for as
-/// long as Roblox took to answer; `game_log` spawns for this and republishes
-/// when it returns.
-pub fn resolve_game(universe_id: u64) -> Option<GameDetails> {
-    if let Some(icon) = game_icon_url(universe_id) {
-        cordial_plugins::presence::remember_image(&universe_key(universe_id), &icon);
-    }
-    game_details(universe_id)
-}
-
-/// Resolve one asset a game asked for, and register it.
-pub fn resolve_asset(asset_id: &str) {
-    if let Some(url) = asset_image_url(asset_id) {
-        cordial_plugins::presence::remember_image(&asset_key(asset_id), &url);
     }
 }

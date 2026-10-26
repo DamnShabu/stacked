@@ -142,6 +142,13 @@ trade than keeping a small, already-present dependency. If the Flatpak
 runtime's baseline ever moves past 1.89, `try_lock` becomes the better choice
 and this is the ADR that should be updated to say so.
 
+**Update, 2026-10-25: the 1.75 pin was not real.** The code already called
+1.84 APIs (`std::ptr::dangling_mut`, `Option::is_none_or`), and the GTK
+bindings in `Cargo.lock` require 1.92: `cargo +1.91 check` refuses the
+workspace on `cairo-rs`, and `cargo +1.92 check --workspace --all-targets`
+passes. `rust-version` now says 1.92, so `try_lock` is available and the
+trade above no longer applies. Switching to it is left for a separate change.
+
 ## What is a lint and what is a ratchet
 
 Three lints, one of them workspace-wide policy and two of them measured

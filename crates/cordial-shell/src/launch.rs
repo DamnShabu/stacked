@@ -1362,12 +1362,12 @@ mod tests {
         std::fs::write(root.join("VkLayer_MESA_device_select.json"), "{}").unwrap();
 
         assert!(
-            find_mangohud_layer_in(&[root.clone()]).is_none(),
+            find_mangohud_layer_in(std::slice::from_ref(&root)).is_none(),
             "an unrelated implicit layer must not read as MangoHUD"
         );
 
         std::fs::write(root.join("MangoHud.x86_64.json"), "{}").unwrap();
-        let found = find_mangohud_layer_in(&[root.clone()]).expect("the layer is there now");
+        let found = find_mangohud_layer_in(std::slice::from_ref(&root)).expect("the layer is there now");
         assert!(found.ends_with("MangoHud.x86_64.json"), "{}", found.display());
 
         // A directory that does not exist is the ordinary case rather than an
@@ -1405,12 +1405,12 @@ mod tests {
         std::fs::write(root.join("VkLayer_MESA_device_select.json"), "{}").unwrap();
 
         assert!(
-            find_vkbasalt_layer_in(&[root.clone()]).is_none(),
+            find_vkbasalt_layer_in(std::slice::from_ref(&root)).is_none(),
             "an unrelated implicit layer must not read as vkBasalt"
         );
 
         std::fs::write(root.join("vkBasalt.json"), "{}").unwrap();
-        let found = find_vkbasalt_layer_in(&[root.clone()]).expect("the layer is there now");
+        let found = find_vkbasalt_layer_in(std::slice::from_ref(&root)).expect("the layer is there now");
         assert!(found.ends_with("vkBasalt.json"), "{}", found.display());
 
         let missing = root.join("nowhere");
