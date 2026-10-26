@@ -5608,7 +5608,8 @@ fn constrain_toplevel() -> bool {
         // SAFETY: `*slot` is the live locked-pointer proxy; the two calls match
         // `set_cursor_position_hint`'s "ff" and `destroy`'s empty signature,
         // the latter sent with the destroy flag its `type="destructor"`
-        // declaration requires.
+        // declaration requires. `parent_surface` is GTK's live toplevel and
+        // `commit` takes no arguments.
         unsafe {
             (self.wl.marshal_flags)(
                 *slot,
@@ -5619,6 +5620,23 @@ fn constrain_toplevel() -> bool {
                 f32_to_fixed(x),
                 f32_to_fixed(y),
             );
+            // **The hint is double-buffered state and only exists once the
+            // locked surface is committed.** The protocol says so in as many
+            // words, and the commit used to come after the destroy, in
+            // `parent_constraint_changed` below -- by which time the hint
+            // belonged to an object that no longer existed. Upstream committed
+            // the parent first (`release_commits_parent`); the fork dropped
+            // that as redundant, and it was not, because order is the point.
+            // A compositor that honours the rule then had no hint at all, which
+            // is consistent with nested KWin 6.7.5 ignoring a drag's hint
+            // (0d3051b). Toplevel only: the canvas is the engine's surface and
+            // a commit from this thread could land between the swapchain's
+            // attach and its own commit. `INFERRED` that this fixes the
+            // right-click cursor returning to an earlier click's position; it
+            // is read off the protocol, not run against a compositor.
+            if toplevel {
+                (self.wl.marshal_flags)(self.parent_surface, WL_SURFACE_COMMIT, std::ptr::null(), 1, 0);
+            }
             (self.wl.marshal_flags)(
                 *slot,
                 LOCKED_POINTER_DESTROY,
