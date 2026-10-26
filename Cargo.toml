@@ -9,7 +9,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.23.1"
+version = "0.23.2"
 edition = "2021"
 license = "GPL-3.0-or-later"  # see LICENSE; third-party notices in THIRD-PARTY-NOTICES.md
 # The real floor, measured: gtk4/cairo-rs 0.22 require 1.92 and `cargo +1.91

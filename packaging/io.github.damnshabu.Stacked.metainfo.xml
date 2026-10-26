@@ -87,6 +87,17 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.23.2" date="2026-10-26">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.2</url>
+      <description>
+        <p>
+          Clicks on the shadow around a floating game window go to the window
+          behind it again, and on KDE Plasma and Hyprland the cursor should
+          land where the game left it when a camera drag ends. Neither fix has
+          been seen working on those desktops yet.
+        </p>
+      </description>
+    </release>
     <release version="0.23.1" date="2026-10-17">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.1</url>
       <description>
