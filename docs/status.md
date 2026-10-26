@@ -4,8 +4,8 @@ Sign in, load a game, move around. This is the full feature table that used
 to live in the README, what changed recently in this fork, and three of the
 harder bugs it took to get here. See also [`CHANGELOG.md`](../CHANGELOG.md)
 and upstream Cordial's [releases page](https://github.com/luohoa97/cordial/releases)
-for what changed release by release before the fork. Stacked has published no
-releases of its own yet.
+for what changed release by release before the fork. Stacked's own releases
+have notes in [`docs/releases/`](releases/).
 
 ## Recent desktop/runtime improvements in this fork
 

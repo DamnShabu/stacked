@@ -1,4 +1,7 @@
-# The 792 tests, on every push and pull request.
+# The workspace's tests, on every push and pull request. No count here: it
+# said 792 when `cargo test --workspace` reported 1421, and would drift again.
+# It only runs while enabled in the repository's Actions settings; it was off
+# from 2026-09-30, and `gh workflow view test.yml` says which it is now.
 #
 # **They ran nowhere before this.** `just test` runs them and CI did not, so the
 # only thing standing between a broken test and `main` was somebody remembering
