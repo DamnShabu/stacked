@@ -68,7 +68,7 @@ serde_json = "1"
 # `cordial-shell`, which uses it for the same reason.
 libc = "0.2"
 # Assets live in the APK, which is a zip.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # The AT-SPI bridge (android::accessibility) speaks org.a11y.atspi.* directly
 # over D-Bus — see that module's own doc comment for why a hand-rolled bridge
 # was chosen over routing through cordial-shell's GTK/libadwaita widgets.

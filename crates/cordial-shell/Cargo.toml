@@ -92,7 +92,7 @@ gtk4 = { version = "0.11", features = ["v4_12"] }
 # zip to set a user up rather than telling them to run `unzip` first. Same
 # version and the same minimal feature set `cordial-runtime` already pins, so
 # this adds an edge to an already-resolved dependency rather than a new one.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # The floor was 1.4 for as long as AdwToolbarView and AdwSwitchRow were the
 # newest things used. `AdwDialog` moves it: it landed in 1.5 and it is what a
 # Roblox web window should be — attached to the client window, adaptive, and
