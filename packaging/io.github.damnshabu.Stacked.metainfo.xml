@@ -87,6 +87,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.23.3" date="2026-11-13">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.3</url>
+      <description>
+        <p>
+          Roblox 2.746.0.1266 loads again: the nine Android video-decoding
+          functions it asks for are answered as unsupported, as upstream
+          Cordial 0.34.1 does. Video decoded through that path may not play.
+        </p>
+      </description>
+    </release>
     <release version="0.23.2" date="2026-10-26">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.2</url>
       <description>
