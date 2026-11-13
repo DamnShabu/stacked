@@ -96,8 +96,8 @@
     </screenshot>
   </screenshots>
   <branding>
-    <color type="primary" scheme_preference="light">#e9bd6a</color>
-    <color type="primary" scheme_preference="dark">#2a1f0c</color>
+    <color type="primary" scheme_preference="light">#ff3d2e</color>
+    <color type="primary" scheme_preference="dark">#121317</color>
   </branding>
   <!--
     Rated for what connecting to Roblox exposes you to, not for anything Stacked

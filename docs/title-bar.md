@@ -3,6 +3,10 @@
 `stacked config set title_bar VALUE` takes **`default`**, **`compact`** or
 **`hidden`**. The choice applies to the next game window you open.
 
+Default is a 32-pixel bar, slimmer than libadwaita's usual 47, and Compact
+is 26. Both keep the close button the same distance from the top, bottom and
+right edges.
+
 This setting applies only to Wayland game windows. The X11 runtime uses an
 unrelated native window and is unaffected.
 

@@ -1,8 +1,9 @@
 //! The name and icon the window wears.
 //!
-//! **Stacked**: three tilted tiles in brown and amber on a dark tile. The
-//! palette lives in [`crate::theme::palette`], so the icon and the window's
-//! colours cannot drift apart.
+//! **Stacked**: a white block wearing Headcount's face, stacked in front of a
+//! red one, tilted the same eight degrees as Headcount's icon on the same
+//! near-black tile. The palette lives in [`crate::theme::palette`], so
+//! the icon and the window's colours cannot drift apart.
 //!
 //! This used to choose between two faces by date -- Cordial, and an inverted
 //! "Frostbite" on two days a year. The joke was an arithmetic inversion of
@@ -86,8 +87,7 @@ mod tests {
         let svg = std::fs::read_to_string(icon_path()).expect("icon is readable");
         for colour in [
             crate::theme::palette::BASE,
-            crate::theme::palette::MUTED,
-            crate::theme::palette::MID,
+            crate::theme::palette::TILE,
             crate::theme::palette::ACCENT,
         ] {
             assert!(svg.contains(colour), "icon does not use {colour}");

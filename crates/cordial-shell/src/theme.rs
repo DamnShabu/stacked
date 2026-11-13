@@ -1,7 +1,8 @@
 //! The game window's colours.
 //!
-//! **Stacked** is the default: a dark header bar in the brand's brown with the
-//! amber of the icon's front tile as its accent, and libadwaita held in dark
+//! **Stacked** is the default: Headcount's near-black neutrals with its red as
+//! the accent, so the launcher and the game window it starts read as one
+//! family, and libadwaita held in dark
 //! mode so the area behind the canvas never flashes white while a resize
 //! catches up. **System** is what this window did before the fork had a brand
 //! -- the desktop's own colours, following its light and dark setting, with
@@ -18,25 +19,34 @@ use serde::{Deserialize, Serialize};
 /// The environment variable the launcher sets and the window reads.
 pub const THEME_ENV: &str = "CORDIAL_THEME";
 
-/// The brand palette, taken from the icon.
+/// The brand palette, taken from the icon and shared with Headcount.
 ///
 /// Named by role rather than by colour so that a sheet written against them
-/// still reads correctly if the palette is ever retuned.
+/// still reads correctly if the palette is ever retuned. The values are
+/// Headcount's own (its `DESIGN.md`), because Headcount is what installs and
+/// starts this client and the two windows sit side by side on one desktop.
 pub mod palette {
-    /// The icon's background tile. The window's darkest surface.
-    pub const BASE: &str = "#2a1f0c";
-    /// Somewhere between the base and the back tile, for the header bar, so it
-    /// reads as a surface rather than as a hole in the window.
-    pub const SURFACE: &str = "#3a2c14";
-    /// The back tile.
-    pub const MUTED: &str = "#6b5634";
-    /// The middle tile.
-    pub const MID: &str = "#b08c4c";
-    /// The front tile. Accent, focus rings and highlighted text.
-    pub const ACCENT: &str = "#e9bd6a";
-    /// Text on the dark surfaces. Warm rather than pure white, which on this
-    /// brown reads as blue by contrast.
-    pub const TEXT: &str = "#f5ead3";
+    /// The icon's background tile, and the window's darkest surface.
+    pub const BASE: &str = "#121317";
+    /// A step up from the base, for the header bar, so it reads as a surface
+    /// rather than as a hole in the window. Headcount's sidebar.
+    pub const SURFACE: &str = "#16171c";
+    /// Hairlines: the bar's lower edge, the splash's outline.
+    pub const MUTED: &str = "#30333b";
+    /// A raised control's fill, and a hovered window control.
+    pub const MID: &str = "#2a2d35";
+    /// Accent: focus rings, the progress bar, highlighted text. The icon's
+    /// one red block.
+    pub const ACCENT: &str = "#ff3d2e";
+    /// Text drawn on the accent.
+    pub const ON_ACCENT: &str = "#140806";
+    /// The icon's white blocks.
+    pub const TILE: &str = "#ffffff";
+    /// Text on the dark surfaces. Slightly cool, matching the neutrals, rather
+    /// than pure white.
+    pub const TEXT: &str = "#eceef2";
+    /// Secondary text: the version beside the title, a step label.
+    pub const TEXT_DIM: &str = "#7d818c";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -83,8 +93,8 @@ impl Theme {
             Self::System => String::new(),
             Self::Stacked => format!(
                 "@define-color accent_color {ACCENT}; \
-                 @define-color accent_bg_color {MID}; \
-                 @define-color accent_fg_color {BASE}; \
+                 @define-color accent_bg_color {ACCENT}; \
+                 @define-color accent_fg_color {ON_ACCENT}; \
                  @define-color window_bg_color {BASE}; \
                  @define-color window_fg_color {TEXT}; \
                  @define-color view_bg_color {BASE}; \
@@ -96,17 +106,27 @@ impl Theme {
                  .cordial-engine-host headerbar {{ \
                      background-color: {SURFACE}; \
                      color: {TEXT}; \
-                     box-shadow: inset 0 -1px {MUTED}; \
+                     box-shadow: inset 0 -1px alpha({MUTED}, 0.55); \
                  }} \
                  .cordial-engine-host headerbar:backdrop {{ background-color: {BASE}; }} \
-                 .cordial-engine-host headerbar .title {{ font-weight: 700; }} \
+                 .cordial-engine-host headerbar .stacked-title {{ color: {TEXT}; }} \
+                 .cordial-engine-host headerbar .stacked-title-detail {{ color: {TEXT_DIM}; }} \
+                 .cordial-engine-host headerbar windowcontrols button {{ \
+                     background-color: transparent; color: {TEXT_DIM}; border-radius: 6px; \
+                 }} \
+                 .cordial-engine-host headerbar windowcontrols button > image {{ \
+                     background: none; \
+                 }} \
                  .cordial-engine-host headerbar windowcontrols button:hover {{ \
-                     background-color: alpha({ACCENT}, 0.18); \
+                     background-color: {MID}; color: {TEXT}; \
+                 }} \
+                 .cordial-engine-host headerbar windowcontrols button.close:hover {{ \
+                     background-color: {ACCENT}; color: {ON_ACCENT}; \
                  }} \
                  .cordial-engine-host .cordial-text-fallback {{ \
                      background-color: alpha({BASE}, 0.96); \
                      color: {TEXT}; \
-                     border: 1px solid {MID}; \
+                     border: 1px solid {MUTED}; \
                  }}"
             ),
         }
@@ -114,7 +134,7 @@ impl Theme {
 
     /// Whether libadwaita should be held in dark mode. The Stacked palette is
     /// dark only; letting the desktop flip it to light would leave light
-    /// window controls on a brown bar.
+    /// window controls on a near-black bar.
     pub const fn forces_dark(self) -> bool {
         matches!(self, Self::Stacked)
     }

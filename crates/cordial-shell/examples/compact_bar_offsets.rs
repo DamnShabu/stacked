@@ -70,6 +70,25 @@ const WH6: &str = ".probe headerbar { min-height: 30px; } \
                        min-width: 24px; min-height: 24px; padding: 0; margin: 2px; \
                    }";
 
+/// The default bar from the slim-down: the same sheet `host_window.rs` ships
+/// for `TitleBar::Default`, kept in step by hand. Measured here because the
+/// bar's height is decided by the title label as much as by any `min-height`.
+const SLIM: &str = ".probe headerbar { min-height: 0; padding: 0; box-shadow: none; } \
+                    .probe headerbar > windowhandle > box { padding: 4px; } \
+                    .probe headerbar .title { font-size: 13px; font-weight: 600; } \
+                    .probe headerbar windowcontrols button { \
+                        min-width: 24px; min-height: 24px; padding: 0; margin: 0; \
+                    }";
+
+/// The compact bar after the slim-down: the same box model as `SLIM` with
+/// half the inset and smaller controls, so it stays smaller than the default.
+const SLIM_COMPACT: &str = ".probe headerbar { min-height: 0; padding: 0; box-shadow: none; } \
+                    .probe headerbar > windowhandle > box { padding: 2px; } \
+                    .probe headerbar .title { font-size: 12px; font-weight: 600; } \
+                    .probe headerbar windowcontrols button { \
+                        min-width: 22px; min-height: 22px; padding: 0; margin: 0; \
+                    }";
+
 /// Second candidate: put the whole inset on the button and none on the bar.
 const ZERO: &str = ".probe headerbar { min-height: 30px; padding: 0; } \
                     .probe headerbar windowcontrols button { \
@@ -111,18 +130,29 @@ fn main() {
             "uniform" => UNIFORM,
             "wh0" => WH0,
             "wh6" => WH6,
+            "slim" => SLIM,
+            "slim-compact" => SLIM_COMPACT,
+            "default" => "",
             _ => NEW,
         };
 
+        // The brand theme last, as `host_window.rs` orders it, so the probe
+        // photographs what the game window actually looks like.
+        let sheet = format!("{sheet} {}", cordial_shell::theme::Theme::from_env().css());
         let css = gtk::CssProvider::new();
-        css.load_from_string(sheet);
+        css.load_from_string(&sheet);
 
         let window = adw::ApplicationWindow::builder()
             .application(app)
             .default_width(600)
             .default_height(200)
+            .title("Stacked 0.21.3 (0fdbb4425)")
             .build();
         window.add_css_class("probe");
+        window.add_css_class("cordial-engine-host");
+        if cordial_shell::theme::Theme::from_env().forces_dark() {
+            adw::StyleManager::default().set_color_scheme(adw::ColorScheme::ForceDark);
+        }
 
         gtk::style_context_add_provider_for_display(
             &WidgetExt::display(&window),
@@ -208,7 +238,13 @@ fn main() {
                     dump(h.upcast_ref::<gtk::Widget>(), 0);
                 }
             }
-            w.close();
+            // `CORDIAL_PROBE_HOLD_MS` keeps the window up long enough to
+            // photograph from outside, for a before-and-after of the look.
+            let hold = std::env::var("CORDIAL_PROBE_HOLD_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            glib::timeout_add_local_once(std::time::Duration::from_millis(hold), move || w.close());
         });
 
         window.present();
