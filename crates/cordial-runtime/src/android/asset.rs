@@ -1427,8 +1427,8 @@ mod overlay_tests {
         use std::io::Write;
         let mut out = std::io::Cursor::new(Vec::new());
         let mut w = zip::ZipWriter::new(&mut out);
-        let opts: zip::write::FileOptions<'_, ()> =
-            zip::write::FileOptions::default().compression_method(zip::CompressionMethod::Stored);
+        let opts = zip::write::SimpleFileOptions::default()
+            .compression_method(zip::CompressionMethod::Stored);
         for (name, bytes) in entries {
             w.start_file(*name, opts).unwrap();
             w.write_all(bytes).unwrap();
