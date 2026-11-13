@@ -124,6 +124,16 @@
       GTK launcher and Settings window included. Stacked's own releases go on
       top; 0.21.0 is the first.
     -->
+    <release version="0.24.0" date="2026-11-13">
+      <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.24.0</url>
+      <description>
+        <p>
+          A new look shared with Headcount: a near-black window with a red
+          accent and a new icon. The game window's title bar is slimmer, and a
+          small loading window shows progress while the client starts.
+        </p>
+      </description>
+    </release>
     <release version="0.23.3" date="2026-11-13">
       <url type="details">https://github.com/DamnShabu/stacked/releases/tag/v0.23.3</url>
       <description>
