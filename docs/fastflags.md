@@ -149,7 +149,7 @@ the client-settings document from Roblox         base
 ```
 
 `CORDIAL_QUALITY` is for a launcher starting several clients at once, such as
-the Roblox manager's performance levels: `low`, `medium` or `max` sets a
+Headcount's performance levels: `low`, `medium` or `max` sets a
 graphics-quality preset for that one client (`high`, or unset, sets nothing).
 The flags are listed in `crates/cordial-runtime/src/graphics_quality.rs`.
 Each preset pins the render quality level, which stops Roblox's automatic

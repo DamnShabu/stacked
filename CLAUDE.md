@@ -156,7 +156,7 @@ know before they hit them, not after.
 reaches what users install, cut a release without asking.** Bump the version in
 `Cargo.toml`, write `docs/releases/v<version>.md` (the release workflow refuses
 to create a release without it), merge to `main`, and push the `v<version>`
-tag. The Roblox manager's Update Stacked installs from the newest release's
+tag. Headcount's Update installs from the newest release's
 x86_64 AppImage, so a change that is never tagged never reaches it. A change
 only to agent instructions or internal docs needs no release.
 
