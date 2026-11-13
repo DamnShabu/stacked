@@ -11,6 +11,7 @@
 
 <p align="center">
   <a href="https://github.com/DamnShabu/stacked/releases/latest"><img src="https://img.shields.io/github/v/release/DamnShabu/stacked" alt="Latest release"></a>
+  <a href="https://github.com/DamnShabu/stacked/releases"><img src="https://img.shields.io/github/downloads/DamnShabu/stacked/total" alt="Downloads"></a>
   <a href="LICENSE"><img src="https://img.shields.io/github/license/DamnShabu/stacked" alt="Licence: GPL-3.0"></a>
 </p>
 
@@ -88,6 +89,18 @@ launches install a newer build first when there is one.
 | `stacked diagnostics` | What to paste into a bug report. |
 
 **F11** toggles fullscreen. Everything else is in [`docs/usage.md`](docs/usage.md).
+
+## Several accounts: Headcount
+
+[**Headcount**](https://github.com/DamnShabu/headcount) is the account manager
+built on Stacked. Sign each account in once, launch any set of them into the
+same server with one click, and leave key-and-click macros running in them
+while you use your desktop. Headcount installs Stacked for you, and its
+**Update** button installs this repository's newest release, so there is
+nothing to set up here first.
+
+Running more than one client at a time is against Roblox's terms, and people
+have reported anti-cheat flags for it. Use alts you can afford to lose.
 
 ## What's broken
 
