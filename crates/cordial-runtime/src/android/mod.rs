@@ -168,7 +168,14 @@ impl WindowHandle {
 /// Open the host window on whichever backend [`backend()`] selected.
 pub fn open_window(width: u32, height: u32, title: &str) -> Result<WindowHandle, String> {
     match backend() {
-        Backend::Wayland => wayland::open(width, height, title).map(WindowHandle::Wayland),
+        Backend::Wayland => {
+            cordial_shell::splash::step(0.95, "Opening the game window");
+            let opened = wayland::open(width, height, title).map(WindowHandle::Wayland);
+            // Once the game window has mapped, or failed to: either way the
+            // splash has nothing left to stand in for.
+            cordial_shell::splash::finish();
+            opened
+        }
         Backend::X11 => window::open(width, height, title).map(WindowHandle::X11),
     }
 }

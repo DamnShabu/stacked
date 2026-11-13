@@ -698,7 +698,7 @@ impl HostWindow {
         // With no header bar the window carries the visibility anchor instead,
         // so the content still comes out the size the caller asked for.
         let chrome_height = if title_bar.revealed(false) {
-            header_height_hint()
+            header_height_hint(title_bar)
         } else {
             anchor_height(false)
         };
@@ -779,7 +779,9 @@ impl HostWindow {
         // libadwaita default nearer 47px, which read as "the x in the title bar
         // looks off and the titlebar looks short". That is now opt-in through
         // the Appearance page rather than the only option.
-        let compact = title_bar == crate::title_bar::TitleBar::Compact;
+        //
+        // Both sizes are now driven from the sheet rather than the label; see
+        // [`bar_sheet`] for why that no longer brings the crooked x back.
         // The see-through state is a class rather than the default, and that
         // distinction is the whole lesson of 5a295e3. A permanently transparent
         // toplevel shows the desktop whenever the engine is not painting, which
@@ -839,35 +841,7 @@ impl HostWindow {
                  padding: 6px 10px; \
              }",
         );
-        if compact {
-            sheet.push_str(
-                // The close button's right margin is one pixel short of its
-                // other three, and that asymmetry is deliberate. Reported as
-                // the x sitting too far left, with the gap to the right edge
-                // visibly larger than the gap above and below it -- which it
-                // was, by exactly one pixel. The two gaps are computed
-                // differently: the horizontal one is a sum of paddings
-                // (`windowhandle` insets its `GtkCenterBox` child equally on
-                // both sides, and the button's own margin adds to that), while
-                // the vertical one is whatever centring leaves over once the
-                // bar's height is settled by something else entirely -- the
-                // title label, not this sheet, which is also why the
-                // `min-height` below does not bind. Measured with
-                // `examples/compact_bar_offsets.rs`: 8/8/9 before, 8/8/8
-                // after, against the unmodified sheet in the same session.
-                //
-                // A pixel off one margin is the smallest change that squares
-                // them. Equalising them properly would mean driving the bar's
-                // height from this sheet rather than the label's, which is the
-                // aggressive compaction 3d67e59 already tried and got reverted
-                // for.
-                " .cordial-engine-host headerbar { min-height: 30px; padding: 0 6px; } \
-                 .cordial-engine-host headerbar windowcontrols button { \
-                     min-width: 24px; min-height: 24px; padding: 0; \
-                     margin: 2px 1px 2px 2px; \
-                 }",
-            );
-        }
+        sheet.push_str(bar_sheet(title_bar));
         // The theme last, so its rules win over the structural ones above at
         // equal specificity. It only ever changes colours; everything above
         // that decides what is transparent and when stays in force, because
@@ -2537,8 +2511,55 @@ fn install_visibility_anchor(toolbar: &adw::ToolbarView) {
 /// real height is read back from the widget tree once there is a layout — see
 /// [`HostWindow::content_rect`] — so being a few pixels out here costs a
 /// resize at startup, not a wrong canvas forever.
-fn header_height_hint() -> i32 {
-    47
+fn header_height_hint(title_bar: crate::title_bar::TitleBar) -> i32 {
+    match title_bar {
+        crate::title_bar::TitleBar::Compact => 28,
+        _ => 36,
+    }
+}
+
+/// The header bar's size, for the windowed modes. Both are measured with
+/// `examples/compact_bar_offsets.rs` under the same libadwaita, sheets `slim`
+/// and `slim-compact`, which carry copies of these two.
+///
+/// **The bar's height is set here by construction, not left to centring.**
+/// libadwaita's own rule is `headerbar { min-height: 47px }` with the
+/// `GtkCenterBox` inside the window handle padded 6/7/7/7, and the old compact
+/// sheet only lowered the `min-height` -- which does not bind once the box's
+/// padding and the title label decide the height, so the "30px" compact bar
+/// measured 40, and its close button sat 8/8/9 from the edges until a pixel
+/// was shaved off one margin to hide it. Zeroing the `min-height` and giving
+/// that box one uniform padding makes the bar exactly the controls plus twice
+/// the padding, and every gap round the close button that padding: 36px with
+/// 6/6/6 for the default, 28px with 3/3/3 for compact, against 46 and 40
+/// before.
+///
+/// 3d67e59 was reverted for a short bar with an x that looked wrong. The x
+/// was the asymmetric gap, which this removes rather than trims; the height
+/// is the slimmer bar asked for, with libadwaita's 47 no longer the default.
+///
+/// The title is set smaller and lighter than libadwaita's bold, which is most
+/// of what makes the bar read as lighter rather than merely shorter. The
+/// libadwaita default box shadow goes too; the theme draws its own hairline.
+fn bar_sheet(title_bar: crate::title_bar::TitleBar) -> &'static str {
+    match title_bar {
+        crate::title_bar::TitleBar::Compact => {
+            " .cordial-engine-host headerbar { min-height: 0; box-shadow: none; } \
+             .cordial-engine-host headerbar > windowhandle > box { padding: 3px; } \
+             .cordial-engine-host headerbar .title { font-size: 0.82em; font-weight: 600; } \
+             .cordial-engine-host headerbar windowcontrols button { \
+                 min-width: 22px; min-height: 22px; padding: 0; margin: 0; \
+             }"
+        }
+        _ => {
+            " .cordial-engine-host headerbar { min-height: 0; box-shadow: none; } \
+             .cordial-engine-host headerbar > windowhandle > box { padding: 6px; } \
+             .cordial-engine-host headerbar .title { font-size: 0.86em; font-weight: 600; } \
+             .cordial-engine-host headerbar windowcontrols button { \
+                 min-width: 24px; min-height: 24px; padding: 0; margin: 0; \
+             }"
+        }
+    }
 }
 
 #[cfg(test)]

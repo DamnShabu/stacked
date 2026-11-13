@@ -184,8 +184,8 @@ what flags do, and which ones Stacked sets itself, is in
 
 The game window's title bar follows `theme`.
 
-- **`stacked`** (the default) uses the icon's palette: a dark brown bar with
-  warm text and an amber accent, always in dark mode.
+- **`stacked`** (the default) uses the icon's palette, shared with Headcount:
+  a near-black bar with a red accent, always in dark mode.
 - **`system`** uses your desktop's colours and light or dark setting,
   unchanged.
 
@@ -237,6 +237,7 @@ the rest are for testing and troubleshooting.
 | `CORDIAL_NO_GAME_SEED=1` | Don't hand the engine pointer hovers while a game starts. They are there because movement keys were dead after a Play-button join without them ([movement-keys.md](analysis/movement-keys.md)). |
 | `CORDIAL_FPS_CAP=N` | The same as `fps_cap`. `0` is the engine's own target; unset follows the screen. |
 | `CORDIAL_THEME=stacked\|system` | The same as `theme`. |
+| `CORDIAL_SPLASH=off` | Don't show the loading window while the client starts. Wayland only; X11 never shows it. |
 | `CORDIAL_PRESENT_MODE=…` | The same as `present_mode`, plus `uncapped` and `fifo-relaxed`. |
 | `CORDIAL_GAMEMODE=0` | Don't ask for GameMode. |
 | `CORDIAL_POLL_COALESCE_US=N` | How long the engine's main loop sleeps when it has nothing to do, in microseconds. The default is 250. `0` turns it off, which costs a whole CPU core. |

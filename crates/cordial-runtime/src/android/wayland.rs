@@ -1543,6 +1543,7 @@ pub fn open(width: u32, height: u32, title: &str) -> Result<&'static WaylandWind
     // probe has been running since startup.
     cordial_shell::gtk_renderer::settle();
     cordial_shell::host_window::init_wayland()?;
+    cordial_shell::splash::apply_deferred_locale();
     let host = cordial_shell::host_window::HostWindow::with_canvas(title, width as i32, height as i32);
 
     // Size and maximised state from the last session on this profile, applied

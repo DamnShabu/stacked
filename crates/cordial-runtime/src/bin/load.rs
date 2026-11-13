@@ -1082,6 +1082,9 @@ fn display_frame_target() {
         println!("  refresh: no display to read a refresh rate from ({e})");
         return;
     }
+    // Where GTK set the locale before the splash existed; see
+    // `cordial_shell::splash`.
+    cordial_shell::splash::apply_deferred_locale();
     match cordial_runtime::refresh::frame_target(&refresh_outputs()) {
         Some(fps) => cordial_runtime::flags::set_display_frame_target(fps),
         None => println!("  refresh: no plausible refresh rate; the engine keeps its own frame target"),
@@ -1806,6 +1809,20 @@ fn main() -> ExitCode {
     }
     enter_run_dir(&mut opt);
 
+    // The splash, from here until the game window maps; see
+    // `cordial_shell::splash`. After the assets are unpacked rather than
+    // before, because it has to wait for the renderer probe that started
+    // above, and the extraction is the time that probe is meant to hide
+    // behind. The dmabuf decision is asked for first, a few lines earlier
+    // than `symtab::build` would have asked it, because `settle` inside
+    // `show` must see it -- the splash is GTK's first surface, and GTK picks
+    // its renderer for the process from the first one (issue #63).
+    if cordial_runtime::android::backend() == cordial_runtime::android::Backend::Wayland {
+        cordial_runtime::android::wl_dmabuf::withhold_vulkan();
+        cordial_shell::splash::show();
+    }
+    cordial_shell::splash::step(0.1, "Reading what the engine needs");
+
     // Answers "which of my mod's files can never apply" without starting the
     // engine, which is the point: the check is against the APK's own entry
     // list, so it needs an archive and an overlay stack and nothing else. The
@@ -1924,6 +1941,7 @@ fn main() -> ExitCode {
         opt.lib_dir
     );
 
+    cordial_shell::splash::step(0.2, "Resolving the engine's symbols");
     let table = symtab::build(opt.host_libc, &imports);
     let totals = table.totals();
 
@@ -2076,6 +2094,7 @@ fn main() -> ExitCode {
         linker::defer_next_ctors(true);
     }
 
+    cordial_shell::splash::step(0.35, "Loading the Roblox engine");
     let start = Instant::now();
     let result = linker::dlopen(&opt.library, linker::RTLD_NOW);
     let elapsed = start.elapsed();
@@ -2275,6 +2294,7 @@ fn main() -> ExitCode {
             // exists" rather than failing. `linker::jni::call_on_load` reaches
             // for the global VM itself and does not need this pointer, so
             // reusing it changes nothing about what JNI_OnLoad is called with.
+            cordial_shell::splash::step(0.55, "Starting the Java runtime");
             let vm = match linker::jni::create_vm() {
                 Some(vm) => vm,
                 None if defer_ctors => std::ptr::null_mut(),
@@ -2705,6 +2725,7 @@ fn main() -> ExitCode {
                             // the one delivery of flags the engine keeps -- see
                             // `flags::set_display_frame_target`. Wayland only:
                             // it needs GDK, which the X11 backend never starts.
+                            cordial_shell::splash::step(0.7, "Fetching client settings");
                             display_frame_target();
                             const FLAG_NAMES: &str = include_str!("../native-flag-names.txt");
                             // Read once, ahead of the struct literal, because
@@ -2774,6 +2795,7 @@ fn main() -> ExitCode {
                         println!("  uiMode: night={}", if dark { "yes" } else { "no" });
                         linker::game_activity::set_ui_mode_night(if dark { 1 } else { 0 });
 
+                        cordial_shell::splash::step(0.85, "Starting the engine");
                         println!("\ncalling GameActivity.initializeNativeCode");
                         // SAFETY: `f` is a native resolved via a symbol lookup against the loaded libroblox.so, which is never unloaded.
                         match unsafe { linker::game_activity::initialize(f, &files, &files, &files) } {

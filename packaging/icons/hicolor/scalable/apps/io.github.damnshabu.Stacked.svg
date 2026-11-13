@@ -1,17 +1,18 @@
 <svg width="128" height="128" viewBox="0 0 128 128" role="img" xmlns="http://www.w3.org/2000/svg">
   <title>Stacked</title>
   <!--
-    Three tilted tiles on a dark tile. Square on purpose: flatpak-builder runs
+    Two white blocks with a red one stacked on top, wearing Headcount's face,
+    tilted the same eight degrees on the same near-black tile so the two icons
+    read as one family. Square on purpose: flatpak-builder runs
     flatpak-validate-icon over everything it exports and refuses a non-square
     icon, at the very end of an otherwise successful build.
   -->
-  <rect width="128" height="128" rx="32" fill="#2a1f0c"/>
-  <g transform="translate(16 16) scale(0.96)">
-    <g transform="rotate(-14 50 50)">
-      <rect x="30" y="8" width="56" height="56" rx="7" fill="#6b5634"/>
-      <rect x="22" y="22" width="56" height="56" rx="7" fill="#b08c4c"/>
-      <rect x="14" y="36" width="56" height="56" rx="7" fill="#e9bd6a"/>
-      <rect x="35" y="57" width="14" height="14" rx="2" fill="#2a1f0c"/>
-    </g>
+  <rect width="128" height="128" rx="28" fill="#121317"/>
+  <g transform="translate(20.48 20.48) scale(0.7253) rotate(-8 60 60)">
+    <rect x="12" y="62" width="46" height="46" rx="10" fill="#ffffff"/>
+    <rect x="62" y="62" width="46" height="46" rx="10" fill="#ffffff"/>
+    <rect x="37" y="12" width="46" height="46" rx="10" fill="#ff3d2e"/>
+    <rect x="49" y="28" width="7" height="11" rx="2" fill="#121317"/>
+    <rect x="64" y="28" width="7" height="11" rx="2" fill="#121317"/>
   </g>
 </svg>
