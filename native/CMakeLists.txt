@@ -70,8 +70,11 @@ set_target_properties(linker PROPERTIES COMPILE_DEFINITIONS "${_linker_defs}")
 
 # `__u128`, which the submodule's stand-in <linux/types.h> lacks and newer arm64
 # kernel headers need; see linux_u128.h. On our side for the same reason as the
-# PATH_MAX fix above.
-target_compile_options(linker PRIVATE -include ${CMAKE_CURRENT_SOURCE_DIR}/linux_u128.h)
+# PATH_MAX fix above. `SHELL:` keeps `-include` and its file together: the
+# submodule already passes `-include compat.h`, and CMake drops a repeated
+# option, which left this header as a second input to every compile ("cannot
+# specify -o when generating multiple output files").
+target_compile_options(linker PRIVATE "SHELL:-include ${CMAKE_CURRENT_SOURCE_DIR}/linux_u128.h")
 
 # PipeWire, for opensles.cpp's audio backend. Headers only, and only if
 # present: libpipewire-0.3.so is never linked (dlopen'd at run time instead,
