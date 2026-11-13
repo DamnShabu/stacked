@@ -63,6 +63,43 @@
     <category>Game</category>
   </categories>
   <!--
+    What GNOME Software and Discover match a search against besides the name
+    and summary. Without these, someone typing "roblox client" or "sober"
+    into a software centre with the remote added does not find Stacked, because
+    neither phrase is in the summary.
+  -->
+  <keywords>
+    <keyword>Roblox</keyword>
+    <keyword>Roblox client</keyword>
+    <keyword>Roblox player</keyword>
+    <keyword>Sober</keyword>
+    <keyword>Cordial</keyword>
+    <keyword>game</keyword>
+    <keyword>launcher</keyword>
+  </keywords>
+  <provides>
+    <binary>stacked</binary>
+  </provides>
+  <!--
+    Frames from the recordings in docs/media, taken on Cordial, the engine
+    Stacked is built on, the same caveat the README gives. A software centre
+    shows a listing with no screenshot below one that has them.
+  -->
+  <screenshots>
+    <screenshot type="default">
+      <caption>DOORS running natively on Linux</caption>
+      <image type="source" width="1376" height="860">https://raw.githubusercontent.com/DamnShabu/stacked/main/docs/media/screenshots/doors.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>RIVALS running natively on Linux</caption>
+      <image type="source" width="1376" height="576">https://raw.githubusercontent.com/DamnShabu/stacked/main/docs/media/screenshots/rivals.jpg</image>
+    </screenshot>
+  </screenshots>
+  <branding>
+    <color type="primary" scheme_preference="light">#e9bd6a</color>
+    <color type="primary" scheme_preference="dark">#2a1f0c</color>
+  </branding>
+  <!--
     Rated for what connecting to Roblox exposes you to, not for anything Stacked
     itself contains: it is a client for a service with in-game chat and a signed-in
     account. Omitting the block entirely would have a software centre report
