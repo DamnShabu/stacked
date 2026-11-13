@@ -10,6 +10,9 @@ Exec=stacked %u
 Icon=io.github.damnshabu.Stacked
 Terminal=false
 Categories=Game;
+# Matched by the application grid's search, so "roblox" finds Stacked even
+# though its name does not say it.
+Keywords=Roblox;Roblox Player;Sober;Cordial;Game;
 # Stacked handles Roblox's own links, which is how a Play button on the website
 # reaches a client at all -- the same registration Sober carries, so a machine
 # switching from one to the other keeps working. `stacked` checks the scheme
