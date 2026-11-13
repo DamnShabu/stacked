@@ -45,6 +45,8 @@ pub mod palette {
     /// Text on the dark surfaces. Slightly cool, matching the neutrals, rather
     /// than pure white.
     pub const TEXT: &str = "#eceef2";
+    /// Secondary text: the version beside the title, a step label.
+    pub const TEXT_DIM: &str = "#7d818c";
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
@@ -107,9 +109,19 @@ impl Theme {
                      box-shadow: inset 0 -1px alpha({MUTED}, 0.55); \
                  }} \
                  .cordial-engine-host headerbar:backdrop {{ background-color: {BASE}; }} \
-                 .cordial-engine-host headerbar .title {{ font-weight: 600; color: alpha({TEXT}, 0.86); }} \
+                 .cordial-engine-host headerbar .stacked-title {{ color: {TEXT}; }} \
+                 .cordial-engine-host headerbar .stacked-title-detail {{ color: {TEXT_DIM}; }} \
+                 .cordial-engine-host headerbar windowcontrols button {{ \
+                     background-color: transparent; color: {TEXT_DIM}; border-radius: 6px; \
+                 }} \
+                 .cordial-engine-host headerbar windowcontrols button > image {{ \
+                     background: none; \
+                 }} \
                  .cordial-engine-host headerbar windowcontrols button:hover {{ \
-                     background-color: {MID}; \
+                     background-color: {MID}; color: {TEXT}; \
+                 }} \
+                 .cordial-engine-host headerbar windowcontrols button.close:hover {{ \
+                     background-color: {ACCENT}; color: {ON_ACCENT}; \
                  }} \
                  .cordial-engine-host .cordial-text-fallback {{ \
                      background-color: alpha({BASE}, 0.96); \

@@ -178,39 +178,53 @@ fn icon() -> gtk::Image {
     }
 }
 
+/// A compact card: the icon beside the name, version and current step, and a
+/// thin bar along the bottom -- Headcount's proportions (13 to 15px type, 10px
+/// radius, one hairline) rather than a centred hero.
 fn build() -> Splash {
     let icon = icon();
-    icon.set_pixel_size(88);
-    icon.add_css_class("stacked-splash-icon");
+    icon.set_pixel_size(44);
+    icon.set_valign(gtk::Align::Center);
 
     let name = gtk::Label::new(Some(crate::branding::NAME));
     name.add_css_class("stacked-splash-name");
+    let version = gtk::Label::new(Some(&crate::version::full()));
+    version.add_css_class("stacked-splash-version");
+    version.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let heading = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    heading.append(&name);
+    heading.append(&version);
 
     let status = gtk::Label::new(Some("Starting"));
     status.add_css_class("stacked-splash-status");
     status.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    status.set_xalign(0.0);
+
+    let text = gtk::Box::new(gtk::Orientation::Vertical, 2);
+    text.set_valign(gtk::Align::Center);
+    text.set_hexpand(true);
+    text.append(&heading);
+    text.append(&status);
+
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 14);
+    row.append(&icon);
+    row.append(&text);
 
     let bar = gtk::ProgressBar::new();
     bar.add_css_class("stacked-splash-bar");
     bar.set_hexpand(true);
 
-    let version = gtk::Label::new(Some(&crate::version::full()));
-    version.add_css_class("stacked-splash-version");
-
-    let column = gtk::Box::new(gtk::Orientation::Vertical, 10);
-    column.append(&icon);
-    column.append(&name);
-    column.append(&bar);
-    column.append(&status);
-    column.append(&version);
-    column.add_css_class("stacked-splash-card");
+    let card = gtk::Box::new(gtk::Orientation::Vertical, 14);
+    card.append(&row);
+    card.append(&bar);
+    card.add_css_class("stacked-splash-card");
 
     let window = adw::Window::builder()
         .title(crate::branding::NAME)
-        .default_width(380)
+        .default_width(340)
         .resizable(false)
         .decorated(false)
-        .content(&column)
+        .content(&card)
         .build();
     window.add_css_class("stacked-splash");
 
@@ -237,19 +251,20 @@ fn sheet(theme: crate::theme::Theme) -> String {
         // rounded: an undecorated window loses libadwaita's own rounding, and
         // a rounded window background left square black corners behind it.
         ".stacked-splash { background: none; } \
-         .stacked-splash-card { background-color: @window_bg_color; border-radius: 12px; \
-             padding: 28px 32px 20px; } \
-         .stacked-splash-name { font-size: 1.5em; font-weight: 700; } \
-         .stacked-splash-status { font-size: 0.9em; opacity: 0.8; } \
-         .stacked-splash-version { font-size: 0.75em; opacity: 0.5; } \
-         .stacked-splash-bar trough, .stacked-splash-bar progress { min-height: 6px; border-radius: 3px; }",
+         .stacked-splash-card { background-color: @window_bg_color; border-radius: 10px; \
+             padding: 16px 18px 16px; } \
+         .stacked-splash-name { font-size: 15px; font-weight: 600; } \
+         .stacked-splash-version { font-size: 12px; opacity: 0.6; } \
+         .stacked-splash-status { font-size: 13px; opacity: 0.75; } \
+         .stacked-splash-bar trough, .stacked-splash-bar progress { min-height: 3px; border-radius: 2px; }",
     );
     if theme == crate::theme::Theme::Stacked {
         use crate::theme::palette::*;
         s.push_str(&format!(
-            " .stacked-splash-card {{ background-color: {BASE}; color: {TEXT}; \
+            " .stacked-splash-card {{ background-color: {SURFACE}; color: {TEXT}; \
                  box-shadow: inset 0 0 0 1px {MUTED}; }} \
-             .stacked-splash-bar trough {{ background-color: alpha({MUTED}, 0.45); }} \
+             .stacked-splash-version, .stacked-splash-status {{ color: {TEXT_DIM}; opacity: 1; }} \
+             .stacked-splash-bar trough {{ background-color: {MID}; }} \
              .stacked-splash-bar progress {{ background-color: {ACCENT}; }}"
         ));
     }

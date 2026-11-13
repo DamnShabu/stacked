@@ -1043,6 +1043,7 @@ impl HostWindow {
             .default_height(h)
             .content(&toolbar)
             .build();
+        install_title(&window, &header);
 
         HostWindow {
             window,
@@ -2513,8 +2514,46 @@ fn install_visibility_anchor(toolbar: &adw::ToolbarView) {
 /// resize at startup, not a wrong canvas forever.
 fn header_height_hint(title_bar: crate::title_bar::TitleBar) -> i32 {
     match title_bar {
-        crate::title_bar::TitleBar::Compact => 28,
-        _ => 36,
+        crate::title_bar::TitleBar::Compact => 26,
+        _ => 32,
+    }
+}
+
+/// The bar's title as two labels -- the name, and the version after it in a
+/// quieter weight -- the way Headcount's bar shows its name and status.
+///
+/// Built from the window's own title and kept in step with it, because the
+/// title is what the task switcher shows and what other code changes: the
+/// recording marker (ADR-059) is appended to it, not to this widget.
+fn install_title(window: &adw::Window, header: &adw::HeaderBar) {
+    let name = gtk::Label::new(None);
+    name.add_css_class("stacked-title");
+    let detail = gtk::Label::new(None);
+    detail.add_css_class("stacked-title-detail");
+    detail.set_ellipsize(gtk::pango::EllipsizeMode::End);
+    let row = gtk::Box::new(gtk::Orientation::Horizontal, 8);
+    row.set_valign(gtk::Align::Center);
+    row.append(&name);
+    row.append(&detail);
+    header.set_title_widget(Some(&row));
+    let apply = move |w: &adw::Window| {
+        let title = w.title().map(|t| t.to_string()).unwrap_or_default();
+        let (head, rest) = split_title(&title);
+        name.set_label(head);
+        detail.set_label(rest);
+        detail.set_visible(!rest.is_empty());
+    };
+    apply(window);
+    window.connect_title_notify(apply);
+}
+
+/// The product name and whatever follows it. A title that does not start
+/// with the name -- a test fixture, a web-view dialog -- is all name.
+fn split_title(title: &str) -> (&str, &str) {
+    let name = crate::branding::NAME;
+    match title.strip_prefix(name) {
+        Some(rest) if rest.starts_with(' ') => (name, rest.trim_start()),
+        _ => (title, ""),
     }
 }
 
@@ -2530,8 +2569,8 @@ fn header_height_hint(title_bar: crate::title_bar::TitleBar) -> i32 {
 /// measured 40, and its close button sat 8/8/9 from the edges until a pixel
 /// was shaved off one margin to hide it. Zeroing the `min-height` and giving
 /// that box one uniform padding makes the bar exactly the controls plus twice
-/// the padding, and every gap round the close button that padding: 36px with
-/// 6/6/6 for the default, 28px with 3/3/3 for compact, against 46 and 40
+/// the padding, and every gap round the close button that padding: 32px with
+/// 4/4/4 for the default, 26px with 2/2/2 for compact, against 46 and 40
 /// before.
 ///
 /// 3d67e59 was reverted for a short bar with an x that looked wrong. The x
@@ -2545,16 +2584,20 @@ fn bar_sheet(title_bar: crate::title_bar::TitleBar) -> &'static str {
     match title_bar {
         crate::title_bar::TitleBar::Compact => {
             " .cordial-engine-host headerbar { min-height: 0; box-shadow: none; } \
-             .cordial-engine-host headerbar > windowhandle > box { padding: 3px; } \
-             .cordial-engine-host headerbar .title { font-size: 0.82em; font-weight: 600; } \
+             .cordial-engine-host headerbar > windowhandle > box { padding: 2px; } \
+             .cordial-engine-host headerbar .stacked-title { font-size: 12px; font-weight: 600; } \
+             .cordial-engine-host headerbar .stacked-title-detail { font-size: 11px; } \
+             .cordial-engine-host headerbar windowcontrols { border-spacing: 2px; } \
              .cordial-engine-host headerbar windowcontrols button { \
                  min-width: 22px; min-height: 22px; padding: 0; margin: 0; \
              }"
         }
         _ => {
             " .cordial-engine-host headerbar { min-height: 0; box-shadow: none; } \
-             .cordial-engine-host headerbar > windowhandle > box { padding: 6px; } \
-             .cordial-engine-host headerbar .title { font-size: 0.86em; font-weight: 600; } \
+             .cordial-engine-host headerbar > windowhandle > box { padding: 4px; } \
+             .cordial-engine-host headerbar .stacked-title { font-size: 13px; font-weight: 600; } \
+             .cordial-engine-host headerbar .stacked-title-detail { font-size: 12px; } \
+             .cordial-engine-host headerbar windowcontrols { border-spacing: 4px; } \
              .cordial-engine-host headerbar windowcontrols button { \
                  min-width: 24px; min-height: 24px; padding: 0; margin: 0; \
              }"
@@ -2581,6 +2624,15 @@ mod tests {
     /// twenty pixels of shadow a side. The outer eight pixels of shadow belong
     /// to whatever is behind the window; the inner twelve are GTK's resize
     /// handle.
+    #[test]
+    fn the_title_splits_after_the_name_and_nowhere_else() {
+        assert_eq!(split_title("Stacked 0.23.3 (bb6c2d4bf)"), ("Stacked", "0.23.3 (bb6c2d4bf)"));
+        assert_eq!(split_title("Stacked 0.23.3 \u{25cf} REC"), ("Stacked", "0.23.3 \u{25cf} REC"));
+        assert_eq!(split_title("Stacked"), ("Stacked", ""));
+        assert_eq!(split_title("Stackedness"), ("Stackedness", ""));
+        assert_eq!(split_title("Cordial game fixture"), ("Cordial game fixture", ""));
+    }
+
     #[test]
     fn the_shadow_beyond_the_resize_handle_is_not_ours_to_click() {
         let bounds = clickable_bounds((1636, 911), (1596, 871), 20.0, 20.0);

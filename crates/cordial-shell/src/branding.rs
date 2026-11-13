@@ -1,8 +1,8 @@
 //! The name and icon the window wears.
 //!
-//! **Stacked**: two white blocks with a red one stacked on top, wearing
-//! Headcount's face, tilted the same eight degrees as Headcount's icon on the
-//! same near-black tile. The palette lives in [`crate::theme::palette`], so
+//! **Stacked**: a white block wearing Headcount's face, stacked in front of a
+//! red one, tilted the same eight degrees as Headcount's icon on the same
+//! near-black tile. The palette lives in [`crate::theme::palette`], so
 //! the icon and the window's colours cannot drift apart.
 //!
 //! This used to choose between two faces by date -- Cordial, and an inverted

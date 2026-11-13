@@ -74,8 +74,8 @@ const WH6: &str = ".probe headerbar { min-height: 30px; } \
 /// for `TitleBar::Default`, kept in step by hand. Measured here because the
 /// bar's height is decided by the title label as much as by any `min-height`.
 const SLIM: &str = ".probe headerbar { min-height: 0; padding: 0; box-shadow: none; } \
-                    .probe headerbar > windowhandle > box { padding: 6px; } \
-                    .probe headerbar .title { font-size: 0.86em; font-weight: 600; } \
+                    .probe headerbar > windowhandle > box { padding: 4px; } \
+                    .probe headerbar .title { font-size: 13px; font-weight: 600; } \
                     .probe headerbar windowcontrols button { \
                         min-width: 24px; min-height: 24px; padding: 0; margin: 0; \
                     }";
@@ -83,8 +83,8 @@ const SLIM: &str = ".probe headerbar { min-height: 0; padding: 0; box-shadow: no
 /// The compact bar after the slim-down: the same box model as `SLIM` with
 /// half the inset and smaller controls, so it stays smaller than the default.
 const SLIM_COMPACT: &str = ".probe headerbar { min-height: 0; padding: 0; box-shadow: none; } \
-                    .probe headerbar > windowhandle > box { padding: 3px; } \
-                    .probe headerbar .title { font-size: 0.82em; font-weight: 600; } \
+                    .probe headerbar > windowhandle > box { padding: 2px; } \
+                    .probe headerbar .title { font-size: 12px; font-weight: 600; } \
                     .probe headerbar windowcontrols button { \
                         min-width: 22px; min-height: 22px; padding: 0; margin: 0; \
                     }";
