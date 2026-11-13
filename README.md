@@ -1,18 +1,24 @@
 <p align="center">
-  <img src="packaging/icons/hicolor/scalable/apps/io.github.damnshabu.Stacked.svg" alt="" width="96">
-</p>
-
-<h1 align="center">Stacked</h1>
-
-<p align="center">
-  Roblox's Android build, running natively on Linux.<br>
-  No emulator, no container, no virtual machine.
+  <img src="docs/brand/banner.svg" alt="Stacked: Roblox's Android build, running natively on Linux" width="100%">
 </p>
 
 <p align="center">
-  <a href="https://github.com/DamnShabu/stacked/releases/latest"><img src="https://img.shields.io/github/v/release/DamnShabu/stacked" alt="Latest release"></a>
-  <a href="https://github.com/DamnShabu/stacked/releases"><img src="https://img.shields.io/github/downloads/DamnShabu/stacked/total" alt="Downloads"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/github/license/DamnShabu/stacked" alt="Licence: GPL-3.0"></a>
+  <a href="https://github.com/DamnShabu/stacked/releases/latest"><img src="https://img.shields.io/github/v/release/DamnShabu/stacked?color=e9bd6a" alt="Latest release"></a>
+  <a href="https://github.com/DamnShabu/stacked/releases"><img src="https://img.shields.io/github/downloads/DamnShabu/stacked/total?color=6b5634" alt="Downloads"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/DamnShabu/stacked?color=6b5634" alt="Licence: GPL-3.0"></a>
+</p>
+
+<p align="center">
+  <b>Roblox's official Android client, loaded straight into a Linux process.</b><br>
+  A normal desktop window, no emulator, no container, no virtual machine.
+</p>
+
+<p align="center">
+  <a href="#install"><b>Install</b></a> ·
+  <a href="#use"><b>Use</b></a> ·
+  <a href="#whats-broken"><b>What's broken</b></a> ·
+  <a href="#faq"><b>FAQ</b></a> ·
+  <a href="https://github.com/DamnShabu/headcount"><b>Headcount</b></a>
 </p>
 
 <p align="center">
@@ -23,22 +29,50 @@
   Stacked is built on, before the fork was renamed.</em>
 </p>
 
-Stacked loads Roblox's official Android client straight into a Linux process
-and gives it a normal desktop window. It is a fork of
-[Cordial](https://github.com/luohoa97/cordial), whose engine does the heavy
-lifting. The fork adds:
-
-- **No launcher.** `stacked` starts the game and the game is the only window.
-  The website's Play button still works.
-- **Frame rate that follows your screen** instead of a fixed 60, with GameMode
-  and low-latency presentation on by default.
-- **A cursor that stays put in fullscreen**, so a second monitor can't steal a
-  click meant for the game.
-
 > [!WARNING]
 > Stacked is experimental. Roblox doesn't support third-party clients and bans
 > accounts for using them, sometimes by mistake. **Don't play on an account you
 > care about.**
+
+## Why Stacked
+
+Stacked is a fork of [Cordial](https://github.com/luohoa97/cordial), whose
+engine does the heavy lifting. On top of it, the fork adds:
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**🚪 No launcher**<br>
+`stacked` starts the game, and the game is the only window. The website's
+Play button still works.
+
+</td>
+<td width="50%" valign="top">
+
+**🖥️ Frame rate that follows your screen**<br>
+Instead of a fixed 60, with GameMode and low-latency presentation on by
+default.
+
+</td>
+</tr>
+<tr>
+<td valign="top">
+
+**🖱️ A cursor that stays put in fullscreen**<br>
+A second monitor can't steal a click meant for the game.
+
+</td>
+<td valign="top">
+
+**👥 Several accounts with Headcount**<br>
+[Headcount](https://github.com/DamnShabu/headcount) launches many accounts
+into one server and runs macros in them. It installs and updates Stacked for
+you.
+
+</td>
+</tr>
+</table>
 
 ## Install
 
@@ -46,13 +80,13 @@ Download a package from the
 [latest release](https://github.com/DamnShabu/stacked/releases/latest), for
 x86_64 or aarch64:
 
-| | |
-|---|---|
-| Debian, Ubuntu | `.deb` — `sudo apt install ./stacked_*.deb` |
-| Fedora | `.rpm` — `sudo dnf install ./stacked-*.rpm` |
-| Arch (x86_64) | `.pkg.tar.zst` — `sudo pacman -U stacked-*.pkg.tar.zst` |
-| Flatpak | `.flatpak` — `flatpak install --user Stacked-*.flatpak` |
-| Anything else | `.AppImage` — `chmod +x` it and run it |
+| Distro | File | Install |
+| --- | --- | --- |
+| Debian, Ubuntu | `.deb` | `sudo apt install ./stacked_*.deb` |
+| Fedora | `.rpm` | `sudo dnf install ./stacked-*.rpm` |
+| Arch (x86_64) | `.pkg.tar.zst` | `sudo pacman -U stacked-*.pkg.tar.zst` |
+| Any distro (Flatpak) | `.flatpak` | `flatpak install --user Stacked-*.flatpak` |
+| Any distro (single file) | `.AppImage` | `chmod +x` it and run it |
 
 Then:
 
@@ -61,14 +95,15 @@ stacked desktop install   # the browser's Play button opens Stacked
 stacked doctor            # checks the machine and says how to fix anything it finds
 ```
 
-From the Flatpak, run these as `flatpak run io.github.damnshabu.Stacked`;
-from the AppImage, as `./Stacked-*.AppImage desktop install`. Every
-file is signed with Sigstore; its `.cosign.bundle` sits next to it. There is
-no package repository yet, so updating means downloading the next release.
-[`docs/install.md`](docs/install.md) covers building from source.
-
-**Remove:** `stacked desktop remove`, then uninstall the package. Profiles
-stay in `~/.local/share/cordial` until you delete them.
+- **Flatpak:** run these as `flatpak run io.github.damnshabu.Stacked ...`.
+- **AppImage:** run them as `./Stacked-*.AppImage desktop install`.
+- **Signed:** every file is signed with Sigstore; its `.cosign.bundle` sits
+  next to it.
+- **Updates:** there is no package repository yet, so updating means
+  downloading the next release. Headcount users press **Update** instead.
+- **From source:** see [`docs/install.md`](docs/install.md).
+- **Remove:** `stacked desktop remove`, then uninstall the package. Profiles
+  stay in `~/.local/share/cordial` until you delete them.
 
 ## Use
 
@@ -76,36 +111,41 @@ stay in `~/.local/share/cordial` until you delete them.
 stacked
 ```
 
-The first run downloads Roblox — or reuses Sober's copy if you have one — and
-checks it against Roblox's signature. Stacked ships no part of Roblox. Later
-launches install a newer build first when there is one.
+- **The first run downloads Roblox**, or reuses Sober's copy if you have one,
+  and checks it against Roblox's signature. Stacked ships no part of Roblox.
+- **Later launches** install a newer Roblox build first when there is one.
+- **<kbd>F11</kbd>** toggles fullscreen.
 
-| | |
-|---|---|
+| Command | What it does |
+| --- | --- |
 | `stacked play --profile alt` | Play as another account. Each profile is its own sign-in. |
 | `stacked flags set NAME VALUE` | Set a FastFlag. `flags import --from sober` copies Sober's. |
 | `stacked config` | List every setting. `config set fps_cap 90` fixes the frame rate. |
 | `stacked plugins install x.tar.zst` | Add a plugin ([`docs/plugins.md`](docs/plugins.md)). |
 | `stacked diagnostics` | What to paste into a bug report. |
 
-**F11** toggles fullscreen. Everything else is in [`docs/usage.md`](docs/usage.md).
+Everything else is in [`docs/usage.md`](docs/usage.md).
 
 ## Several accounts: Headcount
 
 [**Headcount**](https://github.com/DamnShabu/headcount) is the account manager
-built on Stacked. Sign each account in once, launch any set of them into the
-same server with one click, and leave key-and-click macros running in them
-while you use your desktop. Headcount installs Stacked for you, and its
-**Update** button installs this repository's newest release, so there is
-nothing to set up here first.
+built on Stacked:
+
+- **Sign each account in once**, then launch any set of them into the same
+  server with one click.
+- **Leave key-and-click macros running** in them while you use your desktop.
+- **Nothing to set up here first:** Headcount installs Stacked, and its
+  **Update** button installs this repository's newest release.
 
 Running more than one client at a time is against Roblox's terms, and people
 have reported anti-cheat flags for it. Use alts you can afford to lose.
 
 ## What's broken
 
-Signing in, playing, keyboard and mouse, text entry, audio, voice chat,
-controllers and two accounts side by side all work. These don't yet:
+**Works:** signing in, playing, keyboard and mouse, text entry, audio, voice
+chat, controllers and two accounts side by side.
+
+**Doesn't yet:**
 
 - **No window at all** on COSMIC, KWin and some wlroots compositors
   ([cordial#38](https://github.com/luohoa97/cordial/issues/38)).
@@ -113,55 +153,90 @@ controllers and two accounts side by side all work. These don't yet:
 - It crashes at launch on some machines, the Steam Deck among them.
 - The keyboard is sometimes dead after joining an experience.
 
-Two of the fork's own features are untested: running above 60 fps on a faster
-screen, and cursor confinement on a real multi-monitor desktop. Wayland is the
-main target; X11 works but gets less attention.
+**Untested:** two of the fork's own features, running above 60 fps on a
+faster screen and cursor confinement on a real multi-monitor desktop. Wayland
+is the main target; X11 works but gets less attention.
 [`docs/known-issues.md`](docs/known-issues.md) tracks each bug.
 
 ## FAQ
 
-**Something went wrong.** Run `stacked doctor` first. If Play in the browser
-does nothing, run `stacked` in a terminal to see why. "Profile is already
-open" means another client has it — close that one or use `--profile`. For a
-crash, Stacked saves a crash report in the profile; attach the `.zip` that
-`stacked logs --zip` saves (redacted diagnostics, crash report and engine logs)
-to [an issue](https://github.com/DamnShabu/stacked/issues).
+<details>
+<summary><b>Something went wrong.</b></summary>
 
-**Is it faster than Sober?** Nobody has measured them side by side. It uses the
-same defaults Sober does, and targets your screen's refresh rate rather than 60.
+- Run `stacked doctor` first.
+- If Play in the browser does nothing, run `stacked` in a terminal to see why.
+- "Profile is already open" means another client has it: close that one or use
+  `--profile`.
+- For a crash, Stacked saves a crash report in the profile. Attach the `.zip`
+  that `stacked logs --zip` saves (redacted diagnostics, crash report and
+  engine logs) to [an issue](https://github.com/DamnShabu/stacked/issues).
 
-**I use Sober. How do I switch?** Stacked reuses the Roblox build Sober already
-downloaded, `stacked flags import --from sober` copies your FastFlags, and
-`stacked desktop install` points the Play button at Stacked. You sign in again
-once. Sober keeps working alongside it.
+</details>
 
-**I used Cordial. What carries over?** Everything — profiles, sign-ins, flags
-and settings live in the same `~/.local/share/cordial` and `~/.config/cordial`.
-Both can be installed at once; a profile open in one is locked in the other.
+<details>
+<summary><b>Is it faster than Sober?</b></summary>
 
-**Is it a cheat or mod injector?** No. There is no script execution, hooking or
-access to the game's memory, and the code for it is absent rather than disabled
+Nobody has measured them side by side. It uses the same defaults Sober does,
+and targets your screen's refresh rate rather than 60.
+
+</details>
+
+<details>
+<summary><b>I use Sober. How do I switch?</b></summary>
+
+- Stacked reuses the Roblox build Sober already downloaded.
+- `stacked flags import --from sober` copies your FastFlags.
+- `stacked desktop install` points the Play button at Stacked.
+- You sign in again once. Sober keeps working alongside it.
+
+</details>
+
+<details>
+<summary><b>I used Cordial. What carries over?</b></summary>
+
+Everything: profiles, sign-ins, flags and settings live in the same
+`~/.local/share/cordial` and `~/.config/cordial`. Both can be installed at
+once; a profile open in one is locked in the other.
+
+</details>
+
+<details>
+<summary><b>Is it a cheat or mod injector?</b></summary>
+
+No. There is no script execution, hooking or access to the game's memory, and
+the code for it is absent rather than disabled
 ([ADR-001](docs/adr/ADR-001-in-process-hooking.md)). Plugins extend Stacked,
 not Roblox.
 
-**How does it work?** A ported Android linker loads Roblox's unmodified
-`libroblox.so`, `libjnivm` stands in for Android's Java runtime, and a
-framework layer answers the platform calls the engine makes
-([`docs/architecture.md`](docs/architecture.md)).
+</details>
+
+<details>
+<summary><b>How does it work?</b></summary>
+
+- A ported Android linker loads Roblox's unmodified `libroblox.so`.
+- `libjnivm` stands in for Android's Java runtime.
+- A framework layer answers the platform calls the engine makes.
+
+More in [`docs/architecture.md`](docs/architecture.md).
+
+</details>
 
 ## Contributing
 
-Read [`CONTRIBUTING.md`](CONTRIBUTING.md). Decisions and their reasons are in
-[`docs/adr/`](docs/adr). Help: [`SUPPORT.md`](.github/SUPPORT.md). Security:
-[`SECURITY.md`](SECURITY.md). Everyone follows the
-[Code of Conduct](CODE_OF_CONDUCT.md).
+- **Start here:** [`CONTRIBUTING.md`](CONTRIBUTING.md).
+- **Decisions and their reasons:** [`docs/adr/`](docs/adr).
+- **Help:** [`SUPPORT.md`](.github/SUPPORT.md).
+- **Security:** [`SECURITY.md`](SECURITY.md).
+- Everyone follows the [Code of Conduct](CODE_OF_CONDUCT.md).
+
+If Stacked runs your games, a ⭐ helps other Linux players find it.
 
 ## Credits and licence
 
 GPL-3.0-or-later ([`LICENSE`](LICENSE)); third-party components keep their own
 ([`THIRD-PARTY-NOTICES.md`](THIRD-PARTY-NOTICES.md)).
 
-- **Cordial**, by luohoa97 and contributors — almost everything that makes
+- **Cordial**, by luohoa97 and contributors: almost everything that makes
   Roblox run here is theirs.
 - **Sober** proved a native Roblox client on Linux was possible. Its public
   issue tracker is a research source here; its code was never read.
