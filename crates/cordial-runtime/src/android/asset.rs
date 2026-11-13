@@ -968,12 +968,16 @@ pub struct Stale {
 pub fn apk_asset_names() -> Result<BTreeSet<String>, String> {
     let manager = MANAGER.get().ok_or("no APK is set")?;
     let zip = manager.archive().ok_or_else(|| format!("cannot read {}", manager.apk.display()))?;
-    Ok(zip
-        .file_names()
-        .filter_map(|n| n.strip_prefix("assets/"))
-        .filter(|n| !n.is_empty() && !n.ends_with('/'))
-        .map(str::to_string)
-        .collect())
+    let mut names = BTreeSet::new();
+    for name in zip.file_names() {
+        let name = name.map_err(|e| format!("{}: {e}", manager.apk.display()))?;
+        if let Some(rel) = name.strip_prefix("assets/") {
+            if !rel.is_empty() && !rel.ends_with('/') {
+                names.insert(rel.to_string());
+            }
+        }
+    }
+    Ok(names)
 }
 
 /// The Roblox client version this APK is, as `2.734.917`, or `None`.

@@ -34,7 +34,7 @@ ring = "0.17"
 # An APK is a zip, and every refusal in ADR-014's list is about zips. Same
 # version and the same minimal feature set `cordial-runtime` and
 # `cordial-shell` already pin.
-zip = { version = "2", default-features = false, features = ["deflate"] }
+zip = { version = "9", default-features = false, features = ["deflate"] }
 # `org.freedesktop.NetworkManager`'s `Metered` property, on the system bus.
 # Same mechanism as GameMode and the Secret Service, and the same version
 # `cordial-plugins` and `cordial-runtime` already pin.

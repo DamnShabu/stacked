@@ -182,9 +182,15 @@ pub fn inspect(path: &Path, limits: Limits) -> Result<Summary, Refusal> {
             path: path.display().to_string(),
             why: format!("entry {i}: {e}"),
         })?;
-        let name = entry.name().to_string();
+        let name = entry
+            .name()
+            .map_err(|e| Refusal::NotAZip {
+                path: path.display().to_string(),
+                why: format!("entry {i}: {e}"),
+            })?
+            .into_owned();
         check_path(&name)?;
-        check_mode(&name, entry.unix_mode())?;
+        check_mode(&name, declared_mode(&entry))?;
         declared = declared.saturating_add(entry.size());
         if declared > limits.max_total_bytes {
             return Err(Refusal::TooLarge { limit: limits.max_total_bytes });
@@ -256,8 +262,15 @@ pub fn extract_with(
     // from the pass above. `by_name` is a second lookup, and a check that
     // happened on a different lookup of a different index is a check on
     // something else.
-    check_path(entry.name())?;
-    check_mode(entry.name(), entry.unix_mode())?;
+    let name = entry
+        .name()
+        .map_err(|e| Refusal::NotAZip {
+            path: apk.display().to_string(),
+            why: format!("{wanted}: {e}"),
+        })?
+        .into_owned();
+    check_path(&name)?;
+    check_mode(&name, declared_mode(&entry))?;
 
     let leaf = Path::new(wanted)
         .file_name()
@@ -386,6 +399,19 @@ const S_IFBLK: u32 = 0o060_000;
 const S_IFDIR: u32 = 0o040_000;
 const S_IFCHR: u32 = 0o020_000;
 const S_IFIFO: u32 = 0o010_000;
+
+/// The entry's Unix mode as the archive declares it. zip 9 clears the setuid,
+/// setgid and sticky bits from `unix_mode`, so they are read back from the
+/// raw attributes of an entry made on Unix: an archive asking for them is
+/// still refused, not stripped.
+fn declared_mode<R: std::io::Read + ?Sized>(entry: &zip::read::ZipFile<'_, R>) -> Option<u32> {
+    let mode = entry.unix_mode()?;
+    let special = match entry.system() {
+        zip::System::Unix => (entry.external_attributes() >> 16) & 0o7000,
+        _ => 0,
+    };
+    Some(mode | special)
+}
 
 /// An entry is a regular file or a directory, carries no setuid or setgid bit,
 /// and nothing else is accepted.

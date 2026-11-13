@@ -795,7 +795,7 @@ fn held(files: &[PathBuf]) -> (Option<PathBuf>, Option<PathBuf>) {
             engine = Some(f.clone());
         }
         if assets.is_none() && (0..zip.len()).any(|i| {
-            zip.by_index(i).map(|e| e.name().starts_with("assets/")).unwrap_or(false)
+            zip.by_index(i).is_ok_and(|e| e.name().is_ok_and(|n| n.starts_with("assets/")))
         }) {
             assets = Some(f.clone());
         }
